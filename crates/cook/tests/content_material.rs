@@ -3,7 +3,7 @@
 //! fails at its file and line, texture references resolve by source path to the cooked
 //! texture's hash and flags, and cooking is deterministic.
 
-#![allow(clippy::too_many_lines)]
+#![expect(clippy::too_many_lines)]
 
 use std::sync::Arc;
 

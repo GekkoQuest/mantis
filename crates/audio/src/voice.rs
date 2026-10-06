@@ -38,7 +38,7 @@ impl ClipData {
 
     /// The clip at fractional frame `pos` by linear interpolation. The frame after the
     /// last is frame 0 when looping (so the wrap is seamless) and silence otherwise.
-    #[allow(
+    #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         clippy::cast_precision_loss
@@ -103,7 +103,7 @@ impl Voice {
 
     /// Mixes this voice into `out`, ramping its channel gains toward `target` over
     /// `ramp` samples. Returns false once the voice has finished (clip end or fade out).
-    #[allow(clippy::cast_precision_loss)] // Frame counts are at most 2^26, exact in f64.
+    #[expect(clippy::cast_precision_loss)] // Frame counts are at most 2^26, exact in f64.
     pub(crate) fn mix(&mut self, clip: &ClipData, target: [f32; 2], ramp: u32, out: &mut [[f32; 2]]) -> bool {
         if clip.frames == 0 {
             return false;

@@ -928,6 +928,7 @@ pub struct Registrar<'a> {
     key: &'static str,
     catalog: &'a GraphCatalog,
     declared: &'a [String],
+    optional: &'a [(String, mantis_core::module::OptionalProvider)],
     registry: &'a mut Registry,
     world: &'a mut World,
     schedule: &'a mut Schedule,
@@ -939,6 +940,17 @@ pub struct Registrar<'a> {
 }
 
 impl Registrar<'_> {
+    /// What the package provides for `contract`, one of this module's
+    /// manifest `optional` contracts: resolved when the package started.
+    /// `Absent` also for a contract the manifest does not name.
+    #[must_use]
+    pub fn optional(&self, contract: &str) -> mantis_core::module::OptionalProvider {
+        self.optional
+            .iter()
+            .find(|(c, _)| c == contract)
+            .map_or(mantis_core::module::OptionalProvider::Absent, |(_, p)| p.clone())
+    }
+
     /// The value of one of this module's flags (short name, as declared in
     /// its manifest) after package and Ops overrides. Undeclared flags read
     /// as false.
@@ -1240,6 +1252,7 @@ impl ModuleSet {
                 key: module.key(),
                 catalog,
                 declared: &resolved.graph_actions,
+                optional: &resolved.optional,
                 registry: &mut registry,
                 world,
                 schedule,

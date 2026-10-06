@@ -231,6 +231,17 @@ impl SimNet {
         }
     }
 
+    /// Changes connection `conn`'s conditions mid-run: frames sent from now
+    /// on, both ways, use `cfg` (frames in flight keep their arrival time;
+    /// reliable frames still arrive in order). False for an unknown
+    /// connection.
+    pub fn set_link(&self, conn: ConnectionId, cfg: LinkConfig) -> bool {
+        lock(&self.state).links.get_mut(&conn.0).is_some_and(|l| {
+            l.cfg = cfg;
+            true
+        })
+    }
+
     /// Advances simulated time by `ms` and delivers everything due.
     pub fn advance(&self, ms: u64) {
         let mut s = lock(&self.state);
@@ -308,6 +319,13 @@ impl SimClient {
     #[must_use]
     pub fn id(&self) -> ConnectionId {
         ConnectionId(self.conn)
+    }
+
+    /// Changes this connection's conditions mid-run ([`SimNet::set_link`]).
+    pub fn set_link(&self, cfg: LinkConfig) {
+        if let Some(l) = lock(&self.state).links.get_mut(&self.conn) {
+            l.cfg = cfg;
+        }
     }
 }
 

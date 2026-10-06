@@ -320,3 +320,12 @@ fn an_entity_with_no_object_id_is_refused_never_sent_as_none() {
     assert!(!encode_inbound(&cast, BUILD, &mut out));
     assert!(out.is_empty());
 }
+
+#[test]
+fn the_legacy_adapter_declares_every_id_but_the_one_it_cannot_carry() {
+    let range = adapter().entity_ids();
+    assert_eq!(range, super::ENTITY_IDS);
+    assert!(range.contains(EntityId::from_bits(u64::MAX - 1)));
+    assert!(!range.contains(EntityId::from_bits(u64::MAX)));
+    assert!(super::object_id(EntityId::from_bits(u64::MAX - 1)).is_ok());
+}

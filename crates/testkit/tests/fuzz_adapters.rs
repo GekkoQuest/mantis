@@ -11,7 +11,7 @@
 //! test. Seeded and deterministic; `MANTIS_FUZZ_ITERS` sets the iterations
 //! for long runs (`crates/testkit/ci/fuzz-long.md`).
 
-#![allow(clippy::cast_possible_truncation)]
+#![expect(clippy::cast_possible_truncation)]
 
 mod support;
 
@@ -24,8 +24,8 @@ use mantis_adapter_contract::native::{
 };
 use mantis_adapter_contract::{
     AppearanceId, Cast, Choose, Extension, ExtensionMessage, ExtensionRefused, FeatureState, Goodbye, Hello,
-    Inbound, Interact, LocalAvatar, Move, MoveClaim, Outbound, PermittedModules, Refuse, RemoteSample,
-    SetPosition, SnapshotAck, SnapshotFrame, SnapshotHeader, Welcome, WireAdapter,
+    Inbound, Interact, LocalAvatar, Move, MoveClaim, Outbound, PermittedModules, Refuse, RemoteBases,
+    RemoteSample, SetPosition, SnapshotAck, SnapshotFrame, SnapshotHeader, Welcome, WireAdapter,
 };
 use mantis_core::rng::{Rng, Salt, Seed};
 use support::{iterations, mutate};
@@ -173,6 +173,31 @@ fn later(rng: &mut Rng, base: &SnapshotFrame) -> SnapshotFrame {
     f
 }
 
+/// From `base`: a frame-level baseline after it that lost some remotes (the
+/// budget dropped them), and a frame after that carrying them all again, so
+/// the dropped ones delta against `base` (`MASK_OWN_BASE`).
+fn dropped_and_back(rng: &mut Rng, base: &SnapshotFrame) -> (SnapshotFrame, SnapshotFrame) {
+    let full = later(rng, base);
+    let mut mid = SnapshotFrame::with_capacity(16, 32, 16, 8);
+    mid.header = full.header;
+    for r in full.remotes.iter() {
+        if rng.chance(1, 2) {
+            let _ = mid.remotes.push(*r);
+        }
+    }
+    let next = later(rng, &full);
+    (mid, next)
+}
+
+/// Per-remote baselines: one acknowledged frame.
+struct OneBase<'a>(&'a SnapshotFrame);
+
+impl RemoteBases for OneBase<'_> {
+    fn base_for(&self, id: EntityId) -> Option<(Tick, &RemoteSample)> {
+        self.0.find_remote(id).map(|r| (self.0.header.server_tick, r))
+    }
+}
+
 // ---- the native adapter ----------------------------------------------------
 
 fn native_client(a: &dyn WireAdapter, bytes: &[u8]) -> Result<Vec<u8>, ()> {
@@ -282,6 +307,25 @@ fn native_server_frames_and_delta_snapshots_refuse_or_round_trip() -> Result<(),
         for _ in 0..8 {
             let bad = mutate(&mut rng, &delta);
             accepted += u32::from(fixed_point("native delta snapshot", &bad, &mut with_base)?);
+        }
+        // Remotes missing from the frame-level baseline, delta against their
+        // own acknowledged frame.
+        let (mid, back) = dropped_and_back(&mut rng, &base);
+        let mut own = Vec::new();
+        a.encode_snapshot_based(&back, Some(&mid), &OneBase(&base), &mut own)
+            .map_err(|e| e.to_string())?;
+        let both = [base.clone(), mid.clone()];
+        let mut with_both = |b: &[u8]| native_server(b, &both[..]);
+        if !fixed_point("native own-base snapshot seed", &own, &mut with_both)? {
+            return Err("native server: a valid own-base snapshot refused".to_owned());
+        }
+        let dropped = back.remotes.iter().any(|r| mid.find_remote(r.id).is_none());
+        if dropped && native_server(&own, std::slice::from_ref(&mid)).is_ok() {
+            return Err("native server: an own-base delta decoded without its base frame".to_owned());
+        }
+        for _ in 0..8 {
+            let bad = mutate(&mut rng, &own);
+            accepted += u32::from(fixed_point("native own-base snapshot", &bad, &mut with_both)?);
         }
     }
     eprintln!("fuzz: native server frames: {accepted} mutations accepted, all round-trip");

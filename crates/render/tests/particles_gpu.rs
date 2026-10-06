@@ -2,7 +2,7 @@
 //! simulation-versus-reference and pixel checks run on a real headless adapter (skipped
 //! and counted when none exists).
 
-#![allow(clippy::cast_possible_truncation)] // Pixel math.
+#![expect(clippy::cast_possible_truncation)] // Pixel math.
 
 use glam::{Mat4, Quat, Vec3};
 use mantis_formats::particle_effect::{

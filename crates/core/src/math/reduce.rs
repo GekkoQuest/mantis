@@ -44,7 +44,7 @@ fn window96(s: u32) -> u128 {
 ///
 /// `r` carries a relative error below 2^-40 for every `f32` input and below
 /// 2^-50 for all but inputs pathologically close to a multiple of pi/2.
-#[allow(
+#[expect(
     clippy::many_single_char_names,
     clippy::cast_sign_loss,
     clippy::cast_precision_loss

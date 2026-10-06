@@ -2,7 +2,7 @@
 //! inspect slot after every tick, and the copy matches the simulation.
 
 // The shared rig carries more than this test reads.
-#![allow(dead_code)]
+#![expect(dead_code)]
 
 mod support;
 

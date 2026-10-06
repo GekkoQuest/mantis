@@ -28,14 +28,16 @@ pub mod native;
 pub mod snapshot;
 pub mod transport;
 
-pub use adapter::{AdapterError, WireAdapter};
+pub use adapter::{AdapterError, EntityIdRange, WireAdapter};
 pub use generated::contract::{
     AbilityId, AppearanceId, Cast, Choose, Extension, ExtensionKind, ExtensionMessage, ExtensionRefusal,
     ExtensionRefused, FeatureState, Goodbye, Hello, Inbound, Interact, ModTier, ModuleEntry, Move, MoveClaim,
     MovementMode, Outbound, PermittedModules, PromptId, Refuse, RefuseReason, SetPosition, SnapshotAck,
     Validators, Welcome, decode_inbound, decode_outbound, parse_inbound,
 };
-pub use snapshot::{LocalAvatar, RemoteSample, SnapshotFrame, SnapshotHeader, SnapshotVisitor};
+pub use snapshot::{
+    LocalAvatar, NoRemoteBases, RemoteBases, RemoteSample, SnapshotFrame, SnapshotHeader, SnapshotVisitor,
+};
 pub use transport::{
     Channel, ConnectionId, DisconnectReason, Transport, TransportError, TransportEvent, TransportKind,
 };

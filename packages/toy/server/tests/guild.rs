@@ -1,11 +1,13 @@
-//! std.guild on the toy cluster (M9): two characters found and join a guild
-//! through the social role, one moves to the other cell and is told its
-//! guild there, guild chat crosses cells, a rank change reaches both, the
-//! social role restarts and reads every guild back from the persistence
-//! writer, guild chat still works after it, and every cell replays from its
-//! own log.
+//! std.guild and std.friends on the toy cluster: two characters found and
+//! join a guild through the social role, one moves to the other cell and is
+//! told its guild there, guild chat crosses cells, a rank change reaches
+//! both; they become friends across cells, and one asks a character who has
+//! never been online. The social role restarts and reads every guild,
+//! friendship, and open request back from the persistence writer; guild
+//! chat and friend lists still work after it, and every cell replays from
+//! its own log.
 
-#![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::too_many_lines)]
+#![expect(clippy::unwrap_used, clippy::indexing_slicing, clippy::too_many_lines)]
 
 use std::time::{Duration, Instant};
 
@@ -30,6 +32,11 @@ const SET_RANK: u16 = 1085;
 const JOINED: u16 = 1087;
 const CHANGED: u16 = 1089;
 const INVITED: u16 = 1092;
+/// std.friends' kinds.
+const FRIEND_REQUEST: u16 = 1020;
+const FRIEND_RESPOND: u16 = 1021;
+const FRIEND_LIST: u16 = 1024;
+const SHOW_FRIENDS: u16 = 1025;
 /// std.chat's kinds and guild channel.
 const SAY: u16 = 1010;
 const LINE: u16 = 1011;
@@ -109,6 +116,7 @@ fn a_guild_spans_cells_survives_a_social_restart_and_every_cell_replays() {
             instances: Vec::new(),
             poll: Duration::from_millis(5),
             inspector: "127.0.0.1:0".parse().unwrap(),
+            tls: None,
         },
     )
     .unwrap();
@@ -198,7 +206,26 @@ fn a_guild_spans_cells_survives_a_social_restart_and_every_cell_replays() {
         })
     });
 
-    // The social role restarts: guilds come back from the writer.
+    // Friends across cells, and a request to a character never online.
+    let ask = |c: u64| {
+        let mut b = Vec::new();
+        Encoder::new(&mut b).u64(c);
+        b
+    };
+    sim.bots[0].bot.feature(ExtensionKind(FRIEND_REQUEST), &ask(2));
+    sim.bots[0].bot.feature(ExtensionKind(FRIEND_REQUEST), &ask(77));
+    until(&mut sim, "both requests", &|_| {
+        cluster.persist.with_store(|s| s.friend_rows()).unwrap().len() == 2
+    });
+    let mut accept = Vec::new();
+    let mut e = Encoder::new(&mut accept);
+    e.u64(1);
+    e.bool(true);
+    sim.bots[1].bot.feature(ExtensionKind(FRIEND_RESPOND), &accept);
+    until(&mut sim, "friends", &|_| cluster.social.are_friends(1, 2));
+
+    // The social role restarts: guilds and friends come back from the
+    // writer.
     let addr = cluster.stop_social().unwrap();
     for _ in 0..10 {
         step(&mut sim);
@@ -206,6 +233,15 @@ fn a_guild_spans_cells_survives_a_social_restart_and_every_cell_replays() {
     cluster.start_social(addr).unwrap();
     assert_eq!(cluster.social.guild_of(2), Some(guild));
     assert_eq!(cluster.social.guild_rank(2), Some(guild_rank::OFFICER));
+    assert!(cluster.social.are_friends(2, 1));
+    assert!(
+        cluster
+            .persist
+            .with_store(|s| s.friend_rows())
+            .unwrap()
+            .contains(&mantis_core::social::FriendChange::Asked { asker: 1, asked: 77 }),
+        "the request to a character never online is kept"
+    );
     // Guild chat works again once presence is reported.
     for _ in 0..40 {
         step(&mut sim);
@@ -213,6 +249,16 @@ fn a_guild_spans_cells_survives_a_social_restart_and_every_cell_replays() {
     say_guild(&mut sim, 0, "still here");
     until(&mut sim, "a guild line after the restart", &|s| {
         guild_lines(s, 1).contains(&(1, "still here".to_owned()))
+    });
+    // 2 asks for its list after the restart and is told 1 is its friend.
+    let lists_before = seen(&sim, 1, FRIEND_LIST).len();
+    sim.bots[1].bot.feature(ExtensionKind(SHOW_FRIENDS), &[]);
+    until(&mut sim, "the list after the restart", &|s| {
+        seen(s, 1, FRIEND_LIST).iter().skip(lists_before).any(|b| {
+            let mut d = Decoder::new(b);
+            mantis_core::wire::BoundedArray::<u64, 50>::decode(&mut d)
+                .is_ok_and(|l| l.iter().any(|c| *c == 1))
+        })
     });
     for _ in 0..30 {
         step(&mut sim);

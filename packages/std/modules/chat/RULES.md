@@ -15,9 +15,10 @@
   `whispers` (default on) gates them.
 - Guild lines reach every online member of the speaker's guild, in any
   cell, through the social role, and echo to the speaker. The guild is
-  found through the `std.guild` contract (an optional module: chat does
-  not depend on it); with no guild, the guild module disabled, or no guild
-  module in the package, the guild channel is refused as not allowed.
+  found through the `std.guild` contract, which the manifest names as
+  `optional`: a package without a guild module resolves it absent at start
+  and has no guild channel. With no guild, the guild module disabled, or
+  no guild module, the guild channel is refused as not allowed.
 - Rate limit: 5 lines per character per 5-second window; lines over the
   limit are refused. The metric `std.chat.lines` counts delivered lines.
 

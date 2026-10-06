@@ -107,7 +107,7 @@ impl ProbeVolume {
                 actual: bytes.len() as u64,
             });
         }
-        #[allow(clippy::cast_possible_truncation)] // count <= 2^20.
+        #[expect(clippy::cast_possible_truncation)] // count <= 2^20.
         let count = count as usize;
         let mut probes = Vec::with_capacity(keyframes.len());
         for _ in 0..keyframes.len() {

@@ -172,6 +172,9 @@ pub struct HostStats {
     /// Messages an adapter refused to encode (a value its protocol cannot
     /// carry); nothing was sent for them.
     pub encode_refused: u64,
+    /// Joins refused because the next replicated id is outside the range
+    /// some listening adapter can carry ([`Host::entity_ids`]).
+    pub ids_exhausted: u64,
     /// Client modules declared by accepted handshakes.
     pub client_modules: u64,
     /// Handshakes refused.
@@ -211,9 +214,38 @@ pub struct Host {
     polls: u64,
     /// Counters.
     pub stats: HostStats,
+    /// The poll after a clock slip, and the ticks slipped.
+    slip: (u64, u64),
 }
 
 impl Host {
+    /// The replicated ids every listening adapter can carry: the
+    /// intersection of their declared ranges.
+    #[must_use]
+    pub fn entity_ids(&self) -> mantis_adapter_contract::EntityIdRange {
+        self.listeners
+            .iter()
+            .fold(mantis_adapter_contract::EntityIdRange::ALL, |r, l| {
+                r.intersect(l.adapter.entity_ids())
+            })
+    }
+
+    /// The host's clock slipped `ticks` behind wall time (a stall, or an
+    /// overrun it re-anchored after): the time passed still counts for the
+    /// rate limits and admission timeouts, so what clients sent meanwhile is
+    /// judged at their real rate, not as one burst.
+    pub fn clock_slipped(&mut self, ticks: u64) {
+        self.polls = self.polls.saturating_add(ticks);
+        // The next poll reads the backlog: its buckets hold the slip too.
+        self.slip = (self.polls + 1, ticks);
+    }
+
+    /// Starts replicated id allocation at index `next` (tests of the id
+    /// range; the default starts at 0).
+    pub fn start_ids_at(&mut self, next: u32) {
+        self.repl_ids = ReplicationIds::starting_at(next);
+    }
+
     /// A host over `listeners`. A listener's index is its adapter index in
     /// every cell, so cells must be built with the adapters in this order.
     #[must_use]
@@ -231,6 +263,7 @@ impl Host {
             verdicts: Vec::new(),
             polls: 0,
             stats: HostStats::default(),
+            slip: (0, 0),
         }
     }
 
@@ -519,11 +552,12 @@ impl Host {
         zone: &mut Zone,
     ) {
         let (poll, rate, limits) = (self.polls, u32::from(self.cfg.tick_rate), self.limits);
+        let slipped = if self.slip.0 == poll { self.slip.1 } else { 0 };
         let Some(s) = self.sessions.get_mut(&(li, conn)) else {
             return;
         };
         if let Some(kind) = crate::limits::Kind::of(m)
-            && !s.limiter.admit(kind, poll, rate, &limits)
+            && !s.limiter.admit(kind, poll, rate, &limits, slipped)
         {
             self.stats.rate_limited += 1;
             return;
@@ -656,7 +690,7 @@ impl Host {
     }
 
     /// Enters an admitted session into the world as `character`.
-    #[allow(clippy::too_many_arguments, reason = "one call site per admission path")]
+    #[expect(clippy::too_many_arguments, reason = "one call site per admission path")]
     fn admit(
         &mut self,
         li: usize,
@@ -667,6 +701,13 @@ impl Host {
         mode: mantis_adapter_contract::MovementMode,
         zone: &mut Zone,
     ) {
+        // Inside every listening adapter's range: no client is ever handed
+        // an id its protocol cannot carry (fail closed, counted, and told).
+        let Some(repl) = self.repl_ids.allocate_within(self.entity_ids()) else {
+            self.stats.ids_exhausted += 1;
+            self.refuse(li, conn, mantis_adapter_contract::RefuseReason::Full);
+            return;
+        };
         let spawn = (self.cfg.spawn)(id);
         let Some(cell_index) = zone.cell_for(spawn.x) else {
             self.stats.refused_handshakes += 1;
@@ -676,7 +717,6 @@ impl Host {
             self.stats.refused_handshakes += 1;
             return;
         };
-        let repl = self.repl_ids.allocate();
         let implicit_ack = self
             .listeners
             .get(li)

@@ -2,7 +2,7 @@
 //! transfer completes within 2 ticks and no observer loses the entity for
 //! more than 1 tick. Here observers never lose it at all.
 
-#![allow(clippy::unwrap_used, clippy::cast_possible_truncation)]
+#![expect(clippy::unwrap_used, clippy::cast_possible_truncation)]
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

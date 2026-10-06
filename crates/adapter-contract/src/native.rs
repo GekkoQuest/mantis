@@ -19,7 +19,7 @@
 //! flags u8 (bit0 ack, bit1 local, bit2 mods)
 //! [ack u32] [local: entity u64, pos 3xf32, vel 3xf32, yaw u16, grounded u8] [mods 3xf32]
 //! entered v x (entity id, appearance u32)
-//! remotes v x (entity id, tick_lag v, mask u8, [pos 3z], [vel 3z], [yaw u16])
+//! remotes v x (entity id, tick_lag v, mask u8, [base_lag v], [pos 3z], [vel 3z], [yaw u16])
 //! removed v x (entity id)
 //! markers v x marker
 //! ```
@@ -28,8 +28,16 @@
 //! per second, clamped to +/-2^24 steps so dequantization is exact. Mask bit 3
 //! means "delta against the baseline's sample for this id": the present
 //! components are differences from it, and absent components are copied from
-//! it. Without bit 3, mask bits 0 to 2 must all be set. The local avatar is
-//! never quantized (the snapshot contract requires full precision).
+//! it. Without bit 3, mask bits 0 to 2 must all be set. Mask bit 4 (only with
+//! bit 3) gives the remote its own base: `base_lag v` (at least 1) follows
+//! the mask, and the delta is against this id's sample in the frame at
+//! `server_tick - base_lag`, not the frame-level baseline; a remote may carry
+//! its own base when the frame has none. The encoder names only frames the
+//! client acknowledged within [`BASELINE_WINDOW_TICKS`]; a client keeps every
+//! applied frame within that window of its newest, so the frame is there. A
+//! missing frame, or no sample for the id in it, invalidates the whole frame.
+//! The local avatar is never quantized (the snapshot contract requires full
+//! precision).
 //!
 //! The decoder parses the whole frame once to validate it (bounds, duplicate
 //! ids, finite floats, known tags, a present baseline, no trailing bytes) and
@@ -73,7 +81,14 @@ const MASK_POS: u8 = 1;
 const MASK_VEL: u8 = 2;
 const MASK_YAW: u8 = 4;
 const MASK_DELTA: u8 = 8;
+/// Mask bit 4: the delta is against the remote's own base frame.
+pub const MASK_OWN_BASE: u8 = 16;
 const MASK_FULL: u8 = MASK_POS | MASK_VEL | MASK_YAW;
+
+/// Ticks a per-remote base may lag the snapshot: the encoder names only
+/// acknowledged frames at most this far back, and a client keeps every
+/// applied frame within this many ticks of its newest.
+pub const BASELINE_WINDOW_TICKS: u64 = 64;
 
 // ---- varints -------------------------------------------------------------
 
@@ -136,7 +151,7 @@ fn get_count(d: &mut Decoder<'_>, max: usize) -> Result<usize, DecodeError> {
 
 // ---- quantization ----------------------------------------------------------
 
-#[allow(clippy::cast_possible_truncation)] // clamped into i32 range first
+#[expect(clippy::cast_possible_truncation)] // clamped into i32 range first
 fn quant(x: f32, scale: f32) -> i32 {
     let q = (x * scale).round();
     if q.is_nan() {
@@ -145,7 +160,7 @@ fn quant(x: f32, scale: f32) -> i32 {
     q.clamp(-Q_LIMIT_F, Q_LIMIT_F) as i32
 }
 
-#[allow(clippy::cast_precision_loss)] // |q| <= 2^24: exact in f32
+#[expect(clippy::cast_precision_loss)] // |q| <= 2^24: exact in f32
 fn dequant(q: i32, scale: f32) -> f32 {
     q as f32 / scale
 }
@@ -186,7 +201,7 @@ pub fn encode_outbound_frame(msg: &Outbound, out: &mut Vec<u8>) {
 }
 
 /// A server-to-client frame, decoded.
-#[allow(clippy::large_enum_variant)] // returned by value from the decoder; never stored in bulk
+#[expect(clippy::large_enum_variant)] // returned by value from the decoder; never stored in bulk
 pub enum ServerFrame {
     /// A session message.
     Message(Outbound),
@@ -307,6 +322,47 @@ fn encode_marker(e: &mut Encoder<'_>, m: &TimelineMarker, server_tick: Tick) {
 /// given, must be a frame the client acknowledged; remotes present in it are
 /// delta-encoded against it.
 pub fn encode_snapshot(frame: &SnapshotFrame, baseline: Option<&SnapshotFrame>, out: &mut Vec<u8>) {
+    encode_snapshot_based(frame, baseline, &crate::NoRemoteBases, out);
+}
+
+/// Writes one remote's components as a delta from `base`.
+fn put_delta(e: &mut Encoder<'_>, r: &RemoteSample, base: &RemoteSample, own_lag: Option<u64>) {
+    let (pos, vel) = (quant3(r.position, POS_SCALE), quant3(r.velocity, VEL_SCALE));
+    let bpos = quant3(base.position, POS_SCALE);
+    let bvel = quant3(base.velocity, VEL_SCALE);
+    let mask = MASK_DELTA
+        | if own_lag.is_some() { MASK_OWN_BASE } else { 0 }
+        | if pos == bpos { 0 } else { MASK_POS }
+        | if vel == bvel { 0 } else { MASK_VEL }
+        | if r.yaw == base.yaw { 0 } else { MASK_YAW };
+    e.u8(mask);
+    if let Some(lag) = own_lag {
+        put_v(e, lag);
+    }
+    if mask & MASK_POS != 0 {
+        for (q, bq) in pos.iter().zip(bpos) {
+            put_z(e, i64::from(*q) - i64::from(bq));
+        }
+    }
+    if mask & MASK_VEL != 0 {
+        for (q, bq) in vel.iter().zip(bvel) {
+            put_z(e, i64::from(*q) - i64::from(bq));
+        }
+    }
+    if mask & MASK_YAW != 0 {
+        e.u16(r.yaw.0);
+    }
+}
+
+/// [`encode_snapshot`] with per-remote baselines: a remote the frame-level
+/// baseline lacks is delta-encoded against `older`'s frame for it, when
+/// that frame is acknowledged and within [`BASELINE_WINDOW_TICKS`].
+pub fn encode_snapshot_based(
+    frame: &SnapshotFrame,
+    baseline: Option<&SnapshotFrame>,
+    older: &dyn crate::RemoteBases,
+    out: &mut Vec<u8>,
+) {
     let h = &frame.header;
     let mut e = Encoder::new(out);
     e.u64(h.server_tick.0);
@@ -343,32 +399,17 @@ pub fn encode_snapshot(frame: &SnapshotFrame, baseline: Option<&SnapshotFrame>, 
     for r in frame.remotes.iter() {
         put_id(&mut e, r.id);
         put_v(&mut e, h.server_tick.saturating_sub(r.tick));
-        let pos = quant3(r.position, POS_SCALE);
-        let vel = quant3(r.velocity, VEL_SCALE);
-        let base = baseline.and_then(|b| b.find_remote(r.id));
-        if let Some(b) = base {
-            let bpos = quant3(b.position, POS_SCALE);
-            let bvel = quant3(b.velocity, VEL_SCALE);
-            let mask = MASK_DELTA
-                | if pos == bpos { 0 } else { MASK_POS }
-                | if vel == bvel { 0 } else { MASK_VEL }
-                | if r.yaw == b.yaw { 0 } else { MASK_YAW };
-            e.u8(mask);
-            if mask & MASK_POS != 0 {
-                for (q, bq) in pos.iter().zip(bpos) {
-                    put_z(&mut e, i64::from(*q) - i64::from(bq));
-                }
-            }
-            if mask & MASK_VEL != 0 {
-                for (q, bq) in vel.iter().zip(bvel) {
-                    put_z(&mut e, i64::from(*q) - i64::from(bq));
-                }
-            }
-            if mask & MASK_YAW != 0 {
-                e.u16(r.yaw.0);
-            }
+        if let Some(b) = baseline.and_then(|b| b.find_remote(r.id)) {
+            put_delta(&mut e, r, b, None);
+        } else if let Some((tick, b)) = older.base_for(r.id).filter(|(t, _)| {
+            h.server_tick
+                .checked_sub(*t)
+                .is_some_and(|lag| (1..=BASELINE_WINDOW_TICKS).contains(&lag))
+        }) {
+            put_delta(&mut e, r, b, Some(h.server_tick.0 - tick.0));
         } else {
             e.u8(MASK_FULL);
+            let (pos, vel) = (quant3(r.position, POS_SCALE), quant3(r.velocity, VEL_SCALE));
             for q in pos.iter().chain(&vel) {
                 put_z(&mut e, i64::from(*q));
             }
@@ -467,11 +508,13 @@ fn parse_header(d: &mut Decoder<'_>, server_tick: Tick) -> Result<SnapshotHeader
     })
 }
 
-/// One remote sample, resolving deltas against `baseline`.
+/// One remote sample, resolving deltas against `baseline`, or against its
+/// own base frame from `baselines`.
 fn parse_remote(
     d: &mut Decoder<'_>,
     server_tick: Tick,
     baseline: Option<&SnapshotFrame>,
+    baselines: &(impl BaselineStore + ?Sized),
 ) -> Result<RemoteSample, DecodeError> {
     let id = get_id(d)?;
     let tick_lag = get_v(d)?;
@@ -482,8 +525,11 @@ fn parse_remote(
             .ok_or(DecodeError::Invalid("sample tick"))?,
     );
     let mask = d.u8()?;
-    if mask & !(MASK_FULL | MASK_DELTA) != 0 {
+    if mask & !(MASK_FULL | MASK_DELTA | MASK_OWN_BASE) != 0 {
         return Err(DecodeError::Invalid("remote mask"));
+    }
+    if mask & MASK_OWN_BASE != 0 && mask & MASK_DELTA == 0 {
+        return Err(DecodeError::Invalid("own base without delta"));
     }
     if mask & MASK_DELTA == 0 {
         if mask != MASK_FULL {
@@ -499,9 +545,25 @@ fn parse_remote(
             yaw: Angle16(d.u16()?),
         });
     }
-    let base = baseline
-        .and_then(|b| b.find_remote(id))
-        .ok_or(DecodeError::Invalid("delta without baseline sample"))?;
+    let base = if mask & MASK_OWN_BASE != 0 {
+        let lag = get_v(d)?;
+        if lag == 0 {
+            return Err(DecodeError::Invalid("own base lag"));
+        }
+        let at = server_tick
+            .0
+            .checked_sub(lag)
+            .ok_or(DecodeError::Invalid("own base lag"))?;
+        baselines
+            .baseline(Tick(at))
+            .ok_or(DecodeError::Invalid("missing own base"))?
+            .find_remote(id)
+            .ok_or(DecodeError::Invalid("own base without sample"))?
+    } else {
+        baseline
+            .and_then(|b| b.find_remote(id))
+            .ok_or(DecodeError::Invalid("delta without baseline sample"))?
+    };
     let bpos = quant3(base.position, POS_SCALE);
     let bvel = quant3(base.velocity, VEL_SCALE);
     let pos = if mask & MASK_POS != 0 {
@@ -567,7 +629,7 @@ fn parse_snapshot(
     // Validation pass only: ids collected on the stack, checked for duplicates.
     let mut ids = [0u64; MAX_REMOTES];
     for i in 0..remotes {
-        let sample = parse_remote(&mut d, server_tick, baseline)?;
+        let sample = parse_remote(&mut d, server_tick, baseline, baselines)?;
         if let Some(slot) = ids.get_mut(i) {
             *slot = sample.id.to_bits();
         }
@@ -642,6 +704,11 @@ impl WireAdapter for NativeAdapter {
         TransportKind::Quic
     }
 
+    fn entity_ids(&self) -> crate::EntityIdRange {
+        // Ids travel as their full 64 bits.
+        crate::EntityIdRange::ALL
+    }
+
     fn decode(&self, frame: &[u8], out: &mut dyn FnMut(Inbound)) -> Result<(), AdapterError> {
         let (kind, rest) = frame.split_first().ok_or(DecodeError::UnexpectedEnd)?;
         if *kind != FRAME_MESSAGE {
@@ -667,6 +734,18 @@ impl WireAdapter for NativeAdapter {
     ) -> Result<(), AdapterError> {
         out.push(FRAME_SNAPSHOT);
         encode_snapshot(frame, baseline, out);
+        Ok(())
+    }
+
+    fn encode_snapshot_based(
+        &self,
+        frame: &SnapshotFrame,
+        baseline: Option<&SnapshotFrame>,
+        older: &dyn crate::RemoteBases,
+        out: &mut Vec<u8>,
+    ) -> Result<(), AdapterError> {
+        out.push(FRAME_SNAPSHOT);
+        encode_snapshot_based(frame, baseline, older, out);
         Ok(())
     }
 }

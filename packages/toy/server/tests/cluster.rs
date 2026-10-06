@@ -3,7 +3,7 @@
 //! writer, a signed Ops flag switches a module in every cell at a tick
 //! boundary, and the inspector reads the cells.
 
-#![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::too_many_lines)]
+#![expect(clippy::unwrap_used, clippy::indexing_slicing, clippy::too_many_lines)]
 
 use std::time::{Duration, Instant};
 
@@ -24,7 +24,7 @@ fn chat_enabled(sim: &Sim, cell: usize) -> bool {
 
 #[test]
 fn the_zone_pushes_outcomes_and_applies_signed_live_changes() {
-    let cluster = LocalCluster::start(&ClusterConfig::local()).unwrap();
+    let mut cluster = LocalCluster::start(&ClusterConfig::local()).unwrap();
     let link = CellLink::start(
         &cluster.handle(),
         &CellLinkConfig {
@@ -43,6 +43,7 @@ fn the_zone_pushes_outcomes_and_applies_signed_live_changes() {
             poll: Duration::from_millis(10),
             instances: Vec::new(),
             inspector: "127.0.0.1:0".parse().unwrap(),
+            tls: None,
         },
     )
     .unwrap();
@@ -104,6 +105,33 @@ fn the_zone_pushes_outcomes_and_applies_signed_live_changes() {
     }
     let seen = cluster.execute("alice", &Command::Inspect { cell: 2 }).unwrap();
     assert!(seen.after.starts_with("cell=2 tick="), "{}", seen.after);
+
+    // Ops restarts: every cell keeps the flag throughout, and receives the
+    // current value again from the new run.
+    let addr = cluster.stop_role(Role::Ops).unwrap();
+    for _ in 0..10 {
+        let reports = sim.step().unwrap();
+        after_tick(&mut sim.zone, &link, &reports);
+    }
+    cluster.start_ops(addr).unwrap();
+    let start = Instant::now();
+    let mut again = 0;
+    while again < 2 {
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "the current value never came again"
+        );
+        let reports = sim.step().unwrap();
+        again += after_tick(&mut sim.zone, &link, &reports).live;
+        assert!(!chat_enabled(&sim, 0) && !chat_enabled(&sim, 1), "the flag held");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    for _ in 0..5 {
+        let reports = sim.step().unwrap();
+        after_tick(&mut sim.zone, &link, &reports);
+    }
+    assert_eq!(again, 2, "queued once more into each cell");
+    assert!(!chat_enabled(&sim, 0) && !chat_enabled(&sim, 1));
 }
 
 fn link(cluster: &LocalCluster) -> CellLink {
@@ -125,6 +153,7 @@ fn link(cluster: &LocalCluster) -> CellLink {
             poll: Duration::from_millis(10),
             instances: Vec::new(),
             inspector: "127.0.0.1:0".parse().unwrap(),
+            tls: None,
         },
     )
     .unwrap()
@@ -412,6 +441,7 @@ fn a_party_survives_an_instance_round_trip_and_the_instance_releases_itself() {
             instances: vec![(instance_cell, "127.0.0.1:7400".to_owned())],
             poll: Duration::from_millis(5),
             inspector: "127.0.0.1:0".parse().unwrap(),
+            tls: None,
         },
     )
     .unwrap();
@@ -607,6 +637,7 @@ fn a_competitive_instance_permits_presentation_modules_only_and_replays() {
             instances: vec![(instance_cell, "127.0.0.1:7400".to_owned())],
             poll: Duration::from_millis(5),
             inspector: "127.0.0.1:0".parse().unwrap(),
+            tls: None,
         },
     )
     .unwrap();
@@ -819,7 +850,7 @@ fn ops_kicks_drains_and_traces_ledgers_through_the_cell_host() {
         .execute("alice", &Command::LedgerTrace { character: 1 })
         .unwrap();
     assert_eq!(trace.undo, "none: read-only");
-    let rows = cluster.ops.audit_rows().unwrap();
+    let rows = cluster.handle().block_on(cluster.ops.audit_rows()).unwrap();
     let names: Vec<&str> = rows.iter().map(|r| r.command.as_str()).collect();
     assert_eq!(names, ["kick", "kick", "drain", "drain", "ledger"]);
     assert_eq!(rows[1].status, "failed");

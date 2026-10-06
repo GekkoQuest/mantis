@@ -142,14 +142,14 @@ impl Clusters {
     }
 
     /// Slice boundary depth `k` (0 = near, `slices` = far).
-    #[allow(clippy::cast_precision_loss)] // Slice counts are small.
+    #[expect(clippy::cast_precision_loss)] // Slice counts are small.
     pub fn slice_depth(&self, k: u32) -> f32 {
         let c = &self.config;
         c.near * (c.far / c.near).powf(k as f32 / c.slices as f32)
     }
 
     /// The slice containing view-space depth `d` (positive distance), clamped.
-    #[allow(
+    #[expect(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss
@@ -165,7 +165,7 @@ impl Clusters {
     }
 
     /// Rebuilds cluster bounds for a new projection (resize, field-of-view change).
-    #[allow(clippy::cast_precision_loss)] // Tile counts are small.
+    #[expect(clippy::cast_precision_loss)] // Tile counts are small.
     pub fn set_projection(&mut self, fov_y: f32, aspect: f32) {
         let c = self.config;
         let ky = (fov_y * 0.5).tan();
@@ -308,7 +308,7 @@ impl Clusters {
     }
 
     /// GPU parameters for a render target of `width x height` pixels.
-    #[allow(clippy::cast_precision_loss)] // Pixel and tile counts are small.
+    #[expect(clippy::cast_precision_loss)] // Pixel and tile counts are small.
     pub fn gpu_params(&self, width: u32, height: u32) -> GpuClusterParams {
         let c = &self.config;
         GpuClusterParams {

@@ -115,34 +115,211 @@ pub enum Violation {
     CorrectionIgnored,
 }
 
+/// How a cell consumes Predictive inputs when they arrive late.
+///
+/// The cell applies one input per tick, in seq order; a seq whose input
+/// has not arrived is synthesized as a repeat. After a sustained rise in
+/// latency every input would then arrive just after its seq was consumed,
+/// forever. So a real input arriving for a seq already synthesized earns a
+/// *credit*, and a tick whose input is missing spends one to *pause*:
+/// nothing is consumed, the avatar holds, and the buffer gains a tick of
+/// lead. The lead adapts to the lateness observed, like a jitter buffer.
+///
+/// Bounds: at most one pause per `pause_every` ticks, credits at most
+/// `max_lead`, and no pause while `max_lead` inputs are already buffered.
+/// A client gains nothing by delaying or withholding inputs: consumption is
+/// never faster than one input per tick, so a pause only costs its avatar
+/// that tick, and withheld inputs are synthesized and corrected as before.
+/// Every decision derives from session state fed by logged intents, so a
+/// replay makes the same ones.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct InputConfig {
+    /// Most ticks of lead realignment may build (credits, and buffered
+    /// inputs above which no pause is taken).
+    pub max_lead: u8,
+    /// Ticks between pauses, at least.
+    pub pause_every: u32,
+    /// Seqs ahead of the next one to apply that are buffered; an input
+    /// further ahead is dropped. Covers a client at the worst supported
+    /// round trip plus the most lead realignment builds
+    /// ([`InputConfig::for_rate`]).
+    pub window: usize,
+}
+
+impl InputConfig {
+    /// 400 ms round trips and 200 ms of lead at 30 Hz, a pause at most
+    /// every 4 ticks.
+    pub const DEFAULT: Self = Self {
+        max_lead: 6,
+        pause_every: 4,
+        window: 20,
+    };
+
+    /// The configuration for a package at `hz`: a lead of `max_lead_ms`
+    /// (rounded up, at least a tick), pauses at most every `pause_every`
+    /// ticks, and a window for round trips up to `max_rtt_ms`: the round
+    /// trip in ticks (a client runs ahead of the cell by about its round
+    /// trip at worst) plus the lead plus 2, at most
+    /// [`crate::session::INPUT_WINDOW_MAX`].
+    #[must_use]
+    pub fn for_rate(max_rtt_ms: u32, max_lead_ms: u32, hz: u32, pause_every: u32) -> Self {
+        let ticks = |ms: u32| (u64::from(ms) * u64::from(hz)).div_ceil(1000);
+        let lead = ticks(max_lead_ms).max(1);
+        let window = ticks(max_rtt_ms) + lead + 2;
+        Self {
+            max_lead: u8::try_from(lead).unwrap_or(u8::MAX),
+            pause_every: pause_every.max(1),
+            window: usize::try_from(window)
+                .unwrap_or(usize::MAX)
+                .min(crate::session::INPUT_WINDOW_MAX),
+        }
+    }
+}
+
+impl Default for InputConfig {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// A Predictive session's input state that travels with its avatar across
+/// a border, so a crossing never loses the lead the session built or the
+/// input it repeats. (Its buffered inputs travel as `Move` intents logged by
+/// the destination.)
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct InputCarry {
+    /// The last applied input.
+    pub last_input: MoveInput,
+    /// Seqs synthesized so far.
+    pub synthesized: u32,
+    /// Which recent seqs were synthesized.
+    pub synth_mask: u64,
+    /// Realigning pauses owed.
+    pub credits: u8,
+    /// Ticks until the next pause.
+    pub cooldown: u32,
+    /// Late inputs so far.
+    pub late: u32,
+    /// Pauses so far.
+    pub pauses: u32,
+    /// Seqs skipped so far.
+    pub skipped: u32,
+}
+
+impl InputCarry {
+    /// The state of `s`.
+    #[must_use]
+    pub fn of(s: &CellSession) -> Self {
+        Self {
+            last_input: s.last_input,
+            synthesized: s.synthesized,
+            synth_mask: s.synth_mask,
+            credits: s.credits,
+            cooldown: s.cooldown,
+            late: s.late,
+            pauses: s.pauses,
+            skipped: s.skipped,
+        }
+    }
+
+    /// Restores it into `s`.
+    pub fn apply(&self, s: &mut CellSession) {
+        s.last_input = self.last_input;
+        s.synthesized = self.synthesized;
+        s.synth_mask = self.synth_mask;
+        s.credits = self.credits;
+        s.cooldown = self.cooldown;
+        s.late = self.late;
+        s.pauses = self.pauses;
+        s.skipped = self.skipped;
+    }
+
+    /// Writes it (logs and snapshots).
+    pub fn encode(&self, e: &mut mantis_core::wire::Encoder<'_>) {
+        mantis_core::wire::Wire::encode(&self.last_input, e);
+        e.u32(self.synthesized);
+        e.u64(self.synth_mask);
+        e.u8(self.credits);
+        e.u32(self.cooldown);
+        e.u32(self.late);
+        e.u32(self.pauses);
+        e.u32(self.skipped);
+    }
+
+    /// Reads what [`InputCarry::encode`] wrote.
+    ///
+    /// # Errors
+    /// A malformed record.
+    pub fn decode(d: &mut mantis_core::wire::Decoder<'_>) -> Result<Self, mantis_core::wire::DecodeError> {
+        Ok(Self {
+            last_input: <MoveInput as mantis_core::wire::Wire>::decode(d)?,
+            synthesized: d.u32()?,
+            synth_mask: d.u64()?,
+            credits: d.u8()?,
+            cooldown: d.u32()?,
+            late: d.u32()?,
+            pauses: d.u32()?,
+            skipped: d.u32()?,
+        })
+    }
+}
+
 /// Outcome of buffering one input.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Buffered {
     /// Stored for a future tick.
     Accepted,
-    /// Its seq was already consumed (applied, synthesized, or duplicate).
+    /// Its seq was already consumed (applied, or a duplicate).
     Stale,
-    /// Its seq is beyond the window.
-    TooFarAhead,
+    /// Its seq was synthesized before it arrived: it is dropped, and counts
+    /// toward realigning ([`InputConfig`]).
+    Late,
+    /// Its seq was beyond the window: the seqs before the window's new start
+    /// were skipped unapplied, and it was stored.
+    Skipped,
 }
 
 /// Buffers a Predictive input, keeping the buffer sorted by seq.
-pub fn buffer_input(s: &mut CellSession, input: MoveInput) -> Buffered {
+pub fn buffer_input(s: &mut CellSession, input: MoveInput, cfg: InputConfig) -> Buffered {
     let next = s.last_seq.map_or(input.seq, InputSeq::next);
     if let Some(last) = s.last_seq
         && !input.seq.is_newer_than(last)
     {
+        let age = last.0.wrapping_sub(input.seq.0);
+        let bit = 1u64.checked_shl(age).unwrap_or(0);
+        if s.synth_mask & bit != 0 {
+            // Counted once: a resent copy is a duplicate.
+            s.synth_mask &= !bit;
+            s.late = s.late.saturating_add(1);
+            s.credits = s.credits.saturating_add(1);
+            return Buffered::Late;
+        }
         return Buffered::Stale;
     }
     let ahead = input.seq.0.wrapping_sub(next.0);
-    if ahead as usize >= crate::session::INPUT_WINDOW {
-        return Buffered::TooFarAhead;
+    let mut outcome = Buffered::Accepted;
+    if ahead as usize >= cfg.window
+        && let Some(last) = s.last_seq
+    {
+        // The client runs further ahead than the window: the cell's clock
+        // slipped (a host stall re-anchors, never bursts), or the client
+        // jumped. Skip seqs so this input leads by `max_lead`: they are
+        // consumed without being applied (the avatar holds for them, so a
+        // client gains nothing by running ahead), and the predictions that
+        // assumed them are corrected once. Inputs before the new start go.
+        let lead = u32::from(cfg.max_lead.max(1));
+        let new_last = InputSeq(input.seq.0.wrapping_sub(lead));
+        s.skipped = s.skipped.saturating_add(new_last.0.wrapping_sub(last.0));
+        s.last_seq = Some(new_last);
+        s.synth_mask = 0;
+        s.inputs.retain(|i| i.seq.is_newer_than(new_last));
+        outcome = Buffered::Skipped;
     }
     if s.inputs.iter().any(|i| i.seq == input.seq) {
         return Buffered::Stale;
     }
     if s.inputs.push(input).is_err() {
-        return Buffered::TooFarAhead;
+        return Buffered::Stale;
     }
     // Keep sorted in serial order from the reference: the next seq to apply,
     // or (before anything was applied) the oldest buffered seq.
@@ -152,7 +329,7 @@ pub fn buffer_input(s: &mut CellSession, input: MoveInput) -> Buffered {
     };
     s.inputs
         .sort_unstable_by_key(|i| i.seq.0.wrapping_sub(reference.0));
-    Buffered::Accepted
+    outcome
 }
 
 /// The buffered seq no other buffered seq is older than (serial order).
@@ -163,10 +340,13 @@ fn oldest(inputs: &[MoveInput]) -> Option<InputSeq> {
         .find(|a| inputs.iter().all(|b| b.seq == *a || b.seq.is_newer_than(*a)))
 }
 
-/// Takes the input for this tick: the buffered one with seq `last + 1`, or a
-/// repeat of the last input under that seq (consumed). The first input of a
+/// Takes the input for this tick: the buffered one with seq `last + 1`, or
+/// a repeat of the last input under that seq (consumed), or nothing when
+/// the session pauses to realign ([`InputConfig`]). The first input of a
 /// session defines the starting seq.
-pub fn next_input(s: &mut CellSession) -> Option<MoveInput> {
+pub fn next_input(s: &mut CellSession, cfg: InputConfig) -> Option<MoveInput> {
+    s.cooldown = s.cooldown.saturating_sub(1);
+    s.credits = s.credits.min(cfg.max_lead);
     let Some(last) = s.last_seq else {
         // Nothing applied yet: start from the oldest buffered input, if any.
         let first = s.inputs.remove(0)?;
@@ -176,9 +356,17 @@ pub fn next_input(s: &mut CellSession) -> Option<MoveInput> {
     };
     let want = last.next();
     let input = if s.inputs.first().is_some_and(|i| i.seq == want) {
+        s.synth_mask <<= 1;
         s.inputs.remove(0).unwrap_or(s.last_input)
     } else {
+        if s.credits > 0 && s.cooldown == 0 && s.inputs.len() < usize::from(cfg.max_lead) {
+            s.credits -= 1;
+            s.cooldown = cfg.pause_every;
+            s.pauses = s.pauses.saturating_add(1);
+            return None;
+        }
         s.synthesized += 1;
+        s.synth_mask = (s.synth_mask << 1) | 1;
         MoveInput {
             seq: want,
             ..s.last_input
@@ -275,7 +463,7 @@ pub fn handle_claim(
 ///
 /// # Errors
 /// The [`Violation`]; the envelope keeps the last accepted position.
-#[allow(clippy::cast_precision_loss)] // millisecond deltas are small
+#[expect(clippy::cast_precision_loss)] // millisecond deltas are small
 pub fn check_claim(
     env: &mut EnvelopeState,
     cfg: &EnvelopeConfig,
@@ -339,6 +527,10 @@ mod tests {
     use mantis_core::kinematics::{FlatGround, MotionParams};
     use mantis_core::log::SessionId;
 
+    fn buffer_input_d(s: &mut CellSession, input: MoveInput) -> Buffered {
+        buffer_input(s, input, InputConfig::DEFAULT)
+    }
+
     fn session() -> CellSession {
         CellSession::new(
             SessionId(1),
@@ -366,35 +558,63 @@ mod tests {
     #[test]
     fn inputs_apply_in_order_and_gaps_consume_seqs() {
         let mut s = session();
-        assert_eq!(next_input(&mut s), None, "nothing yet");
+        assert_eq!(next_input(&mut s, InputConfig::DEFAULT), None, "nothing yet");
         for seq in [10, 12, 11] {
-            assert_eq!(buffer_input(&mut s, input(seq)), Buffered::Accepted);
+            assert_eq!(buffer_input_d(&mut s, input(seq)), Buffered::Accepted);
         }
-        assert_eq!(next_input(&mut s).map(|i| i.seq.0), Some(10));
-        assert_eq!(next_input(&mut s).map(|i| i.seq.0), Some(11));
-        assert_eq!(next_input(&mut s).map(|i| i.seq.0), Some(12));
+        assert_eq!(
+            next_input(&mut s, InputConfig::DEFAULT).map(|i| i.seq.0),
+            Some(10)
+        );
+        assert_eq!(
+            next_input(&mut s, InputConfig::DEFAULT).map(|i| i.seq.0),
+            Some(11)
+        );
+        assert_eq!(
+            next_input(&mut s, InputConfig::DEFAULT).map(|i| i.seq.0),
+            Some(12)
+        );
         // Nothing for 13: repeat 12's input under seq 13 (consumed).
-        let synth = next_input(&mut s).unwrap();
+        let synth = next_input(&mut s, InputConfig::DEFAULT).unwrap();
         assert_eq!(synth.seq, InputSeq(13));
         assert_eq!(synth.buttons, input(12).buttons);
         assert_eq!(s.synthesized, 1);
         assert_eq!(s.last_seq, Some(InputSeq(13)));
-        // The real 13 arrives late: dropped.
-        assert_eq!(buffer_input(&mut s, input(13)), Buffered::Stale);
-        assert_eq!(buffer_input(&mut s, input(12)), Buffered::Stale);
-        assert_eq!(buffer_input(&mut s, input(14 + 40)), Buffered::TooFarAhead);
-        assert_eq!(buffer_input(&mut s, input(14)), Buffered::Accepted);
-        assert_eq!(buffer_input(&mut s, input(14)), Buffered::Stale, "duplicate");
-        assert_eq!(next_input(&mut s).map(|i| i.seq.0), Some(14));
+        // The real 13 arrives late: dropped, and counted toward realigning
+        // (once: a resent copy is a duplicate).
+        assert_eq!(buffer_input_d(&mut s, input(13)), Buffered::Late);
+        assert_eq!(buffer_input_d(&mut s, input(13)), Buffered::Stale);
+        assert_eq!((s.late, s.credits), (1, 1));
+        assert_eq!(buffer_input_d(&mut s, input(12)), Buffered::Stale);
+        assert_eq!(buffer_input_d(&mut s, input(14)), Buffered::Accepted);
+        assert_eq!(buffer_input_d(&mut s, input(14)), Buffered::Stale, "duplicate");
+        assert_eq!(
+            next_input(&mut s, InputConfig::DEFAULT).map(|i| i.seq.0),
+            Some(14)
+        );
+        // 15 is missing: a credit pauses consumption for a tick (nothing
+        // applied), then not again before `pause_every` ticks.
+        assert_eq!(next_input(&mut s, InputConfig::DEFAULT), None);
+        assert_eq!((s.pauses, s.credits, s.last_seq), (1, 0, Some(InputSeq(14))));
+        // An input beyond the window: the seqs before it are skipped
+        // unapplied so it leads by `max_lead`.
+        let lead = u32::from(InputConfig::DEFAULT.max_lead);
+        assert_eq!(buffer_input_d(&mut s, input(15 + 40)), Buffered::Skipped);
+        assert_eq!(s.last_seq, Some(InputSeq(55 - lead)));
+        assert_eq!(s.skipped, 55 - lead - 14);
+        assert_eq!(s.inputs.len(), 1);
     }
 
     #[test]
     fn seqs_wrap() {
         let mut s = session();
-        buffer_input(&mut s, input(u32::MAX));
-        assert_eq!(next_input(&mut s).map(|i| i.seq.0), Some(u32::MAX));
-        assert_eq!(buffer_input(&mut s, input(0)), Buffered::Accepted);
-        assert_eq!(next_input(&mut s).map(|i| i.seq.0), Some(0));
+        buffer_input_d(&mut s, input(u32::MAX));
+        assert_eq!(
+            next_input(&mut s, InputConfig::DEFAULT).map(|i| i.seq.0),
+            Some(u32::MAX)
+        );
+        assert_eq!(buffer_input_d(&mut s, input(0)), Buffered::Accepted);
+        assert_eq!(next_input(&mut s, InputConfig::DEFAULT).map(|i| i.seq.0), Some(0));
     }
 
     fn env() -> EnvelopeState {

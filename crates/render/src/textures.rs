@@ -57,7 +57,7 @@ pub struct ProbeTextures {
     pub textures: [wgpu::Texture; 3],
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Grid indices are bounded by the dimensions.
+#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Grid indices are bounded by the dimensions.
 pub(crate) fn dilate(volume: &ProbeVolume, probes: &mut [ShL1]) {
     let Some(valid) = &volume.valid else { return };
     let [nx, ny, nz] = volume.dims.map(i64::from);

@@ -309,7 +309,7 @@ pub fn try_count_allocs<R>(f: impl FnOnce() -> R) -> Result<(R, AllocStats), Har
 /// # Panics
 /// If [`CountingAllocator`] is not installed. This is a test-harness entry
 /// point, and failing the test is the intended behavior.
-#[allow(clippy::panic)]
+#[expect(clippy::panic)]
 pub fn count_allocs<R>(f: impl FnOnce() -> R) -> (R, AllocStats) {
     match try_count_allocs(f) {
         Ok(out) => out,

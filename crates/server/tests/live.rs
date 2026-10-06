@@ -4,7 +4,7 @@
 //! system's durable change is recorded as an outcome in the same tick; and
 //! replay re-derives all of it from the cell's log.
 
-#![allow(clippy::unwrap_used)]
+#![expect(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
@@ -40,7 +40,7 @@ impl Resource for Mint {
     const NAME: &'static str = "test.mint.state";
 }
 
-#[allow(
+#[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     reason = "the rate is a small positive whole number set by the test"

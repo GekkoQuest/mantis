@@ -32,7 +32,7 @@ use mantis_core::time::TickRate;
 
 /// Something a bot learned from the server.
 #[derive(Clone, Copy, PartialEq, Debug)]
-#[allow(clippy::large_enum_variant)] // delivered one at a time to the bot
+#[expect(clippy::large_enum_variant)] // delivered one at a time to the bot
 pub enum BotEvent {
     /// The session was accepted.
     Welcome {
@@ -227,6 +227,19 @@ pub enum Profile {
         /// Distance per jump.
         distance: f32,
     },
+    /// At this heading, runs for `hold` ticks out of every `every` and
+    /// stands for the rest, holding back the inputs of every run and then
+    /// sending them all at once: the adversary of input realignment
+    /// (Predictive). It must gain no distance, and the steps it withheld
+    /// are not what the cell ran, so its predictions are corrected.
+    Withholder {
+        /// The heading.
+        yaw: Angle16,
+        /// Ticks held back.
+        hold: u32,
+        /// Out of this many.
+        every: u32,
+    },
     /// Otherwise standing still, jumps `distance` along +x on its first
     /// claim and again on the first claim after every correction: the
     /// adversary of the correction resync rule (Validated).
@@ -311,6 +324,8 @@ pub struct Bot {
     avatar: Option<EntityId>,
     relapse_due: bool,
     token: Vec<u8>,
+    /// Inputs a [`Profile::Withholder`] is holding back.
+    held: Vec<MoveInput>,
     next_request: u32,
     /// Measurements.
     pub stats: BotStats,
@@ -345,6 +360,7 @@ impl Bot {
             avatar: None,
             relapse_due: true,
             token: b"bot".to_vec(),
+            held: Vec::new(),
             next_request: 0,
             stats: BotStats::default(),
             wire,
@@ -532,6 +548,16 @@ impl Bot {
                 self.yaw = yaw;
                 return;
             }
+            Profile::Withholder { yaw, hold, every } => {
+                let running = self.tick % u64::from(every.max(1)) < u64::from(hold);
+                self.buttons = if running {
+                    MoveButtons::FORWARD
+                } else {
+                    MoveButtons::NONE
+                };
+                self.yaw = yaw;
+                return;
+            }
             _ => {}
         }
         if self.tick.is_multiple_of(45) {
@@ -543,6 +569,25 @@ impl Bot {
                 _ => MoveButtons::FORWARD,
             };
             self.yaw = Angle16(u16::try_from(self.rng.below(65_536)).unwrap_or(0));
+        }
+    }
+
+    /// Sends this tick's input and repeats the previous one, so a single
+    /// lost datagram never costs a step; a [`Profile::Withholder`] holds
+    /// its inputs back instead, then sends them all.
+    fn send_input(&mut self, input: MoveInput, previous: Option<MoveInput>) {
+        if let Profile::Withholder { hold, every, .. } = self.cfg.profile
+            && self.tick % u64::from(every.max(1)) < u64::from(hold)
+        {
+            self.held.push(input);
+            return;
+        }
+        for held in std::mem::take(&mut self.held) {
+            self.send(&Inbound::Move(Move { input: held }));
+        }
+        self.send(&Inbound::Move(Move { input }));
+        if let Some(p) = previous {
+            self.send(&Inbound::Move(Move { input: p }));
         }
     }
 
@@ -581,17 +626,12 @@ impl Bot {
                     &MotionModifiers::NONE,
                     dt,
                 );
-                // Send this input and repeat the previous one, so a single
-                // lost datagram never costs a step.
                 let previous = self.history.back().copied();
                 self.history.push_back(input);
                 if self.history.len() > 240 {
                     self.history.pop_front();
                 }
-                self.send(&Inbound::Move(Move { input }));
-                if let Some(p) = previous {
-                    self.send(&Inbound::Move(Move { input: p }));
-                }
+                self.send_input(input, previous);
                 self.stats.inputs += 1;
             }
             MovementMode::Validated => {

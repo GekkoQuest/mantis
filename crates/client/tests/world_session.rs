@@ -80,9 +80,9 @@ fn agreeing_server_never_corrects_and_motion_is_continuous() -> TestResult {
     let mut checked = 0;
     for (now, pose) in late {
         assert_eq!(pose.source, PoseSource::RemoteInterpolated);
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(clippy::cast_precision_loss)]
         let server_ticks = now as f64 / 1e9 * 30.0 - 5.0;
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(clippy::cast_possible_truncation)]
         let expect_x = (-10.0 + f64::from(NPC_VELOCITY.x) * server_ticks / 30.0) as f32;
         assert!(
             (pose.position.x - expect_x).abs() < 1e-3,

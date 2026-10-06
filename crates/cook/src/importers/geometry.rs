@@ -178,7 +178,6 @@ use std::sync::Arc;
 use crate::importer::Importer;
 
 mod clip;
-mod fields;
 mod graph;
 mod mesh;
 mod meshes;

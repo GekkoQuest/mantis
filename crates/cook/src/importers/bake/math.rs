@@ -146,7 +146,7 @@ fn golden_turns(count: u32) -> Vec<(f64, f64)> {
 /// construction as the renderer's sky projection): direction `i` has height
 /// `1 - (i + 0.5) / count * 2` along +Y and turns by the golden angle around it. Each
 /// direction stands for a solid angle of `4 pi / count`.
-#[allow(clippy::cast_possible_truncation)] // Unit components fit f32.
+#[expect(clippy::cast_possible_truncation)] // Unit components fit f32.
 pub fn sphere_directions(count: u32) -> Vec<V3> {
     let n = f64::from(count.max(1));
     golden_turns(count.max(1))
@@ -163,7 +163,7 @@ pub fn sphere_directions(count: u32) -> Vec<V3> {
 /// `count` directions on the hemisphere around local +Y, distributed by `cos theta` (a
 /// Fibonacci spiral on the unit disk lifted to the hemisphere): the plain average of a
 /// radiance over them estimates irradiance divided by pi.
-#[allow(clippy::cast_possible_truncation)] // Unit components fit f32.
+#[expect(clippy::cast_possible_truncation)] // Unit components fit f32.
 pub fn cosine_directions(count: u32) -> Vec<V3> {
     let n = f64::from(count.max(1));
     golden_turns(count.max(1))

@@ -101,7 +101,7 @@ impl TickRate {
     /// One correctly rounded IEEE division, so every host feeds bit-identical
     /// `dt` into `Motion::step`.
     #[must_use]
-    #[allow(clippy::cast_precision_loss)] // hz <= u32::MAX; the rounding is the defined result
+    #[expect(clippy::cast_precision_loss)] // hz <= u32::MAX; the rounding is the defined result
     pub fn dt_seconds(self) -> f32 {
         1.0 / self.0.get() as f32
     }
@@ -110,7 +110,7 @@ impl TickRate {
     ///
     /// For presentation and interpolation. Exact for every tick below 2^53.
     #[must_use]
-    #[allow(clippy::cast_precision_loss)] // ticks beyond 2^53 are unreachable in practice
+    #[expect(clippy::cast_precision_loss)] // ticks beyond 2^53 are unreachable in practice
     pub fn seconds_at(self, t: Tick) -> f64 {
         t.0 as f64 / f64::from(self.0.get())
     }
@@ -120,7 +120,7 @@ impl TickRate {
     /// Integer arithmetic only, so content timings expressed in milliseconds
     /// convert identically on every host. Saturates at `u64::MAX`.
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)] // guarded by the comparison
+    #[expect(clippy::cast_possible_truncation)] // guarded by the comparison
     pub const fn ticks_from_millis(self, millis: u64) -> u64 {
         let num = (millis as u128) * (self.0.get() as u128);
         let ticks = num.div_ceil(1000);

@@ -1,6 +1,7 @@
 //! The host library every service role is built on (plan 10): roles,
 //! configuration, logging, metrics, health, and typed internal RPC.
 
+pub mod clock;
 pub mod rpc;
 
 use std::collections::BTreeMap;
@@ -139,8 +140,9 @@ pub struct Logger {
     lines: Arc<Mutex<Vec<LogLine>>>,
 }
 
-/// Wall-clock Unix milliseconds: service roles run on the wall clock (cells
-/// never call this; their time is the tick).
+/// Wall-clock Unix milliseconds, for log lines. Roles and links read their
+/// injected [`clock::ServiceClock`] instead (cells never call either; their
+/// time is the tick).
 pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

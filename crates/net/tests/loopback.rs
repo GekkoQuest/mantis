@@ -2,7 +2,7 @@
 //! unreliable sequencing, framing violations, limits, and the zero-allocation
 //! caller side.
 
-#![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
+#![expect(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};

@@ -324,7 +324,7 @@ impl GraphRuntime {
     }
 }
 
-#[allow(clippy::too_many_arguments)] // one evaluation step needs all of it
+#[expect(clippy::too_many_arguments)] // one evaluation step needs all of it
 fn step(
     graph: &CompiledGraph,
     inst: &mut Instance,

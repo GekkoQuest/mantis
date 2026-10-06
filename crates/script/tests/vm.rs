@@ -1,6 +1,6 @@
 //! The script runtime's guarantees, one test each (decision 0001).
 
-#![allow(clippy::unwrap_used)]
+#![expect(clippy::unwrap_used)]
 
 use std::cell::RefCell;
 

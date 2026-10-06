@@ -593,7 +593,7 @@ impl Wire for MoveButtons {
 }
 
 impl FuzzSample for MoveButtons {
-    #[allow(clippy::cast_possible_truncation)] // below(64) fits u16
+    #[expect(clippy::cast_possible_truncation)] // below(64) fits u16
     fn fuzz_sample(rng: &mut Rng) -> Self {
         Self::from_bits(rng.below(u32::from(Self::ALL.bits()) + 1) as u16).unwrap_or(Self::NONE)
     }

@@ -22,6 +22,9 @@ client_mods = ["toy.hud", "toy.helper"] # client modules sessions may run
 [tunables.server]
 tick_rate = 30               # Hz
 instance_release_grace = 30  # s an instance cell stays empty before it is released
+max_rtt = 400                # ms, the worst round trip the package supports (sizes the input window)
+input_lead_max = 200         # ms, the most input lead the cell builds back after latency rises
+input_pause_every = 4        # ticks between pauses taken to realign inputs, at least
 
 # Movement of the one class (core MotionParams; both hosts run it).
 [tunables.motion]
@@ -58,6 +61,8 @@ weight_near = 9              # priority gained per tick in the near tier
 weight_mid = 3               # priority gained per tick in the mid tier
 weight_far = 1               # priority gained per tick in the far tier
 budget = 32                  # remotes per snapshot
+snapshot_own_bases = 0       # 1 on, 0 off: per-remote snapshot baselines (fewer bytes, encode cache misses)
+own_base_max_age = 64        # ticks, the oldest per-remote baseline (at most 64)
 
 # Per-session rate limits (plan 12), enforced by the host before a cell sees
 # anything. A client sends one input per tick at 30 Hz; the limits leave room
@@ -73,3 +78,11 @@ ack_rate = 90                # messages/s, snapshot acknowledgements
 ack_burst = 45               # messages
 bytes_per_second = 32768     # B/s received per session
 kick_after = 600             # refused messages before the session is ended
+
+# The client's own tunables (the server skips this table): how far behind render time
+# remote characters are shown. The delay adapts to measured snapshot jitter and timeline
+# drift between the floor and the ceiling.
+[tunables.client]
+interp_delay_floor = 100     # ms, the delay on a clean link
+interp_delay_ceiling = 400   # ms, the most it may grow to under jitter or a latency step
+interp_jitter_margin = 10    # ms, added on top of the measured need

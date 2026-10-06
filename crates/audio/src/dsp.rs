@@ -16,14 +16,14 @@ pub const GAIN_RAMP_MS: f32 = 5.0;
 pub const MAX_FADE_MS: f32 = 60_000.0;
 
 /// A sample rate or sample count (at most 2^24) as `f32`.
-#[allow(clippy::cast_precision_loss)] // Callers pass rates and counts up to 2^24, exact in f32.
+#[expect(clippy::cast_precision_loss)] // Callers pass rates and counts up to 2^24, exact in f32.
 pub(crate) fn rate_f32(rate: u32) -> f32 {
     rate as f32
 }
 
 /// Samples in `ms` milliseconds at `rate`, at least 1. Non-finite or negative lengths
 /// count as zero (then raised to 1).
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Clamped to 1..=2^24 first.
+#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Clamped to 1..=2^24 first.
 pub(crate) fn samples_for_ms(ms: f32, rate: u32) -> u32 {
     let ms = if ms.is_finite() {
         ms.clamp(0.0, MAX_FADE_MS)
@@ -113,13 +113,13 @@ impl Rng {
     }
 
     /// Uniform in `0..bound` (0 when `bound` is 0).
-    #[allow(clippy::cast_possible_truncation)] // (x * bound) >> 64 < bound <= u32::MAX.
+    #[expect(clippy::cast_possible_truncation)] // (x * bound) >> 64 < bound <= u32::MAX.
     pub(crate) fn below(&mut self, bound: u32) -> u32 {
         ((u128::from(self.next_u64()) * u128::from(bound)) >> 64) as u32
     }
 
     /// Uniform in `[0, 1)` with 24 bits of resolution.
-    #[allow(clippy::cast_precision_loss)] // A 24-bit integer is exact in f32.
+    #[expect(clippy::cast_precision_loss)] // A 24-bit integer is exact in f32.
     pub(crate) fn unit(&mut self) -> f32 {
         (self.next_u64() >> 40) as f32 / 16_777_216.0
     }

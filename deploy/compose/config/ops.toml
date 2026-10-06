@@ -1,0 +1,30 @@
+# Owner: deploy-engine
+# The ops node of the local compose cluster (deploy/compose/compose.yaml). Read strictly
+# by mantisd: an unknown key is refused. Paths are container paths; secrets are files.
+[node]
+role = "ops"
+instance = "ops-1"
+registry = "/etc/mantis/registry.toml"
+deploy_key = "/etc/mantis/deploy.pub"
+cluster_key = "/run/secrets/cluster_key"
+tls_cert = "/run/secrets/tls_cert"
+tls_key = "/run/secrets/tls_key"
+listen_rpc = "0.0.0.0:7506"
+listen_health = "0.0.0.0:7606"
+ready_timeout_s = 300
+drain_grace_ms = 20000
+
+[ops]
+live_key = "/run/secrets/live_key"
+operator_token = "/run/secrets/operator_token"
+operator_name = "operator"
+# The ops network's address only: the dashboard is not reachable from the services or game
+# networks. Non-loopback inside the container, so it is an explicit, reviewed choice; the
+# host publishes it on 127.0.0.1:7480 alone.
+dashboard = "10.79.0.10:7480"
+dashboard_allow_remote = true
+# Only the ops network's gateway (where the published port 127.0.0.1:7480 arrives from)
+# reaches TLS; a connection from any container, game network included, is dropped first.
+dashboard_allowed_peers = ["10.79.0.1/32"]
+dashboard_cert_out = "/var/lib/mantis/out/ops-cert.der"
+game_ports = [7400, 7401]

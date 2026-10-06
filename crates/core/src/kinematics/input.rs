@@ -25,7 +25,7 @@ impl Angle16 {
     /// non-finite input maps to 0. Deterministic: one multiply, one exact
     /// rounding, integer wrap.
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)] // wrapped into u16 range first
+    #[expect(clippy::cast_possible_truncation)] // wrapped into u16 range first
     pub fn from_radians(r: f32) -> Self {
         if !r.is_finite() {
             return Self(0);

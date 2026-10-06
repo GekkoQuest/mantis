@@ -69,9 +69,11 @@ impl WorldSessionConfig {
                 snap_distance: 4.0,
                 remote_capacity: 512,
                 remote_timeout: Duration::from_secs(2),
-                interpolation_delay: presentation.interpolation_delay,
+                max_remote_extrapolation: presentation.max_remote_extrapolation,
+                delay: crate::jitter::DelayConfig::default(),
                 input_buffer: 256,
                 timeline_rise_shift: 6,
+                timeline_adaptive: true,
             },
             snapshot_frames: 8,
             max_catchup: 8,
@@ -139,7 +141,8 @@ pub fn build_world_session<M: MotionStep, O: IntentSink, S: FrameSink>(
     sink: S,
 ) -> WorldSessionBuild<M, O, S> {
     let mut presentation = config.presentation;
-    presentation.interpolation_delay = config.sim.interpolation_delay;
+    presentation.interpolation_delay = config.sim.delay.floor;
+    presentation.max_remote_extrapolation = config.sim.max_remote_extrapolation;
     let (publisher, reader) = render_world_channel(config.sim.remote_capacity, presentation);
     let (snapshots, inbox) = snapshot_channel(config.snapshot_frames, config.sim.remote_capacity);
     let (marker_tx, markers) = marker_channel(config.sim.remote_capacity.saturating_mul(4).max(64));

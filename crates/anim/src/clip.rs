@@ -187,7 +187,7 @@ impl Clip {
 
 /// Whole loops in `distance` seconds of a loop `duration` long, clamped to
 /// [`MAX_WRAPS`].
-#[allow(clippy::cast_possible_truncation)] // Rounded and clamped to +-MAX_WRAPS first.
+#[expect(clippy::cast_possible_truncation)] // Rounded and clamped to +-MAX_WRAPS first.
 fn wraps_between(distance: f32, duration: f32) -> i32 {
     let w = (distance / duration).round();
     if w.is_finite() {

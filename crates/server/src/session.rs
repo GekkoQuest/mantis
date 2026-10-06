@@ -12,8 +12,9 @@ use mantis_core::mem::BoundedVec;
 use crate::components::ReplicationId;
 use crate::intent::CellIntent;
 
-/// Inputs a Predictive session may have buffered ahead of the one applied.
-pub const INPUT_WINDOW: usize = 16;
+/// The most inputs a Predictive session can buffer: the capacity behind
+/// every cell's window ([`crate::movement::InputConfig::window`]).
+pub const INPUT_WINDOW_MAX: usize = 64;
 /// Claims a Validated session may have pending in one tick.
 pub const CLAIM_WINDOW: usize = 8;
 
@@ -79,6 +80,21 @@ pub struct CellSession {
     pub cheats: u32,
     /// Synthesized (repeated) steps, a lost-input diagnostic.
     pub synthesized: u32,
+    /// Predictive: bit `i` set when seq `last_seq - i` was synthesized (a
+    /// real input for it arriving later is late, not a duplicate).
+    pub synth_mask: u64,
+    /// Predictive: realigning pauses owed (one per late input, bounded by
+    /// [`crate::movement::InputConfig::max_lead`]).
+    pub credits: u8,
+    /// Predictive: ticks until the next pause is allowed.
+    pub cooldown: u32,
+    /// Predictive: real inputs that arrived after their seq was synthesized.
+    pub late: u32,
+    /// Predictive: ticks consumption paused to realign (counted, bounded).
+    pub pauses: u32,
+    /// Predictive: seqs skipped unapplied because an input arrived beyond
+    /// the window (the cell's clock slipped, or the client ran ahead).
+    pub skipped: u32,
 }
 
 impl CellSession {
@@ -99,13 +115,19 @@ impl CellSession {
             repl,
             epoch,
             character: 0,
-            inputs: BoundedVec::with_capacity(INPUT_WINDOW),
+            inputs: BoundedVec::with_capacity(INPUT_WINDOW_MAX),
             last_seq: None,
             last_input: MoveInput::default(),
             claims: BoundedVec::with_capacity(CLAIM_WINDOW),
             envelope: EnvelopeState::new(at, now_ms),
             cheats: 0,
             synthesized: 0,
+            synth_mask: 0,
+            credits: 0,
+            cooldown: 0,
+            late: 0,
+            pauses: 0,
+            skipped: 0,
         }
     }
 }
@@ -137,6 +159,12 @@ impl StateHash for CellSession {
         h.write_u64(self.envelope.corrected_ms.cast_unsigned());
         h.write_u32(self.cheats);
         h.write_u32(self.synthesized);
+        h.write_u64(self.synth_mask);
+        h.write_u8(self.credits);
+        h.write_u32(self.cooldown);
+        h.write_u32(self.late);
+        h.write_u32(self.pauses);
+        h.write_u32(self.skipped);
     }
 }
 
@@ -233,7 +261,8 @@ pub fn allowed(session: Option<&CellSession>, intent: &CellIntent) -> Result<(),
             | CellIntent::SetLive { .. }
             | CellIntent::ServiceUpdate { .. }
             | CellIntent::Relocate { .. }
-            | CellIntent::SetModTier { .. },
+            | CellIntent::SetModTier { .. }
+            | CellIntent::ClockSlip { .. },
         )
         | (Some(_), CellIntent::Throttled { .. }) => Ok(()),
         (
@@ -243,7 +272,8 @@ pub fn allowed(session: Option<&CellSession>, intent: &CellIntent) -> Result<(),
             | CellIntent::SetLive { .. }
             | CellIntent::ServiceUpdate { .. }
             | CellIntent::Relocate { .. }
-            | CellIntent::SetModTier { .. },
+            | CellIntent::SetModTier { .. }
+            | CellIntent::ClockSlip { .. },
         ) => Err(Refusal::SystemOnly),
         (None, _) => Err(Refusal::NotJoined),
         (Some(_), CellIntent::Join { .. } | CellIntent::TransferIn(_)) => Err(Refusal::AlreadyJoined),

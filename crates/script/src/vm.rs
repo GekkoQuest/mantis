@@ -206,7 +206,7 @@ fn setup<T>(r: mlua::Result<T>) -> Result<T, ScriptError> {
 
 fn f32_of(x: f64) -> f32 {
     // Script numbers are doubles; the deterministic kernels are f32.
-    #[allow(clippy::cast_possible_truncation)] // documented precision: f32
+    #[expect(clippy::cast_possible_truncation)] // documented precision: f32
     let y = x as f32;
     y
 }
@@ -366,7 +366,7 @@ impl ScriptVm {
                             "math.random: bounds must be whole and in range",
                         ));
                     }
-                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // checked just above
+                    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // checked just above
                     Ok((lo as u32, hi as u32))
                 };
                 Ok(match (m, n) {

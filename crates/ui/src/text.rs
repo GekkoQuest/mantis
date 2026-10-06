@@ -727,7 +727,7 @@ fn run_metrics(fonts: &FontLibrary, font: FontId, size: f32) -> [f32; 3] {
 
 /// Shapes one item, appends its run and glyphs to `out`, and returns the
 /// cleared buffer for reuse.
-#[allow(clippy::cast_precision_loss)] // glyph positions are font units, far below 2^24
+#[expect(clippy::cast_precision_loss)] // glyph positions are font units, far below 2^24
 fn shape_item(
     fonts: &FontLibrary,
     text: &str,

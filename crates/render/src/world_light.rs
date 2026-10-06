@@ -385,7 +385,7 @@ impl WorldLight {
     ///
     /// # Errors
     /// [`WorldLightError::NotResident`].
-    #[allow(clippy::cast_precision_loss)] // Page sizes are far below 2^24.
+    #[expect(clippy::cast_precision_loss)] // Page sizes are far below 2^24.
     pub fn page_rect(
         &self,
         page: LightmapPage,
@@ -535,7 +535,7 @@ impl WorldLight {
     }
 
     /// The frame uniform's `probe_grid` and `probe_atlas` (with `ambient` in w).
-    #[allow(clippy::cast_precision_loss)] // Table and atlas sizes are far below 2^24.
+    #[expect(clippy::cast_precision_loss)] // Table and atlas sizes are far below 2^24.
     pub fn frame_params(&self, ambient: f32) -> ([f32; 4], [f32; 4]) {
         let size = self.sector_size.unwrap_or(1.0);
         let any = if self.resident_sectors() > 0 { 1.0 } else { 0.0 };
@@ -552,7 +552,7 @@ impl WorldLight {
         )
     }
 
-    #[allow(clippy::cast_precision_loss)] // Probe counts and texel offsets are small.
+    #[expect(clippy::cast_precision_loss)] // Probe counts and texel offsets are small.
     fn gpu_sector(&self, s: &ProbeSector) -> GpuProbeSector {
         let v = &s.volume;
         let [ox, oy, oz] = self.brick_origin(s.brick);
@@ -584,7 +584,7 @@ impl WorldLight {
 
     /// Recomputes the page blends for the current time and writes the tables when
     /// anything changed. Allocation-free.
-    #[allow(clippy::cast_precision_loss)] // Layer indices are small.
+    #[expect(clippy::cast_precision_loss)] // Layer indices are small.
     pub fn flush(&mut self, queue: &wgpu::Queue) {
         for (blend, page) in self.page_blends.iter_mut().zip(&self.pages) {
             let Some(page) = page else { continue };

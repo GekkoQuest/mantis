@@ -14,6 +14,6 @@
 
 // Decision 0015: the counting allocator is the one module of this crate that
 // may contain unsafe code. The allow is scoped to exactly that module.
-#[allow(unsafe_code)]
+#[expect(unsafe_code)]
 pub mod alloc;
 pub mod arch;

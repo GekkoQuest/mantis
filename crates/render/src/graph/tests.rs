@@ -496,7 +496,7 @@ fn buffers_alias_best_fit_and_grow() -> TestResult {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)] // One linear frame description reads best as one function.
+#[expect(clippy::too_many_lines)] // One linear frame description reads best as one function.
 fn a_representative_frame_compiles_in_dependency_order() -> TestResult {
     let (w, h) = (1920, 1080);
     let mut graph = GraphBuilder::new();

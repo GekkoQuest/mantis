@@ -76,6 +76,22 @@ method!(/// Social makes guild changes durable.
     WriteGuilds: StoreGuildRows -> Durable, callers [Social]);
 method!(/// Social reads the guild rows back.
     LoadGuilds: ReadGuildRows -> GuildRows, callers [Social]);
+method!(/// A cell host asks which run of the realm is serving.
+    RealmRun: PollRealm -> RealmEpoch, callers [Cell]);
+method!(/// Ops makes a live value durable before publishing it.
+    StoreLiveValue: StoreLive -> Empty, callers [Ops]);
+method!(/// Ops reads the durable live values at start.
+    ReadLiveValues: ReadLive -> LiveValues, callers [Ops]);
+method!(/// Ops opens an audit row before it runs a command.
+    AuditOpen: AuditBegin -> AuditId, callers [Ops]);
+method!(/// Ops completes an audit row.
+    AuditClose: AuditComplete -> Empty, callers [Ops]);
+method!(/// Ops reads the audit trail.
+    AuditTrail: ReadAudit -> AuditRows, callers [Ops]);
+method!(/// Social makes friend changes durable.
+    WriteFriends: StoreFriendRows -> Durable, callers [Social]);
+method!(/// Social reads the friend rows back.
+    LoadFriends: ReadFriendRows -> FriendRows, callers [Social]);
 
 method!(/// Join a matchmaking queue.
     Queue: Enqueue -> Empty, callers [Gateway, Cell]);
@@ -225,6 +241,50 @@ impl m::Validators for Checks {
         }
         Ok(())
     }
+    fn validate_store_friend_rows(&self, msg: &m::StoreFriendRows) -> Result<(), ValidationError> {
+        if msg.seq == 0 {
+            return Err(ValidationError("friend batches number from 1"));
+        }
+        if msg.rows.iter().any(|r| !(1..=4).contains(&r.kind)) {
+            return Err(ValidationError("unknown friend row kind"));
+        }
+        Ok(())
+    }
+    fn validate_poll_realm(&self, _msg: &m::PollRealm) -> Result<(), ValidationError> {
+        Ok(())
+    }
+    fn validate_store_live(&self, msg: &m::StoreLive) -> Result<(), ValidationError> {
+        if msg.name.as_str().is_empty() || msg.kind > 1 || !msg.value.is_finite() {
+            return Err(ValidationError(
+                "a live value has a name, a kind of 0 or 1, and a finite value",
+            ));
+        }
+        Ok(())
+    }
+    fn validate_read_live(&self, _msg: &m::ReadLive) -> Result<(), ValidationError> {
+        Ok(())
+    }
+    fn validate_audit_begin(&self, msg: &m::AuditBegin) -> Result<(), ValidationError> {
+        if msg.actor.as_str().is_empty() || msg.command.as_str().is_empty() {
+            return Err(ValidationError("an audit row names its actor and command"));
+        }
+        Ok(())
+    }
+    fn validate_audit_complete(&self, msg: &m::AuditComplete) -> Result<(), ValidationError> {
+        if !matches!(msg.status.as_str(), "done" | "failed") {
+            return Err(ValidationError("an audit row completes as done or failed"));
+        }
+        Ok(())
+    }
+    fn validate_read_audit(&self, msg: &m::ReadAudit) -> Result<(), ValidationError> {
+        if !(1..=AUDIT_PAGE).contains(&msg.limit) {
+            return Err(ValidationError("audit pages are 1 to 16 rows"));
+        }
+        Ok(())
+    }
+    fn validate_read_friend_rows(&self, _msg: &m::ReadFriendRows) -> Result<(), ValidationError> {
+        Ok(())
+    }
     fn validate_read_guild_rows(&self, _msg: &m::ReadGuildRows) -> Result<(), ValidationError> {
         Ok(())
     }
@@ -248,6 +308,9 @@ impl m::Validators for Checks {
 /// The most entities one inspector page holds.
 pub const MAX_INSPECT_LIMIT: u16 = 100;
 
+/// The most audit rows one `ReadAudit` page holds.
+pub const AUDIT_PAGE: u16 = 16;
+
 /// The router's validator: decodes by id and runs [`Checks`].
 ///
 /// # Errors
@@ -256,6 +319,34 @@ pub fn validate(id: u16, payload: &[u8]) -> Result<(), RpcError> {
     let msg = m::parse_inbound(MessageId(id), payload).map_err(|_| RpcError::Malformed)?;
     msg.validate(&Checks)
         .map_err(|e| RpcError::Refused(e.to_string()))
+}
+
+/// The role that serves method `id`: its handler lives in that role's
+/// router (the cell host serves the inspector, kick, and drain). A process
+/// is given the addresses of exactly the roles it calls; `None` for an
+/// unknown id. A test builds every router and holds this to them.
+#[must_use]
+pub fn server_of(id: u16) -> Option<Role> {
+    fn of<M: Method>(id: u16) -> bool {
+        M::ID == id
+    }
+    macro_rules! serving {
+        ($role:ident: $($m:ident),* $(,)?) => {
+            if $(of::<$m>(id))||* {
+                return Some(Role::$role);
+            }
+        };
+    }
+    serving!(Account: RegisterAccount, LoginAccount, VerifySession, BanAccount, Maintenance);
+    serving!(Realm: RegisterCellHost, Withdraw, ListAccountCharacters, NewCharacter, Select, RedeemToken,
+        RedeemForHost, Transfer, NewInstance, RealmRun);
+    serving!(Social: PublishLine, Presence, Poll, RelayOp, Restored, Projection, NewGuild, EnterGuild);
+    serving!(Persist: Push, Ledger, StoreLiveValue, ReadLiveValues, AuditOpen, AuditClose, AuditTrail, WriteGuilds, LoadGuilds, WriteFriends,
+        LoadFriends);
+    serving!(Matchmaking: Queue, MatchFor);
+    serving!(Ops: Live);
+    serving!(Cell: InspectCell, Kick, Drain, InspectSystemTimes, InspectComponentNames, InspectEntityPage);
+    None
 }
 
 /// Every method with its callers, for the service graph printed at
@@ -292,6 +383,14 @@ pub fn matrix() -> Vec<(&'static str, u16, &'static [Role])> {
         row::<Ledger>(),
         row::<WriteGuilds>(),
         row::<LoadGuilds>(),
+        row::<RealmRun>(),
+        row::<StoreLiveValue>(),
+        row::<ReadLiveValues>(),
+        row::<AuditOpen>(),
+        row::<AuditClose>(),
+        row::<AuditTrail>(),
+        row::<WriteFriends>(),
+        row::<LoadFriends>(),
         row::<Queue>(),
         row::<MatchFor>(),
         row::<Live>(),

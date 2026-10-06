@@ -1,7 +1,7 @@
 //! MSDF quality: inside/outside at texel centers matches the analytic shape,
 //! and sharp corners stay sharp under bilinear upsampling.
 
-#![allow(
+#![expect(
     clippy::indexing_slicing,
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation

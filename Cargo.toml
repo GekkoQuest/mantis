@@ -36,6 +36,7 @@ mlua = { version = "0.12.2", features = ["luau"] }        # Luau binding (decisi
 tokio-postgres = "0.7.18"
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
 tokio-rustls = "0.26.6"
+x509-parser = "0.18.1"                                     # services only: reads the identity URI of an RPC peer certificate (already built for rcgen)
 
 [workspace.lints.rust]
 unsafe_code = "warn"

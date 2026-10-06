@@ -2,7 +2,7 @@
 //! history, the image is identical to frustum-only culling every frame, and an instance
 //! revealed by a vanished occluder is drawn in the same frame (no pop-in).
 
-#![allow(clippy::cast_precision_loss)] // Test placement.
+#![expect(clippy::cast_precision_loss)] // Test placement.
 
 use glam::{Mat4, Vec3};
 use mantis_formats::material::{

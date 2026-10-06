@@ -15,7 +15,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -44,6 +44,53 @@ pub struct DashboardConfig {
     pub game_ports: Vec<u16>,
     /// Operator tokens to operator names.
     pub operators: BTreeMap<String, String>,
+    /// Peers allowed to connect, as `(network, prefix length)`; empty:
+    /// any peer. A peer outside every network is dropped before TLS and
+    /// counted in [`Dashboard::refused_handshakes`]. IPv4-mapped IPv6
+    /// addresses match as IPv4.
+    pub allowed_peers: Vec<(IpAddr, u8)>,
+}
+
+/// An IPv4-mapped IPv6 address as IPv4; any other address unchanged.
+fn canonical(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
+        IpAddr::V4(_) => ip,
+    }
+}
+
+/// `ip` is inside `net`/`prefix` (same family after mapping; a prefix
+/// longer than the family's width never matches).
+fn in_network(ip: IpAddr, net: IpAddr, prefix: u8) -> bool {
+    fn masked(bits: u128, width: u32, prefix: u8) -> Option<u128> {
+        let prefix = u32::from(prefix);
+        if prefix > width {
+            return None;
+        }
+        let keep = if prefix == 0 {
+            0
+        } else {
+            u128::MAX << (width - prefix)
+        };
+        Some(bits & keep & (u128::MAX >> (128 - width)))
+    }
+    match (canonical(ip), canonical(net)) {
+        (IpAddr::V4(a), IpAddr::V4(b)) => masked(u128::from(u32::from(a)), 32, prefix)
+            .is_some_and(|x| Some(x) == masked(u128::from(u32::from(b)), 32, prefix)),
+        (IpAddr::V6(a), IpAddr::V6(b)) => {
+            masked(u128::from(a), 128, prefix).is_some_and(|x| Some(x) == masked(u128::from(b), 128, prefix))
+        }
+        _ => false,
+    }
+}
+
+/// `peer` may connect under `allowed` (empty: any).
+#[must_use]
+pub fn peer_allowed(allowed: &[(IpAddr, u8)], peer: IpAddr) -> bool {
+    allowed.is_empty()
+        || allowed
+            .iter()
+            .any(|(net, prefix)| in_network(peer, *net, *prefix))
 }
 
 impl DashboardConfig {
@@ -55,6 +102,7 @@ impl DashboardConfig {
             allow_remote: false,
             game_ports: Vec::new(),
             operators: BTreeMap::new(),
+            allowed_peers: Vec::new(),
         }
     }
 
@@ -78,6 +126,14 @@ impl DashboardConfig {
         }
         if self.operators.keys().any(|t| t.len() < 16) {
             return Err("operator tokens have at least 16 bytes".to_owned());
+        }
+        for (net, prefix) in &self.allowed_peers {
+            let width = if canonical(*net).is_ipv4() { 32 } else { 128 };
+            if *prefix > width {
+                return Err(format!(
+                    "allowed peer {net}/{prefix}: the prefix is longer than {width} bits"
+                ));
+            }
         }
         Ok(())
     }
@@ -165,8 +221,15 @@ impl Dashboard {
         });
         let (tx, rx) = mpsc::channel(64);
         let acceptor = TlsAcceptor::from(tls);
+        let allowed = config.allowed_peers.clone();
         let accept = tokio::spawn(async move {
             while let Ok((tcp, peer)) = listener.accept().await {
+                if !peer_allowed(&allowed, peer.ip()) {
+                    // Dropped before TLS: not a peer this dashboard serves.
+                    drop(tcp);
+                    refused.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
                 let (acceptor, tx, refused) = (acceptor.clone(), tx.clone(), Arc::clone(&refused));
                 tokio::spawn(async move {
                     match tokio::time::timeout(HANDSHAKE, acceptor.accept(tcp)).await {
@@ -203,7 +266,8 @@ impl Dashboard {
         self.dash.handled.load(Ordering::Relaxed)
     }
 
-    /// Connections dropped before HTTP: failed or timed-out handshakes.
+    /// Connections dropped before HTTP: peers outside `allowed_peers`, and
+    /// failed or timed-out handshakes.
     #[must_use]
     pub fn refused_handshakes(&self) -> u64 {
         self.dash.refused_handshakes.load(Ordering::Relaxed)
@@ -297,11 +361,9 @@ async fn audit(State(dash): State<Arc<Dash>>, headers: HeaderMap) -> Response {
     if enter(&dash, &headers).is_none() {
         return unauthorized();
     }
-    let ops = dash.ops.clone();
-    let rows = match tokio::task::spawn_blocking(move || ops.audit_rows()).await {
-        Ok(Ok(rows)) => rows,
-        Ok(Err(e)) => return error(StatusCode::SERVICE_UNAVAILABLE, &e),
-        Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    let rows = match dash.ops.audit_rows().await {
+        Ok(rows) => rows,
+        Err(e) => return error(StatusCode::SERVICE_UNAVAILABLE, &e),
     };
     let opt = |v: &Option<String>| v.as_deref().map_or_else(|| "null".to_owned(), quote);
     let items: Vec<String> = rows
@@ -328,7 +390,7 @@ async fn live(State(dash): State<Arc<Dash>>, headers: HeaderMap) -> Response {
     if enter(&dash, &headers).is_none() {
         return unauthorized();
     }
-    let changes = dash.ops.live_since(0);
+    let changes = dash.ops.live_since(0, dash.ops.live_epoch());
     let items: Vec<String> = changes
         .changes
         .iter()
@@ -534,11 +596,9 @@ async fn ledger(State(dash): State<Arc<Dash>>, headers: HeaderMap, Path(characte
     {
         return error(StatusCode::SERVICE_UNAVAILABLE, &e.to_string());
     }
-    let ops = dash.ops.clone();
-    let rows = match tokio::task::spawn_blocking(move || ops.ledger_trace(character)).await {
-        Ok(Ok(rows)) => rows,
-        Ok(Err(e)) => return error(StatusCode::SERVICE_UNAVAILABLE, &e),
-        Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    let rows = match dash.ops.ledger_trace(character).await {
+        Ok(rows) => rows,
+        Err(e) => return error(StatusCode::SERVICE_UNAVAILABLE, &e),
     };
     let items: Vec<String> = rows
         .iter()

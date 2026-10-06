@@ -8,7 +8,7 @@
 //! `mantis-modsync`) leaves them green. Each module's own behaviour is
 //! tested in its own crate.
 
-#![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+#![expect(clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::collections::BTreeMap;
 
@@ -150,7 +150,10 @@ fn intents_and_commands_reach_modules_through_the_host() {
     );
     let route = s.zone.route(SessionId(2)).unwrap();
     let mut outcomes = 0;
-    s.zone.cell_mut(route).unwrap().drain_outcomes(|_| outcomes += 1);
+    s.zone
+        .cell_mut(route)
+        .unwrap()
+        .drain_outcomes(|_, _| outcomes += 1);
     assert_eq!(outcomes, commands, "commands went through the log path");
     // Bot 1 speaks the legacy protocol, which carries no request ids.
     assert!(s.bots[1].bot.stats.refused_requests.iter().all(|r| *r == 0));

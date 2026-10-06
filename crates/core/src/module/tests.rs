@@ -398,3 +398,56 @@ fn a_package_lists_the_client_modules_it_permits() {
         assert!(parse_package(&bad).is_err(), "{bad}");
     }
 }
+
+#[test]
+fn optional_contracts_resolve_to_a_fact_and_order_their_provider_first() {
+    use super::resolve::OptionalProvider;
+    let talk =
+        "[module]\nkey = \"std.talk\"\nversion = \"0.1.0\"\noptional = [\"std.guild\", \"std.mail\"]\n";
+    let guild = "[module]\nkey = \"std.guild\"\nversion = \"0.1.0\"\n";
+    let set = vec![found("std", talk), found("std", guild)];
+    let pkg = package("[package]\nname = \"std\"\n");
+    let g = resolve(&pkg, &set, &BTreeMap::new()).unwrap();
+    let order: Vec<&str> = g.modules.iter().map(|m| m.key.as_str()).collect();
+    assert_eq!(order, ["std.guild", "std.talk"], "the provider registers first");
+    let talk_m = g.modules.iter().find(|m| m.key == "std.talk").unwrap();
+    assert_eq!(
+        talk_m.optional,
+        vec![
+            (
+                "std.guild".to_owned(),
+                OptionalProvider::Present("std.guild".to_owned())
+            ),
+            ("std.mail".to_owned(), OptionalProvider::Absent),
+        ]
+    );
+    assert!(talk_m.depends_on.is_empty(), "optional is not a dependency");
+    let text = g.render();
+    assert!(
+        text.contains(
+            "std.talk 0.1.0 [std] enabled, optional std.guild: std.guild, optional std.mail: absent"
+        ),
+        "{text}"
+    );
+    // Disabled, the provider does not stop the module: it is a fact.
+    let off = package("[package]\nname = \"std\"\n[flags]\n\"std.guild.enabled\" = false\n");
+    let g = resolve(&off, &set, &BTreeMap::new()).unwrap();
+    let talk_m = g.modules.iter().find(|m| m.key == "std.talk").unwrap();
+    assert_eq!(
+        talk_m.optional[0].1,
+        OptionalProvider::Disabled("std.guild".to_owned())
+    );
+    assert!(talk_m.optional[0].1.exists() && !talk_m.optional[1].1.exists());
+    // Malformed: its own contract, twice, or both required and optional.
+    for bad in [
+        "[module]\nkey = \"a.b\"\nversion = \"0.1.0\"\noptional = [\"a.b\"]\n",
+        "[module]\nkey = \"a.b\"\nversion = \"0.1.0\"\noptional = [\"c.d\", \"c.d\"]\n",
+        "[module]\nkey = \"a.b\"\nversion = \"0.1.0\"\noptional = [\"c.d\"]\n[dependencies]\n\"c.d\" = \"0.1\"\n",
+        "[module]\nkey = \"a.b\"\nversion = \"0.1.0\"\noptional = [\"C\"]\n",
+    ] {
+        assert!(
+            matches!(parse_manifest(bad), Err(ManifestError::Invalid { .. })),
+            "{bad}"
+        );
+    }
+}

@@ -18,7 +18,7 @@ pub enum HeadlessKind {
 
 /// Optional features the renderer uses when present and works around when absent.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-#[allow(clippy::struct_excessive_bools)] // Independent device features, not a state machine.
+#[expect(clippy::struct_excessive_bools)] // Independent device features, not a state machine.
 pub struct Capabilities {
     /// Arrays of sampled textures indexed non-uniformly in shaders (bindless).
     pub bindless_textures: bool,

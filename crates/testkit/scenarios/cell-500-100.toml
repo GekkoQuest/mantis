@@ -9,6 +9,8 @@ layout = "4 m grid, 25 columns by 20 rows; three in four avatars run in slow cir
 clients_ack = "every snapshot, on the tick it is sent (a clean link)"
 workers = "min(available threads - 1, 4) for timing; 3 for the allocation row"
 interest_budget = 32   # remotes per snapshot, from packages/toy/package.toml
+snapshot_own_bases = 0  # per-remote baselines off, the shipped default; with them on, bytes are a MANTIS-METRIC (budget_alloc.rs), not a row
+encode_window = "least-loaded of three consecutive 900-tick windows in one run (tick p99 is over all three)"
 
 [rows]
 cell_tick_p99_ms = { target = 4.0, measured = 0.63, test = "budget_timing.rs", profile = "release" }

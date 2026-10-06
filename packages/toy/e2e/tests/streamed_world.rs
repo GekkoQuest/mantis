@@ -13,7 +13,7 @@
 //! pages and bricks) is asserted on every backend; pixels only on a real adapter (on the
 //! no-op backend the pixel path is a counted skip).
 
-#![allow(clippy::cast_precision_loss, clippy::too_many_lines)] // Test camera paths.
+#![expect(clippy::cast_precision_loss, clippy::too_many_lines)] // Test camera paths.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

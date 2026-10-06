@@ -216,7 +216,7 @@ impl<const N: usize> Wire for WireString<N> {
 }
 
 impl<const N: usize> FuzzSample for WireString<N> {
-    #[allow(clippy::cast_possible_truncation)] // below(26) fits u8
+    #[expect(clippy::cast_possible_truncation)] // below(26) fits u8
     fn fuzz_sample(rng: &mut Rng) -> Self {
         let cap = u32::try_from(N).unwrap_or(u32::MAX);
         let n = rng.below(cap.min(12) + 1);

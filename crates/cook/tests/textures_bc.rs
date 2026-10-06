@@ -2,7 +2,7 @@
 //! of hand-built spec blocks, round-trip error bounds, mode and anchor rules on random
 //! blocks, and determinism.
 
-#![allow(clippy::indexing_slicing, clippy::cast_possible_truncation)]
+#![expect(clippy::indexing_slicing, clippy::cast_possible_truncation)]
 
 use mantis_cook::importers::textures::encode::{decode_image, encode_image};
 use mantis_cook::importers::textures::{bc1, bc4, bc5, bc7};

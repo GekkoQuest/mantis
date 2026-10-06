@@ -46,7 +46,7 @@ mod vec3;
 
 pub use vec3::Vec3;
 
-#[allow(clippy::cast_possible_truncation)]
+#[expect(clippy::cast_possible_truncation)]
 fn to_f32(v: f64) -> f32 {
     v as f32
 }
@@ -72,7 +72,7 @@ pub fn sqrt(x: f32) -> f32 {
     canonicalize(x.sqrt())
 }
 
-#[allow(clippy::many_single_char_names)] // mathematical notation
+#[expect(clippy::many_single_char_names)] // mathematical notation
 fn sin_cos_reduced(x: f32) -> (f32, f32) {
     let (q, r) = reduce::rem_pio2(x);
     let s = kernels::sin_kernel(r);
@@ -123,7 +123,7 @@ pub fn sin_cos(x: f32) -> (f32, f32) {
 
 /// Tangent. `tan(±0) = ±0`; `tan(±inf)` and `tan(NaN)` are NaN.
 #[must_use]
-#[allow(clippy::many_single_char_names)] // mathematical notation
+#[expect(clippy::many_single_char_names)] // mathematical notation
 pub fn tan(x: f32) -> f32 {
     if !x.is_finite() {
         return CANONICAL_NAN;
@@ -242,7 +242,7 @@ enum Parity {
     Odd,
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn parity(y: f32) -> Parity {
     let a = y.abs();
     if a >= 16_777_216.0 {

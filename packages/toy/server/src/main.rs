@@ -5,10 +5,13 @@
 //!                    [--cooked DIR] [--key FILE] [--snapshots DIR]
 //! toy-server cluster (serve's options) [--ops ADDR] [--ops-token-file FILE]
 //!                    [--ops-cert-out FILE] [--postgres CONN] [--verify-tokens]
+//!                    [--login-out FILE]
 //! toy-server soak   --out DIR [--ticks N] [--bots N] [--seed N]
 //! toy-server replay LOG...
+//! toy-server node   <role> --config FILE   (a deployed node: cell-host, or any service role)
 //! toy-server bots   [--quic ADDR --cert FILE | --tcp ADDR] [--profile P] [--count N]
 //!                   [--seconds N] [--seed N] [--cooked DIR] [--key FILE]
+//!                   [--login FILE [--tls-ca FILE --tls-cert FILE --tls-key FILE]]
 //! ```
 //!
 //! - `serve` listens for native clients over QUIC and legacy clients over
@@ -24,7 +27,8 @@
 //!   unless `--postgres` (or `MANTIS_POSTGRES`) names a database. The
 //!   operator token is written to `--ops-token-file`. With
 //!   `--verify-tokens`, game handshakes present realm entry tokens, verified
-//!   in the background (async admission).
+//!   in the background (async admission). `--login-out` writes where bots
+//!   log in (the account and realm roles and the cluster key).
 //! - `soak` runs the zone in-process against honest bots on both adapters
 //!   over a simulated 100 ms RTT, 2% loss network, writing each cell's log
 //!   and a per-tick state-hash trace (`hashes.txt`) to `--out`.
@@ -34,7 +38,13 @@
 //!   bots over QUIC (pinning the certificate `serve --cert-out` wrote) or
 //!   legacy bots over TCP. Profiles: `honest`, `idle`, `speedhack` (1.5x,
 //!   legacy only; the server corrects it). Prints what the bots measured
-//!   every 10 seconds and at the end.
+//!   every 10 seconds and at the end. With `--login FILE` (from
+//!   `cluster --login-out`), each bot logs in through the account and realm
+//!   roles as the gateway would (registering `bot-<seed>-<n>` on first use),
+//!   joins the cell the realm placed it in, and presents its entry token,
+//!   so the bots can load a cluster running `--verify-tokens`. Against a
+//!   cluster running mutual TLS, `--tls-ca`, `--tls-cert` and `--tls-key`
+//!   (PEM) give the bots a gateway identity.
 
 #![forbid(unsafe_code)]
 
@@ -44,8 +54,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use mantis_core::content::ContentHash;
-use mantis_core::log::{BuildId, LogHeader, LogReader, LogWriter};
+use mantis_core::log::{LogHeader, LogReader, LogWriter};
 use mantis_core::replay::replay;
 use mantis_core::time::Tick;
 use mantis_net::NetRuntime;
@@ -65,12 +74,7 @@ use toy_server::sim::{Side, Sim};
 use toy_server::tunables::Tunables;
 use toy_server::world;
 
-/// The build identity written into logs: the package and its version, so
-/// the same source built for any architecture replays the same logs.
-fn build_id() -> BuildId {
-    let id = ContentHash::of(concat!("toy-server ", env!("CARGO_PKG_VERSION")).as_bytes());
-    BuildId(*id.as_bytes())
-}
+use toy_server::build_id;
 
 struct Args(Vec<String>);
 
@@ -116,7 +120,9 @@ fn main() -> ExitCode {
         "soak" => soak(&args),
         "replay" => replay_logs(&args),
         "bots" => bots(&args),
-        _ => Err("usage: toy-server serve|cluster|soak|replay|bots (see the crate docs)".to_owned()),
+        // A deployed node: the cell host, or any service role.
+        "node" => return mantis_deploy::cli::main(rest.to_vec(), Some(&toy_server::node::ToyCells)),
+        _ => Err("usage: toy-server serve|cluster|soak|replay|bots|node (see the crate docs)".to_owned()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -171,6 +177,15 @@ fn start_cluster(args: &Args, game_ports: Vec<u16>) -> Result<LocalCluster, Stri
         "ops: dashboard operator token written to {}",
         token_file.display()
     );
+    if let Some(path) = args.value("--login-out") {
+        let targets = toy_server::login::LoginTargets {
+            account: cluster.addr(Role::Account).ok_or("no account role")?,
+            realm: cluster.addr(Role::Realm).ok_or("no realm role")?,
+            key: cluster.key.clone(),
+        };
+        std::fs::write(path, targets.render()).map_err(|e| format!("{path}: {e}"))?;
+        println!("bots: log in with toy-server bots --login {path}");
+    }
     Ok(cluster)
 }
 
@@ -196,6 +211,7 @@ fn link_cells(cluster: &LocalCluster, game: SocketAddr) -> Result<CellLink, Stri
             // One instance cell, after the world cells.
             instances: vec![(world::regions().len() as u64 + 1, game.to_string())],
             inspector: "127.0.0.1:0".parse().map_err(|_| "inspector address")?,
+            tls: None,
         },
     )?;
     if let Some(inspector) = link.inspector() {
@@ -279,7 +295,7 @@ fn serve(args: &Args, with_cluster: bool) -> Result<(), String> {
             None => {
                 for i in 0..zone.cells().len() {
                     if let Some(cell) = zone.cell_mut(i) {
-                        cell.drain_outcomes(|_| {});
+                        cell.drain_outcomes(|_, _| {});
                     }
                 }
             }
@@ -297,14 +313,7 @@ fn serve(args: &Args, with_cluster: bool) -> Result<(), String> {
                 host.stats
             );
         }
-        next += period;
-        let now = Instant::now();
-        if next > now {
-            std::thread::sleep(next - now);
-        } else {
-            // Overran: do not try to catch up in a burst.
-            next = now;
-        }
+        toy_server::cluster::pace(&mut next, period, &mut host, &mut zone);
         if ticks.is_multiple_of(SNAPSHOT_EVERY) {
             write_snapshots(args, &zone, &t)?;
         }
@@ -318,19 +327,9 @@ const SNAPSHOT_EVERY: u64 = 150;
 
 /// Writes `cell-<id>.snapshot` for every cell into `--snapshots DIR`.
 fn write_snapshots(args: &Args, zone: &mantis_server::zone::Zone, t: &Tunables) -> Result<(), String> {
-    let Some(dir) = args.value("--snapshots") else {
-        return Ok(());
-    };
-    std::fs::create_dir_all(dir).map_err(|e| format!("{dir}: {e}"))?;
-    for cell in zone.cells() {
-        let bytes = cell.snapshot(build_id(), t.content).map_err(|e| e.to_string())?;
-        let path = Path::new(dir).join(format!("cell-{}.snapshot", cell.id().0));
-        // Written beside, then renamed: a crash never leaves half a snapshot.
-        let partial = path.with_extension("snapshot.partial");
-        std::fs::write(&partial, &bytes).map_err(|e| format!("{}: {e}", partial.display()))?;
-        std::fs::rename(&partial, &path).map_err(|e| format!("{}: {e}", path.display()))?;
-    }
-    Ok(())
+    args.value("--snapshots").map_or(Ok(()), |dir| {
+        toy_server::recovery::write_snapshots(Path::new(dir), zone, t)
+    })
 }
 
 fn soak(args: &Args) -> Result<(), String> {
@@ -439,6 +438,42 @@ fn replay_one(t: &Tunables, path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The gateway login flow `bots --login FILE` runs (with a gateway TLS
+/// identity from `--tls-ca`, `--tls-cert`, `--tls-key`), or `None`.
+fn gateway_login(
+    args: &Args,
+) -> Result<Option<(tokio::runtime::Runtime, toy_server::login::Gateway)>, String> {
+    let Some(path) = args.value("--login") else {
+        return Ok(None);
+    };
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+    let targets = toy_server::login::LoginTargets::parse(&text).map_err(|e| format!("{path}: {e}"))?;
+    let read = |flag: &str, file: &str| std::fs::read(file).map_err(|e| format!("{flag} {file}: {e}"));
+    let tls = match (
+        args.value("--tls-ca"),
+        args.value("--tls-cert"),
+        args.value("--tls-key"),
+    ) {
+        (Some(ca), Some(cert), Some(key)) => Some(std::sync::Arc::new(
+            mantis_services::tls::TlsIdentity::from_pem(
+                &read("--tls-ca", ca)?,
+                &read("--tls-cert", cert)?,
+                &read("--tls-key", key)?,
+            )
+            .map_err(|e| e.to_string())?,
+        )),
+        (None, None, None) => None,
+        _ => return Err("--tls-ca, --tls-cert and --tls-key go together".to_owned()),
+    };
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    let gateway = toy_server::login::Gateway::new(&targets, tls.as_ref())?;
+    Ok(Some((runtime, gateway)))
+}
+
 /// Headless bots against a running server (`bots`).
 fn bots(args: &Args) -> Result<(), String> {
     let t = cooked_tunables(args)?;
@@ -470,8 +505,24 @@ fn bots(args: &Args) -> Result<(), String> {
         .unwrap_or("127.0.0.1:7400")
         .parse()
         .map_err(|_| "--quic: not an address")?;
+    let login = gateway_login(args)?;
     let mut bots = Vec::new();
+    let mut logged_in = 0usize;
     for n in 0..count {
+        let entry = match &login {
+            Some((runtime, gateway)) => {
+                let name = format!("bot-{seed}-{n}");
+                let password = format!("bot password {seed}");
+                logged_in += 1;
+                Some(runtime.block_on(gateway.enter(&name, &password))?)
+            }
+            None => None,
+        };
+        // A logged-in native bot joins the cell the realm placed it in.
+        let quic = entry
+            .as_ref()
+            .and_then(|e| e.address.parse::<SocketAddr>().ok())
+            .unwrap_or(quic);
         let (wire, transport): (
             Box<dyn mantis_server::bots::BotWire>,
             Box<dyn mantis_adapter_contract::Transport>,
@@ -496,18 +547,33 @@ fn bots(args: &Args) -> Result<(), String> {
             mantis_core::math::Vec3::ZERO,
         )
         .map_err(str::to_owned)?;
+        if let Some(e) = &entry {
+            bot = bot.with_token(&e.token);
+        }
         bot.start();
         bots.push(bot);
     }
     println!(
-        "toy-server bots: {count} {profile:?} bot(s) to {} for {seconds} s",
-        legacy.map_or_else(|| format!("{quic} (QUIC)"), |a| format!("{a} (TCP)"))
+        "toy-server bots: {count} {profile:?} bot(s) to {} for {seconds} s{}",
+        legacy.map_or_else(|| format!("{quic} (QUIC)"), |a| format!("{a} (TCP)")),
+        if login.is_some() {
+            format!(", {logged_in} logged in through the account and realm roles")
+        } else {
+            String::new()
+        }
     );
-    let hz = u64::from(t.tick_rate.hz());
-    let period = Duration::from_secs(1) / t.tick_rate.hz();
+    drive_bots(&mut bots, t.tick_rate.hz(), seconds);
+    Ok(())
+}
+
+/// Steps `bots` at `hz` on the wall clock for `seconds`, printing what they
+/// measured every 10 seconds and at the end.
+fn drive_bots(bots: &mut [mantis_server::bots::Bot], tick_hz: u32, seconds: u64) {
+    let hz = u64::from(tick_hz);
+    let period = Duration::from_secs(1) / tick_hz.max(1);
     let mut next = Instant::now();
     for tick in 1..=seconds.saturating_mul(hz) {
-        for b in &mut bots {
+        for b in bots.iter_mut() {
             b.step();
         }
         if tick.is_multiple_of(hz * 10) || tick == seconds.saturating_mul(hz) {
@@ -528,5 +594,4 @@ fn bots(args: &Args) -> Result<(), String> {
             next = now;
         }
     }
-    Ok(())
 }

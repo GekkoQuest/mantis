@@ -4,7 +4,7 @@
 //! Every answer from the social role arrives the tick after the request,
 //! as a logged service update.
 
-#![allow(clippy::unwrap_used, clippy::cast_precision_loss)]
+#![expect(clippy::unwrap_used, clippy::cast_precision_loss)]
 
 use std::sync::Arc;
 

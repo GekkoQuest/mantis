@@ -120,7 +120,7 @@ fn segment(a: &Transform, b: &Transform) -> RootDelta {
     }
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Clamped to 1..=MAX_SUBSTEPS first.
+#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Clamped to 1..=MAX_SUBSTEPS first.
 fn substeps(seconds: f32, rate: f32) -> u16 {
     let n = (seconds.abs() * rate).ceil();
     if n.is_finite() {

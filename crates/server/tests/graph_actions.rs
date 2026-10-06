@@ -5,7 +5,7 @@
 //! action fails closed; it all replays from the cell's log. Registration is
 //! refused when the manifest and the registrations disagree.
 
-#![allow(clippy::unwrap_used)]
+#![expect(clippy::unwrap_used)]
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

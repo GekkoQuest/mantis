@@ -8,9 +8,9 @@ use mantis_formats::anim_clip::ClipAsset;
 use mantis_formats::bundle::{AssetKind, Domain};
 use mantis_formats::mesh::MeshAsset;
 
-use super::fields::{Doc, has_suffix, output_name};
 use super::skeleton::resolve_skeleton;
 use crate::importer::{CookError, Cooked, ImportContext, Importer, Source};
+use crate::source::{Doc, has_suffix, output_name};
 
 pub use mantis_formats::vat::{FLAG_LOOPING, MAGIC, MAX_TEXELS, VERSION, VatAsset};
 
@@ -92,7 +92,7 @@ impl Importer for VatImporter {
     }
 
     fn import(&self, source: &Source<'_>, ctx: &ImportContext<'_>) -> Result<Vec<Cooked>, CookError> {
-        let doc = Doc::parse(source)?;
+        let doc = Doc::from_source(source)?;
         doc.only_tables(&[], &[])?;
         let root = doc.root();
         root.only(&["skeleton", "clip", "mesh", "fps"])?;
@@ -100,21 +100,21 @@ impl Importer for VatImporter {
         let skeleton_line = root.line_of("skeleton");
         let skeleton = Skeleton::new(&skeleton)
             .map_err(|e| root.err(skeleton_line, &format!("the skeleton does not bind: {e}")))?;
-        let clip_path = root.str("clip")?;
+        let clip_path = root.str("clip")?.0;
         let clip_line = root.line_of("clip");
         let (_, clip_bytes) = ctx.resolve_bytes(clip_path, AssetKind::AnimClip, source.path, clip_line)?;
         let clip = ClipAsset::parse(clip_bytes)
             .map_err(AnimError::from)
             .and_then(|c| Clip::new(&c))
             .map_err(|e| root.err(clip_line, &format!("`{clip_path}`: {e}")))?;
-        let mesh_path = root.str("mesh")?;
+        let mesh_path = root.str("mesh")?.0;
         let mesh_line = root.line_of("mesh");
         let (_, mesh_bytes) = ctx.resolve_bytes(mesh_path, AssetKind::Mesh, source.path, mesh_line)?;
         let mesh =
             MeshAsset::parse(mesh_bytes).map_err(|e| root.err(mesh_line, &format!("`{mesh_path}`: {e}")))?;
         let input = skinned_input(&mesh)
             .map_err(|_| root.err(mesh_line, &format!("`{mesh_path}` is not a skinned mesh")))?;
-        let fps = root.f32("fps")?;
+        let fps = root.f32("fps")?.0;
         let fps_line = root.line_of("fps");
         let vat = bake_vat(&skeleton, &clip, &input.mesh(), fps).map_err(|e| match e {
             AnimError::BoneCountMismatch { expected, actual } => root.err(

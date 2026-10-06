@@ -87,7 +87,7 @@ impl SceneBuffers {
     pub fn upload(&self, queue: &wgpu::Queue, prep: &FramePrep, frustum: &Frustum) -> u32 {
         let n = (prep.instances.len() as u64).min(self.instance_capacity);
         let b = (prep.batches.len() as u64).min(self.batch_capacity);
-        #[allow(clippy::cast_possible_truncation)] // Bounded by capacities sized from usize.
+        #[expect(clippy::cast_possible_truncation)] // Bounded by capacities sized from usize.
         let (n_us, b_us) = (n as usize, b as usize);
         if let Some(inst) = prep.instances.get(..n_us) {
             queue.write_buffer(&self.instances, 0, bytemuck::cast_slice(inst));

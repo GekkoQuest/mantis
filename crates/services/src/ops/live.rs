@@ -1,7 +1,10 @@
 //! Signed live changes: flags and tunables Ops changes while cells run.
 //!
 //! Ops signs every change with Ed25519 (ring) over a domain-separated
-//! encoding of its sequence number, name, kind, and value. A cell host
+//! encoding of its run (epoch), sequence number, name, kind, and value.
+//! Every value is durable in the persistence writer before it is signed, so
+//! a restarted Ops (a new, later epoch) publishes every current value again
+//! from sequence 1; a feed follows only runs newer than the one it follows. A cell host
 //! polls the changes after the last one it applied, verifies each with the
 //! cluster's live-data public key through a [`LiveFeed`], and only then
 //! queues it into its cell, which applies it at the next tick boundary as
@@ -16,7 +19,7 @@ use mantis_core::wire::{BoundedArray, WireString};
 use crate::generated::services as m;
 
 /// Domain separation for live-change signatures.
-const DOMAIN: &[u8] = b"mantis.live.v1\0";
+const DOMAIN: &[u8] = b"mantis.live.v2\0";
 
 /// A live change kind: a flag (a module key or `<module key>.<flag>`).
 pub const FLAG: u8 = 0;
@@ -25,9 +28,10 @@ pub const TUNABLE: u8 = 1;
 
 /// The bytes a live change's signature covers.
 #[must_use]
-pub fn signed_bytes(seq: u64, name: &str, kind: u8, value: f32) -> Vec<u8> {
-    let mut out = Vec::with_capacity(DOMAIN.len() + 16 + name.len());
+pub fn signed_bytes(epoch: u64, seq: u64, name: &str, kind: u8, value: f32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(DOMAIN.len() + 24 + name.len());
     out.extend_from_slice(DOMAIN);
+    out.extend_from_slice(&epoch.to_le_bytes());
     out.extend_from_slice(&seq.to_le_bytes());
     out.push(kind);
     out.extend_from_slice(&value.to_bits().to_le_bytes());
@@ -73,13 +77,21 @@ impl LiveSigner {
     ///
     /// # Errors
     /// The name is longer than 96 bytes, or the value is not finite.
-    pub fn sign(&self, seq: u64, name: &str, kind: u8, value: f32) -> Result<m::LiveChange, String> {
+    pub fn sign(
+        &self,
+        epoch: u64,
+        seq: u64,
+        name: &str,
+        kind: u8,
+        value: f32,
+    ) -> Result<m::LiveChange, String> {
         if !value.is_finite() {
             return Err("live values are finite".to_owned());
         }
         let wire_name = WireString::new(name).ok_or("live names are at most 96 bytes")?;
-        let sig = self.pair.sign(&signed_bytes(seq, name, kind, value));
+        let sig = self.pair.sign(&signed_bytes(epoch, seq, name, kind, value));
         Ok(m::LiveChange {
+            epoch,
             seq,
             name: wire_name,
             kind,
@@ -93,7 +105,13 @@ impl LiveSigner {
 #[must_use]
 pub fn verify(public_key: &[u8], change: &m::LiveChange) -> bool {
     let sig: Vec<u8> = change.signature.iter().copied().collect();
-    let bytes = signed_bytes(change.seq, change.name.as_str(), change.kind, change.value);
+    let bytes = signed_bytes(
+        change.epoch,
+        change.seq,
+        change.name.as_str(),
+        change.kind,
+        change.value,
+    );
     UnparsedPublicKey::new(&ED25519, public_key)
         .verify(&bytes, &sig)
         .is_ok()
@@ -145,6 +163,7 @@ pub struct Verified {
 #[derive(Clone, Debug)]
 pub struct LiveFeed {
     public_key: Vec<u8>,
+    epoch: u64,
     applied: u64,
 }
 
@@ -154,14 +173,22 @@ impl LiveFeed {
     pub fn new(public_key: Vec<u8>) -> Self {
         Self {
             public_key,
+            epoch: 0,
             applied: 0,
         }
     }
 
-    /// The last sequence number applied (the next poll's `since`).
+    /// The last sequence number applied (the next poll's `since`), in run
+    /// [`LiveFeed::epoch`].
     #[must_use]
     pub fn since(&self) -> u64 {
         self.applied
+    }
+
+    /// The Ops run the feed follows (0 before any change).
+    #[must_use]
+    pub fn epoch(&self) -> u64 {
+        self.epoch
     }
 
     /// Verifies a poll's changes, in order. Changes already applied are
@@ -172,9 +199,27 @@ impl LiveFeed {
     /// still returned through `out` and marked applied.
     pub fn accept(&mut self, changes: &m::LiveChanges, out: &mut Vec<Verified>) -> Result<(), LiveRefused> {
         for c in changes.changes.iter() {
-            if c.seq <= self.applied {
+            // An older run's change is stale; a newer run starts over (its
+            // first changes are every current value again). A run switch
+            // takes effect only once a change of it verifies.
+            if c.epoch < self.epoch {
                 continue;
             }
+            let applied = if c.epoch == self.epoch { self.applied } else { 0 };
+            if c.seq <= applied {
+                continue;
+            }
+            if c.seq != applied + 1 {
+                return Err(LiveRefused::Gap {
+                    expected: applied + 1,
+                    got: c.seq,
+                });
+            }
+            if !verify(&self.public_key, c) {
+                return Err(LiveRefused::BadSignature { seq: c.seq });
+            }
+            self.epoch = c.epoch;
+            self.applied = applied;
             if c.seq != self.applied + 1 {
                 return Err(LiveRefused::Gap {
                     expected: self.applied + 1,

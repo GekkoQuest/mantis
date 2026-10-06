@@ -2,7 +2,7 @@
 //! the visible set the CPU computes, per batch, for every instance not within a float
 //! margin of a frustum plane.
 
-#![allow(clippy::cast_precision_loss)] // Test data generation.
+#![expect(clippy::cast_precision_loss)] // Test data generation.
 
 use glam::{Mat4, Vec3};
 use mantis_render::culling::{CULL_WGSL, GpuCuller, SceneBuffers};

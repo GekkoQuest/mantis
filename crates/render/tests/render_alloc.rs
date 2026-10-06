@@ -5,7 +5,7 @@
 //! not gated, so a wgpu upgrade that changes its allocation behavior shows up as a moved
 //! number (`MANTIS-METRIC` line).
 
-#![allow(clippy::cast_precision_loss)] // Test scene layout.
+#![expect(clippy::cast_precision_loss)] // Test scene layout.
 
 use glam::{Mat4, Vec3};
 use mantis_formats::material::reference_materials;

@@ -68,6 +68,9 @@ pub struct Tunables {
     pub tick_rate: TickRate,
     /// Movement of the class.
     pub motion: MotionParams,
+    /// How remote entities' interpolation delay adapts (`[tunables.client]`; the engine
+    /// defaults when the table is absent).
+    pub delay: mantis_client::jitter::DelayConfig,
 }
 
 /// A manifest the client cannot use.
@@ -103,9 +106,48 @@ impl core::fmt::Display for PackageError {
 impl std::error::Error for PackageError {}
 
 /// A range-checked integral rate as `u32`.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Checked: integral, 1 to 65535.
+#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Checked: integral, 1 to 65535.
 fn whole_hz(hz: f64) -> u32 {
     hz as u32
+}
+
+/// `[tunables.client]`: the interpolation delay's floor, ceiling, and margin, in ms.
+const CLIENT_KEYS: [&str; 3] = [
+    "interp_delay_floor",
+    "interp_delay_ceiling",
+    "interp_jitter_margin",
+];
+
+/// Milliseconds as a duration (checked finite and non-negative).
+#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Checked: finite, 0 to 10^7 ms.
+fn millis(ms: f64) -> std::time::Duration {
+    std::time::Duration::from_micros((ms * 1000.0) as u64)
+}
+
+/// The delay policy from `[tunables.client]` (all three keys, or none for the defaults).
+fn delay(client: [Option<f64>; 3]) -> Result<mantis_client::jitter::DelayConfig, PackageError> {
+    let [floor, ceiling, margin] = client;
+    let (Some(floor), Some(ceiling), Some(margin)) = (floor, ceiling, margin) else {
+        return match CLIENT_KEYS.iter().zip(client).find(|(_, v)| v.is_none()) {
+            Some((key, _)) if client.iter().any(Option::is_some) => Err(PackageError::Missing(key)),
+            _ => Ok(mantis_client::jitter::DelayConfig::default()),
+        };
+    };
+    let ok = |v: f64| v.is_finite() && (0.0..=10_000_000.0).contains(&v);
+    if !ok(floor) || floor <= 0.0 {
+        return Err(PackageError::BadValue("interp_delay_floor".to_owned()));
+    }
+    if !ok(ceiling) || ceiling < floor {
+        return Err(PackageError::BadValue("interp_delay_ceiling".to_owned()));
+    }
+    if !ok(margin) {
+        return Err(PackageError::BadValue("interp_jitter_margin".to_owned()));
+    }
+    Ok(mantis_client::jitter::DelayConfig::adaptive(
+        millis(floor),
+        millis(ceiling),
+        millis(margin),
+    ))
 }
 
 const MOTION_KEYS: [&str; 11] = [
@@ -131,6 +173,7 @@ impl Tunables {
         let mut table = "";
         let mut tick_rate: Option<f64> = None;
         let mut motion: [Option<f64>; 11] = [None; 11];
+        let mut client: [Option<f64>; 3] = [None; 3];
         for (index, raw) in manifest.lines().enumerate() {
             let line = raw.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -140,7 +183,7 @@ impl Tunables {
                 table = name.trim();
                 continue;
             }
-            if table != "tunables.server" && table != "tunables.motion" {
+            if table != "tunables.server" && table != "tunables.motion" && table != "tunables.client" {
                 continue;
             }
             let (assignment, unit) = line.split_once('#').ok_or_else(|| {
@@ -165,6 +208,15 @@ impl Tunables {
             let slot = match (table, key) {
                 ("tunables.server", "tick_rate") => &mut tick_rate,
                 ("tunables.server", _) => continue, // other server tunables are not the client's
+                ("tunables.client", _) => {
+                    let i = CLIENT_KEYS
+                        .iter()
+                        .position(|k| *k == key)
+                        .ok_or_else(|| PackageError::Unknown(key.to_owned()))?;
+                    client
+                        .get_mut(i)
+                        .ok_or_else(|| PackageError::Unknown(key.to_owned()))?
+                }
                 _ => {
                     let i = MOTION_KEYS
                         .iter()
@@ -184,42 +236,48 @@ impl Tunables {
             .then(|| TickRate::new(whole_hz(hz)))
             .flatten()
             .ok_or_else(|| PackageError::BadValue("tick_rate".to_owned()))?;
-        let mut values = [0.0f32; 11];
-        for ((v, m), key) in values.iter_mut().zip(motion).zip(MOTION_KEYS) {
-            #[allow(clippy::cast_possible_truncation)] // Tunables are small decimals.
-            let f = m.ok_or(PackageError::Missing(key))? as f32;
-            *v = f;
-        }
-        let [
-            run_speed,
-            walk_speed,
-            backward_scale,
-            ground_accel,
-            air_accel,
-            jump_speed,
-            gravity,
-            max_fall_speed,
-            max_step_up,
-            max_slope,
-            ground_snap,
-        ] = values;
         Ok(Tunables {
             tick_rate,
-            motion: MotionParams {
-                run_speed,
-                walk_speed,
-                backward_scale,
-                ground_accel,
-                air_accel,
-                jump_speed,
-                gravity,
-                max_fall_speed,
-                max_step_up,
-                max_slope,
-                ground_snap,
-            },
+            delay: delay(client)?,
+            motion: motion_params(motion)?,
         })
     }
+}
+
+/// The movement of the class from every `[tunables.motion]` key.
+fn motion_params(motion: [Option<f64>; 11]) -> Result<MotionParams, PackageError> {
+    let mut values = [0.0f32; 11];
+    for ((v, m), key) in values.iter_mut().zip(motion).zip(MOTION_KEYS) {
+        #[expect(clippy::cast_possible_truncation)] // Tunables are small decimals.
+        let f = m.ok_or(PackageError::Missing(key))? as f32;
+        *v = f;
+    }
+    let [
+        run_speed,
+        walk_speed,
+        backward_scale,
+        ground_accel,
+        air_accel,
+        jump_speed,
+        gravity,
+        max_fall_speed,
+        max_step_up,
+        max_slope,
+        ground_snap,
+    ] = values;
+    Ok(MotionParams {
+        run_speed,
+        walk_speed,
+        backward_scale,
+        ground_accel,
+        air_accel,
+        jump_speed,
+        gravity,
+        max_fall_speed,
+        max_step_up,
+        max_slope,
+        ground_snap,
+    })
 }
 
 #[cfg(test)]
@@ -235,8 +293,79 @@ mod tests {
         let t = Tunables::parse(PACKAGE_TOML)?;
         assert_eq!(t.motion, MotionParams::DEFAULT);
         assert_eq!(t.tick_rate.hz(), 30);
+        assert_eq!(
+            t.delay,
+            mantis_client::jitter::DelayConfig::adaptive(
+                std::time::Duration::from_millis(100),
+                std::time::Duration::from_millis(400),
+                std::time::Duration::from_millis(10),
+            ),
+            "`[tunables.client]` sets the interpolation delay's floor, ceiling, and margin"
+        );
         assert_ne!(content(), ContentHash::ZERO);
         Ok(())
+    }
+
+    #[test]
+    fn client_tunables_are_checked() {
+        let base = "[tunables.server]
+tick_rate = 30 # Hz
+[tunables.motion]
+run_speed = 7.0 # m/s
+walk_speed = 2.5 # m/s
+backward_scale = 0.6 # ratio
+ground_accel = 60.0 # m/s2
+air_accel = 8.0 # m/s2
+jump_speed = 8.0 # m/s
+gravity = 20.0 # m/s2
+max_fall_speed = 50.0 # m/s
+max_step_up = 0.45 # m
+max_slope = 1.0 # ratio
+ground_snap = 0.3 # m
+[tunables.client]
+";
+        let with = |extra: &str| Tunables::parse(&format!("{base}{extra}"));
+        assert_eq!(
+            with(
+                "interp_delay_floor = 80 # ms
+"
+            )
+            .err(),
+            Some(PackageError::Missing("interp_delay_ceiling"))
+        );
+        assert_eq!(
+            with(
+                "interp_delay_floor = 80 # ms
+interp_delay_ceiling = 60 # ms
+interp_jitter_margin = 5 # ms
+"
+            )
+            .err(),
+            Some(PackageError::BadValue("interp_delay_ceiling".to_owned()))
+        );
+        assert_eq!(
+            with(
+                "interp_delay = 80 # ms
+"
+            )
+            .err(),
+            Some(PackageError::Unknown("interp_delay".to_owned()))
+        );
+        let t = with(
+            "interp_delay_floor = 80 # ms
+interp_delay_ceiling = 300 # ms
+interp_jitter_margin = 5 # ms
+",
+        );
+        assert_eq!(
+            t.map(|t| t.delay.floor).ok(),
+            Some(std::time::Duration::from_millis(80))
+        );
+        // Absent: the engine defaults.
+        assert_eq!(
+            with("").map(|t| t.delay).ok(),
+            Some(mantis_client::jitter::DelayConfig::default())
+        );
     }
 
     #[test]

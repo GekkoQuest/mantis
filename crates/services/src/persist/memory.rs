@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::migrate::{MIGRATIONS, Migration, MigrationTarget, migrate};
-use mantis_core::social::{GuildBook, GuildChange};
+use mantis_core::social::{FriendBook, FriendChange, GuildBook, GuildChange};
 
 use super::{AuditRow, LedgerStore, StoreError, StoredLedger, StoredOutcome};
 
@@ -19,6 +19,11 @@ pub struct MemoryStore {
     audit: Vec<AuditRow>,
     guilds: GuildBook,
     guild_seq: u64,
+    friends: FriendBook,
+    friend_seq: u64,
+    /// Name -> (order, kind, value).
+    live: BTreeMap<String, (u64, u8, f32)>,
+    live_seq: u64,
     /// Fail the next write (tests of atomicity).
     pub fail_next_write: bool,
     /// Fail every audit write (tests that a command without its audit row
@@ -164,5 +169,44 @@ impl LedgerStore for MemoryStore {
 
     fn guild_rows(&mut self) -> Result<Vec<GuildChange>, StoreError> {
         Ok(self.guilds.rows())
+    }
+
+    fn friend_seq(&mut self) -> Result<u64, StoreError> {
+        Ok(self.friend_seq)
+    }
+
+    fn write_friends(&mut self, seq: u64, changes: &[FriendChange]) -> Result<(), StoreError> {
+        if std::mem::take(&mut self.fail_next_write) {
+            return Err(StoreError("write failed (injected)".to_owned()));
+        }
+        // The same rows Postgres keeps: rebuild from them plus this batch.
+        let mut rows = self.friends.rows();
+        rows.extend_from_slice(changes);
+        self.friends = FriendBook::from_rows(&rows);
+        self.friend_seq = seq;
+        Ok(())
+    }
+
+    fn friend_rows(&mut self) -> Result<Vec<FriendChange>, StoreError> {
+        Ok(self.friends.rows())
+    }
+
+    fn set_live(&mut self, name: &str, kind: u8, value: f32) -> Result<(), StoreError> {
+        if std::mem::take(&mut self.fail_next_write) {
+            return Err(StoreError("write failed (injected)".to_owned()));
+        }
+        self.live_seq += 1;
+        self.live.insert(name.to_owned(), (self.live_seq, kind, value));
+        Ok(())
+    }
+
+    fn live_values(&mut self) -> Result<Vec<(String, u8, f32)>, StoreError> {
+        let mut v: Vec<(u64, String, u8, f32)> = self
+            .live
+            .iter()
+            .map(|(n, (seq, kind, value))| (*seq, n.clone(), *kind, *value))
+            .collect();
+        v.sort_by_key(|x| x.0);
+        Ok(v.into_iter().map(|(_, n, k, val)| (n, k, val)).collect())
     }
 }

@@ -256,7 +256,7 @@ fn check_transform(model: &Mat4) -> Result<(), SceneError> {
 fn check_deformation(d: &Deformation) -> Result<(), SceneError> {
     match *d {
         Deformation::Vat { frame, frames, .. } => {
-            #[allow(clippy::cast_precision_loss)] // Frame counts are far below 2^24.
+            #[expect(clippy::cast_precision_loss)] // Frame counts are far below 2^24.
             let ok = frame.is_finite() && frame >= 0.0 && frame < frames.max(1) as f32;
             if ok { Ok(()) } else { Err(SceneError::NonFinite) }
         }

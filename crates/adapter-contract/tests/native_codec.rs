@@ -1,6 +1,6 @@
 //! The native protocol codec: frames, delta snapshots, and the native adapter.
 
-#![allow(
+#![expect(
     clippy::unwrap_used,
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss
@@ -8,12 +8,13 @@
 
 use mantis_adapter_contract::core_types::*;
 use mantis_adapter_contract::native::{
-    BaselineStore, FRAME_MESSAGE, FRAME_SNAPSHOT, NativeAdapter, NoBaseline, ServerFrame,
-    decode_server_frame, decode_snapshot, encode_inbound, encode_snapshot, peek_snapshot_ticks,
+    BASELINE_WINDOW_TICKS, BaselineStore, FRAME_MESSAGE, FRAME_SNAPSHOT, NativeAdapter, NoBaseline,
+    ServerFrame, decode_server_frame, decode_snapshot, encode_inbound, encode_snapshot,
+    encode_snapshot_based, peek_snapshot_ticks,
 };
 use mantis_adapter_contract::{
-    AppearanceId, Inbound, LocalAvatar, MovementMode, Outbound, RemoteSample, SetPosition, SnapshotAck,
-    SnapshotFrame, SnapshotHeader, SnapshotVisitor, TransportKind, WireAdapter,
+    AppearanceId, Inbound, LocalAvatar, MovementMode, Outbound, RemoteBases, RemoteSample, SetPosition,
+    SnapshotAck, SnapshotFrame, SnapshotHeader, SnapshotVisitor, TransportKind, WireAdapter,
 };
 use mantis_core::rng::{Rng, Salt, Seed};
 
@@ -278,4 +279,88 @@ fn native_adapter_frames() {
         Ok(ServerFrame::Snapshot)
     ));
     assert_eq!(sink.header.server_tick, Tick(4));
+}
+
+/// Per-remote baselines for the encoder: one acknowledged frame.
+struct OneBase<'a>(&'a SnapshotFrame);
+
+impl RemoteBases for OneBase<'_> {
+    fn base_for(&self, id: EntityId) -> Option<(Tick, &RemoteSample)> {
+        self.0.find_remote(id).map(|r| (self.0.header.server_tick, r))
+    }
+}
+
+#[test]
+fn a_remote_missing_from_the_baseline_deltas_against_its_own_acknowledged_frame() {
+    // Tick 100: all 40 remotes. Tick 110 (the frame-level baseline): the
+    // budget dropped the odd ones. Tick 112: all 40 again.
+    let all = |tick: u64, dx: f32| {
+        (0..40)
+            .map(|i| sample(i, tick, i as f32 + dx))
+            .collect::<Vec<_>>()
+    };
+    let old = frame(100, &all(100, 0.0));
+    let even: Vec<_> = all(110, 0.5)
+        .into_iter()
+        .filter(|r| r.id.index() % 2 == 0)
+        .collect();
+    let base = frame(110, &even);
+    let next = frame(112, &all(112, 0.75));
+    // The client holds what it decoded.
+    let (client_old, _) = round_trip(&old, None, &NoBaseline);
+    let (client_base, _) = round_trip(&base, None, &NoBaseline);
+    let held = [client_old.clone(), client_base.clone()];
+
+    let mut plain = Vec::new();
+    encode_snapshot(&next, Some(&base), &mut plain);
+    let mut based = Vec::new();
+    encode_snapshot_based(&next, Some(&base), &OneBase(&old), &mut based);
+    assert!(
+        based.len() < plain.len(),
+        "own bases {} vs frame baseline only {}",
+        based.len(),
+        plain.len()
+    );
+
+    let mut from_based = SnapshotFrame::with_capacity(64, 64, 64, 64);
+    decode_snapshot(&based, &held[..], &mut from_based).unwrap();
+    let (from_full, _) = round_trip(&next, None, &NoBaseline);
+    assert_eq!(from_based.remotes.len(), 40);
+    for i in 0..40 {
+        let id = EntityId::new(i, 0);
+        assert_eq!(
+            from_based.find_remote(id),
+            from_full.find_remote(id),
+            "remote {i} decodes exactly"
+        );
+    }
+
+    // The client lacks the own base frame: refused before visiting.
+    let mut probe = SnapshotFrame::with_capacity(64, 64, 64, 64);
+    assert_eq!(
+        decode_snapshot(&based, &[client_base][..], &mut probe),
+        Err(DecodeError::Invalid("missing own base"))
+    );
+    assert!(probe.remotes.is_empty(), "nothing visited");
+
+    // Beyond the window the remote is sent in full, as without own bases.
+    let late = frame(
+        100 + BASELINE_WINDOW_TICKS + 1,
+        &all(100 + BASELINE_WINDOW_TICKS + 1, 0.75),
+    );
+    let mut far = Vec::new();
+    encode_snapshot_based(&late, None, &OneBase(&old), &mut far);
+    let mut full = Vec::new();
+    encode_snapshot(&late, None, &mut full);
+    assert_eq!(far, full, "no own base past {BASELINE_WINDOW_TICKS} ticks");
+    // At the window's edge it is still used.
+    let edge = frame(
+        100 + BASELINE_WINDOW_TICKS,
+        &all(100 + BASELINE_WINDOW_TICKS, 0.75),
+    );
+    let mut near = Vec::new();
+    encode_snapshot_based(&edge, None, &OneBase(&old), &mut near);
+    let mut out = SnapshotFrame::with_capacity(64, 64, 64, 64);
+    decode_snapshot(&near, &[client_old][..], &mut out).unwrap();
+    assert_eq!(out.remotes.len(), 40);
 }

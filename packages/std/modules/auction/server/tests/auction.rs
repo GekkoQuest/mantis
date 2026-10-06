@@ -2,7 +2,7 @@
 //! house cut paid by mail, cancelling, expiry, refusals, and replay. Bags
 //! and mailboxes come from stand-ins implementing their contracts.
 
-#![allow(clippy::unwrap_used, clippy::too_many_lines)]
+#![expect(clippy::unwrap_used, clippy::too_many_lines)]
 
 use std::sync::Arc;
 

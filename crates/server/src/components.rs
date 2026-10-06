@@ -143,9 +143,24 @@ pub struct ReplicationIds {
 }
 
 impl ReplicationIds {
+    /// Allocation starts at index `next` (tests of the id range).
+    #[must_use]
+    pub fn starting_at(next: u32) -> Self {
+        Self {
+            next: std::sync::atomic::AtomicU32::new(next),
+        }
+    }
+
     /// A fresh id.
     pub fn allocate(&self) -> ReplicationId {
         let n = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         ReplicationId(EntityId::new(n, 0))
+    }
+
+    /// A fresh id inside `range`, or `None` (fail closed) when the next id
+    /// is outside it: ids are never reused, so the range is used up.
+    pub fn allocate_within(&self, range: mantis_adapter_contract::EntityIdRange) -> Option<ReplicationId> {
+        let id = self.allocate();
+        range.contains(id.0).then_some(id)
     }
 }

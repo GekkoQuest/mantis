@@ -65,7 +65,7 @@ pub enum UiKey {
 
 /// Modifier keys held during a key event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-#[allow(clippy::struct_excessive_bools)] // mirrors the platform's independent modifier flags
+#[expect(clippy::struct_excessive_bools)] // mirrors the platform's independent modifier flags
 pub struct Modifiers {
     /// Shift.
     pub shift: bool,

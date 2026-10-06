@@ -237,6 +237,7 @@ impl Harness {
                 |op| {
                     self.friends
                         .apply(&op)
+                        .updates
                         .iter()
                         .map(|u| {
                             let mut b = Vec::new();
@@ -334,7 +335,7 @@ impl Harness {
             .map_err(|e| format!("{e:?}"))?;
         self.hashes.push(r.state_hash);
         let outcomes = &mut self.outcomes;
-        self.cell.drain_outcomes(|o| outcomes.push(*o));
+        self.cell.drain_outcomes(|_, o| outcomes.push(*o));
         let mut sent = Vec::new();
         self.cell
             .service_messages(|topic, p| sent.push((topic, p.as_slice().to_vec())));
@@ -360,6 +361,12 @@ impl Harness {
             }
         }
         Ok(())
+    }
+
+    /// The resolved module graph the cell runs.
+    #[must_use]
+    pub fn graph(&self) -> &mantis_core::module::ModuleGraph {
+        self.set.graph()
     }
 
     /// Runs `n` ticks.

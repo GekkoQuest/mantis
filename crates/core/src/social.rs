@@ -455,14 +455,6 @@ pub enum FriendOp {
         /// The character.
         me: u64,
     },
-    /// A cell's projection of `me`'s list, re-sent from time to time so an
-    /// authority that restarted rebuilds it (friendship is mutual).
-    Restore {
-        /// The character.
-        me: u64,
-        /// Its friends.
-        friends: Vec<u64>,
-    },
 }
 
 /// Operation codes, for refusals.
@@ -498,11 +490,6 @@ impl Wire for FriendOp {
                 e.u8(4);
                 e.u64(*me);
             }
-            Self::Restore { me, friends } => {
-                e.u8(5);
-                e.u64(*me);
-                list(e, friends);
-            }
         }
     }
     fn decode(d: &mut Decoder<'_>) -> Result<Self, DecodeError> {
@@ -521,10 +508,6 @@ impl Wire for FriendOp {
                 other: d.u64()?,
             },
             4 => Self::Show { me: d.u64()? },
-            5 => Self::Restore {
-                me: d.u64()?,
-                friends: read_list(d, FRIENDS_MAX)?,
-            },
             _ => return Err(DecodeError::Invalid("friend op")),
         })
     }
@@ -649,7 +632,77 @@ impl Wire for FriendUpdate {
     }
 }
 
-/// Friend lists and open requests: the authority.
+/// One durable change to the friend rows (the persistence writer applies
+/// them in order; loading every row back rebuilds the book).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FriendChange {
+    /// `a` and `b` are friends (stored once, `a < b`).
+    Friends {
+        /// The lower character id.
+        a: u64,
+        /// The higher.
+        b: u64,
+    },
+    /// `a` and `b` are no longer friends (`a < b`).
+    NoFriends {
+        /// The lower character id.
+        a: u64,
+        /// The higher.
+        b: u64,
+    },
+    /// `asker` asked `asked`: an open request.
+    Asked {
+        /// The asking character.
+        asker: u64,
+        /// The asked.
+        asked: u64,
+    },
+    /// The request from `asker` to `asked` is closed.
+    NoAsk {
+        /// The asking character.
+        asker: u64,
+        /// The asked.
+        asked: u64,
+    },
+}
+
+impl Wire for FriendChange {
+    fn encode(&self, e: &mut Encoder<'_>) {
+        let (kind, x, y) = match *self {
+            Self::Friends { a, b } => (1, a, b),
+            Self::NoFriends { a, b } => (2, a, b),
+            Self::Asked { asker, asked } => (3, asker, asked),
+            Self::NoAsk { asker, asked } => (4, asker, asked),
+        };
+        e.u8(kind);
+        e.u64(x);
+        e.u64(y);
+    }
+    fn decode(d: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        let kind = d.u8()?;
+        let (x, y) = (d.u64()?, d.u64()?);
+        Ok(match kind {
+            1 => Self::Friends { a: x, b: y },
+            2 => Self::NoFriends { a: x, b: y },
+            3 => Self::Asked { asker: x, asked: y },
+            4 => Self::NoAsk { asker: x, asked: y },
+            _ => return Err(DecodeError::Invalid("friend change")),
+        })
+    }
+}
+
+/// What one friends operation did: updates to project, and the durable
+/// changes to write before any of them is sent.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct FriendOutcome {
+    /// What to tell whom.
+    pub updates: Vec<FriendUpdate>,
+    /// Rows to make durable first.
+    pub changes: Vec<FriendChange>,
+}
+
+/// Friend lists and open requests: the authority. Both are durable: the
+/// book is rebuilt from its rows ([`FriendBook::from_rows`]).
 #[derive(Clone, Debug, Default)]
 pub struct FriendBook {
     lists: BTreeMap<u64, BTreeSet<u64>>,
@@ -658,10 +711,95 @@ pub struct FriendBook {
 }
 
 impl FriendBook {
+    /// A book rebuilt from durable rows, in the order they were written.
+    #[must_use]
+    pub fn from_rows(rows: &[FriendChange]) -> Self {
+        let mut b = Self::default();
+        for r in rows {
+            b.change(r);
+        }
+        b
+    }
+
+    /// Every durable row of the book: each friendship once, then each open
+    /// request.
+    #[must_use]
+    pub fn rows(&self) -> Vec<FriendChange> {
+        let mut out: Vec<FriendChange> = self
+            .lists
+            .iter()
+            .flat_map(|(a, l)| {
+                l.iter()
+                    .filter(move |b| *b > a)
+                    .map(move |b| FriendChange::Friends { a: *a, b: *b })
+            })
+            .collect();
+        for (asked, askers) in &self.pending {
+            out.extend(askers.iter().map(|asker| FriendChange::Asked {
+                asker: *asker,
+                asked: *asked,
+            }));
+        }
+        out
+    }
+
+    /// Friendships and open requests in the book.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.rows().len()
+    }
+
+    /// True with no friendship and no open request.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.lists.is_empty() && self.pending.is_empty()
+    }
+
+    /// Applies one durable change.
+    fn change(&mut self, c: &FriendChange) {
+        match *c {
+            FriendChange::Friends { a, b } => {
+                self.lists.entry(a).or_default().insert(b);
+                self.lists.entry(b).or_default().insert(a);
+            }
+            FriendChange::NoFriends { a, b } => {
+                for (x, y) in [(a, b), (b, a)] {
+                    if let Some(l) = self.lists.get_mut(&x) {
+                        l.remove(&y);
+                        if l.is_empty() {
+                            self.lists.remove(&x);
+                        }
+                    }
+                }
+            }
+            FriendChange::Asked { asker, asked } => {
+                self.pending.entry(asked).or_default().insert(asker);
+            }
+            FriendChange::NoAsk { asker, asked } => {
+                if let Some(p) = self.pending.get_mut(&asked) {
+                    p.remove(&asker);
+                    if p.is_empty() {
+                        self.pending.remove(&asked);
+                    }
+                }
+            }
+        }
+    }
+
+    fn record(&mut self, c: FriendChange, out: &mut FriendOutcome) {
+        self.change(&c);
+        out.changes.push(c);
+    }
+
     /// True when `a` and `b` are friends.
     #[must_use]
     pub fn are_friends(&self, a: u64, b: u64) -> bool {
         self.lists.get(&a).is_some_and(|l| l.contains(&b))
+    }
+
+    /// True when `from` has an open request to `to`.
+    fn asked(&self, from: u64, to: u64) -> bool {
+        self.pending.get(&to).is_some_and(|p| p.contains(&from))
     }
 
     /// `character`'s list and open requests.
@@ -700,46 +838,62 @@ impl FriendBook {
         self.lists.get(&c).map_or(0, BTreeSet::len)
     }
 
-    fn befriend(&mut self, a: u64, b: u64, out: &mut Vec<FriendUpdate>) {
-        if let Some(p) = self.pending.get_mut(&a) {
-            p.remove(&b);
+    fn befriend(&mut self, x: u64, y: u64, out: &mut FriendOutcome) {
+        for (asker, asked) in [(x, y), (y, x)] {
+            if self.asked(asker, asked) {
+                self.record(FriendChange::NoAsk { asker, asked }, out);
+            }
         }
-        if let Some(p) = self.pending.get_mut(&b) {
-            p.remove(&a);
-        }
-        self.lists.entry(a).or_default().insert(b);
-        self.lists.entry(b).or_default().insert(a);
-        out.extend(self.snapshot(a));
-        out.extend(self.snapshot(b));
+        self.record(
+            FriendChange::Friends {
+                a: x.min(y),
+                b: x.max(y),
+            },
+            out,
+        );
+        out.updates.extend(self.snapshot(x));
+        out.updates.extend(self.snapshot(y));
     }
 
-    /// Applies one operation; returns what to tell whom.
-    pub fn apply(&mut self, op: &FriendOp) -> Vec<FriendUpdate> {
-        let mut out = Vec::new();
-        let refused = |to: u64, op: u8| vec![FriendUpdate::Refused { to, op }];
+    /// Applies one operation. The caller makes the outcome's changes
+    /// durable before sending any of its updates.
+    pub fn apply(&mut self, op: &FriendOp) -> FriendOutcome {
+        let mut out = FriendOutcome::default();
+        let refused = |to: u64, op: u8| FriendOutcome {
+            updates: vec![FriendUpdate::Refused { to, op }],
+            changes: Vec::new(),
+        };
         match *op {
             FriendOp::Request { me, other } => {
                 if other == me || other == 0 || self.are_friends(me, other) || self.count(me) >= FRIENDS_MAX {
                     return refused(me, friend_op::REQUEST);
                 }
-                if self.pending.get(&me).is_some_and(|p| p.contains(&other)) {
+                if self.asked(other, me) {
                     if self.count(other) >= FRIENDS_MAX {
                         return refused(me, friend_op::REQUEST);
                     }
                     self.befriend(me, other, &mut out);
                 } else {
-                    let waiting = self.pending.entry(other).or_default();
-                    if waiting.len() >= PENDING_MAX {
-                        return refused(me, friend_op::REQUEST);
+                    let waiting = self.pending.get(&other).map_or(0, BTreeSet::len);
+                    if !self.asked(me, other) {
+                        if waiting >= PENDING_MAX {
+                            return refused(me, friend_op::REQUEST);
+                        }
+                        self.record(
+                            FriendChange::Asked {
+                                asker: me,
+                                asked: other,
+                            },
+                            &mut out,
+                        );
                     }
-                    waiting.insert(me);
-                    out.push(FriendUpdate::Requested { to: other, from: me });
-                    out.extend(self.snapshot(other).into_iter().skip(1));
-                    out.extend(self.snapshot(me).into_iter().skip(1));
+                    out.updates.push(FriendUpdate::Requested { to: other, from: me });
+                    out.updates.extend(self.snapshot(other).into_iter().skip(1));
+                    out.updates.extend(self.snapshot(me).into_iter().skip(1));
                 }
             }
             FriendOp::Respond { me, other, accept } => {
-                if !self.pending.get(&me).is_some_and(|p| p.contains(&other)) {
+                if !self.asked(other, me) {
                     return refused(me, friend_op::RESPOND);
                 }
                 if accept {
@@ -748,35 +902,33 @@ impl FriendBook {
                     }
                     self.befriend(me, other, &mut out);
                 } else {
-                    if let Some(p) = self.pending.get_mut(&me) {
-                        p.remove(&other);
-                    }
-                    out.push(FriendUpdate::Declined { to: other, by: me });
-                    out.extend(self.snapshot(me).into_iter().skip(1));
-                    out.extend(self.snapshot(other).into_iter().skip(1));
+                    self.record(
+                        FriendChange::NoAsk {
+                            asker: other,
+                            asked: me,
+                        },
+                        &mut out,
+                    );
+                    out.updates.push(FriendUpdate::Declined { to: other, by: me });
+                    out.updates.extend(self.snapshot(me).into_iter().skip(1));
+                    out.updates.extend(self.snapshot(other).into_iter().skip(1));
                 }
             }
             FriendOp::Remove { me, other } => {
                 if !self.are_friends(me, other) {
                     return refused(me, friend_op::REMOVE);
                 }
-                for (a, b) in [(me, other), (other, me)] {
-                    if let Some(l) = self.lists.get_mut(&a) {
-                        l.remove(&b);
-                    }
-                }
-                out.extend(self.snapshot(me).into_iter().take(1));
-                out.extend(self.snapshot(other).into_iter().take(1));
+                self.record(
+                    FriendChange::NoFriends {
+                        a: me.min(other),
+                        b: me.max(other),
+                    },
+                    &mut out,
+                );
+                out.updates.extend(self.snapshot(me).into_iter().take(1));
+                out.updates.extend(self.snapshot(other).into_iter().take(1));
             }
-            FriendOp::Show { me } => out.extend(self.snapshot(me)),
-            FriendOp::Restore { me, ref friends } => {
-                for f in friends.iter().take(FRIENDS_MAX) {
-                    if *f != me && *f != 0 && self.count(me) < FRIENDS_MAX && self.count(*f) < FRIENDS_MAX {
-                        self.lists.entry(me).or_default().insert(*f);
-                        self.lists.entry(*f).or_default().insert(me);
-                    }
-                }
-            }
+            FriendOp::Show { me } => out.updates.extend(self.snapshot(me)),
         }
         out
     }
@@ -1801,7 +1953,7 @@ mod tests {
         b.apply(&FriendOp::Request { me: 1, other: 2 });
         let out = b.apply(&FriendOp::Request { me: 2, other: 1 });
         assert!(b.are_friends(1, 2) && b.are_friends(2, 1));
-        assert!(out.contains(&FriendUpdate::List {
+        assert!(out.updates.contains(&FriendUpdate::List {
             to: 1,
             friends: vec![2]
         }));
@@ -1809,7 +1961,7 @@ mod tests {
             b.apply(&FriendOp::Request { me: asker, other: 3 });
         }
         assert_eq!(
-            b.apply(&FriendOp::Request { me: 99, other: 3 }),
+            b.apply(&FriendOp::Request { me: 99, other: 3 }).updates,
             vec![FriendUpdate::Refused {
                 to: 99,
                 op: friend_op::REQUEST
@@ -1820,14 +1972,20 @@ mod tests {
             other: 10,
             accept: false,
         });
-        assert!(out.contains(&FriendUpdate::Declined { to: 10, by: 3 }));
-        b.apply(&FriendOp::Remove { me: 1, other: 2 });
+        assert!(out.updates.contains(&FriendUpdate::Declined { to: 10, by: 3 }));
+        // Every change is a durable row; the rows rebuild the book.
+        let mut rows = b.rows();
+        let out = b.apply(&FriendOp::Remove { me: 1, other: 2 });
+        assert_eq!(out.changes, vec![FriendChange::NoFriends { a: 1, b: 2 }]);
+        rows.extend(out.changes);
         assert!(!b.are_friends(2, 1));
-        b.apply(&FriendOp::Restore {
-            me: 1,
-            friends: vec![2],
-        });
-        assert!(b.are_friends(2, 1));
+        let rebuilt = FriendBook::from_rows(&rows);
+        assert_eq!(rebuilt.rows(), b.rows());
+        assert_eq!(
+            rebuilt.snapshot(3),
+            b.snapshot(3),
+            "open requests are durable too"
+        );
     }
 
     fn refused_op(out: &GuildOutcome) -> Option<u8> {

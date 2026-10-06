@@ -9,7 +9,7 @@
 
 // Test code: helper functions may unwrap and cast freely; the library rules
 // (no unwrap, checked casts) apply to library code.
-#![allow(
+#![expect(
     clippy::unwrap_used,
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,

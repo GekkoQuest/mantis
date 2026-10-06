@@ -9,6 +9,7 @@
 //! schemas = ["schema/party.idl"] # paths relative to the module folder
 //! tables = ["std.party.limits"]  # content tables it reads
 //! graph_actions = ["std.party.summon"] # gameplay graph actions it registers
+//! optional = ["std.guild"]               # contracts used when the package has them
 //!
 //! [dependencies]                 # by contract, never by implementation
 //! "std.chat" = "0.1"             # caret requirement
@@ -98,6 +99,10 @@ pub struct Manifest {
     pub graph_actions: Vec<String>,
     /// Dependencies by contract, sorted by contract key.
     pub dependencies: Vec<Dependency>,
+    /// Contracts it uses when the package has them, sorted: a missing or
+    /// disabled provider does not stop it (it resolves to a fact the module
+    /// reads at registration, [`crate::module::OptionalProvider`]).
+    pub optional: Vec<String>,
     /// Feature flags and their defaults; always contains `enabled`.
     pub flags: BTreeMap<String, bool>,
 }
@@ -207,7 +212,15 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, ManifestError> {
             ("", &[]),
             (
                 "module",
-                &["key", "version", "contract", "schemas", "tables", "graph_actions"],
+                &[
+                    "key",
+                    "version",
+                    "contract",
+                    "schemas",
+                    "tables",
+                    "graph_actions",
+                    "optional",
+                ],
             ),
         ],
     )?;
@@ -261,7 +274,27 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, ManifestError> {
             return Err(invalid("module.graph_actions", "an action is declared twice"));
         }
     }
+    let mut optional = strings(&doc, "module", "optional")?;
+    optional.sort();
+    for (i, o) in optional.iter().enumerate() {
+        if !is_valid_key(o) {
+            return Err(invalid("module.optional", "expected contract keys"));
+        }
+        if *o == contract {
+            return Err(invalid("module.optional", "a module cannot use its own contract"));
+        }
+        if optional.get(i + 1) == Some(o) {
+            return Err(invalid("module.optional", "a contract is named twice"));
+        }
+        if dependencies.iter().any(|d| d.contract == *o) {
+            return Err(invalid(
+                "module.optional",
+                "a contract is both a dependency and optional",
+            ));
+        }
+    }
     Ok(Manifest {
+        optional,
         key,
         version,
         contract,

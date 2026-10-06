@@ -2,7 +2,7 @@
 //! table. Loading rules run on the no-op backend; pixel checks run on a real headless
 //! adapter (skipped and counted when none exists).
 
-#![allow(
+#![expect(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,

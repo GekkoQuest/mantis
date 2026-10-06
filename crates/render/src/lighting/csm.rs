@@ -52,7 +52,7 @@ pub struct Cascade {
 }
 
 /// Split distances: `count + 1` values from `near` to `far`.
-#[allow(clippy::cast_precision_loss)] // Cascade counts are tiny.
+#[expect(clippy::cast_precision_loss)] // Cascade counts are tiny.
 pub fn split_distances(near: f32, far: f32, count: usize, lambda: f32) -> [f32; MAX_CASCADES + 1] {
     let n = count.clamp(1, MAX_CASCADES);
     let mut out = [far; MAX_CASCADES + 1];
@@ -104,7 +104,7 @@ pub fn fit_cascades(camera: &Camera, sun_dir: Vec3, config: &CascadeConfig) -> [
             .fold(0.0f32, f32::max);
         // Quantize the radius so the cascade size is stable frame to frame.
         let radius = (radius * 16.0).ceil() / 16.0;
-        #[allow(clippy::cast_precision_loss)] // Resolutions are small.
+        #[expect(clippy::cast_precision_loss)] // Resolutions are small.
         let texel = 2.0 * radius / config.resolution.max(1) as f32;
         // Light view at the origin, snapped in light space to whole texels.
         let light_view = glam::camera::lh::view::look_to_mat4(Vec3::ZERO, dir, up);

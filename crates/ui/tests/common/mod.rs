@@ -1,6 +1,6 @@
 //! Shared fixtures for the UI integration tests.
 
-#![allow(dead_code)]
+#![allow(dead_code)] // Shared by several test targets; each uses a different subset, so `expect` would fail in some.
 
 use mantis_ui::{FontLibrary, PointerButton, Rect, Ui, UiEvent, test_font};
 

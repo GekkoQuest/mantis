@@ -19,8 +19,8 @@
 use mantis_formats::bundle::{AssetKind, Domain};
 use mantis_formats::color_grading::ColorGrading;
 
-use super::fields::{Doc, Fields, output_name, within};
 use crate::importer::{CookError, Cooked, ImportContext, Importer, Source};
+use crate::source::{Doc, Fields, output_name, within};
 
 const SUFFIX: &str = ".grading.toml";
 
@@ -29,7 +29,7 @@ const SUFFIX: &str = ".grading.toml";
 pub struct Gradings;
 
 fn scalar(f: &Fields<'_>, key: &str, default: f32, lo: f32, hi: f32) -> Result<f32, CookError> {
-    let (v, line) = f.opt_f32(key, default)?;
+    let (v, line) = f.f32_or(key, default)?;
     if within(v, lo, hi) {
         Ok(v)
     } else {
@@ -38,7 +38,7 @@ fn scalar(f: &Fields<'_>, key: &str, default: f32, lo: f32, hi: f32) -> Result<f
 }
 
 fn triple(f: &Fields<'_>, key: &str, default: f32, lo: f32, hi: f32) -> Result<[f32; 3], CookError> {
-    let (v, line) = f.opt_array::<3>(key, [default; 3])?;
+    let (v, line) = f.array_or::<3>(key, [default; 3])?;
     match v.iter().find(|c| !within(**c, lo, hi)) {
         Some(c) => Err(f.err(line, &format!("`{key}` component {c} is outside {lo} to {hi}"))),
         None => Ok(v),
@@ -63,9 +63,9 @@ impl Importer for Gradings {
     }
 
     fn import(&self, source: &Source<'_>, _ctx: &ImportContext<'_>) -> Result<Vec<Cooked>, CookError> {
-        let doc = Doc::parse(source)?;
+        let doc = Doc::from_source(source)?;
         doc.only_tables(&[], &[])?;
-        let f = doc.root().ok_or_else(|| doc.err(0, "empty document"))?;
+        let f = doc.root();
         f.only(&[
             "contrast",
             "saturation",

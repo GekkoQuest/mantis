@@ -69,6 +69,19 @@ pub const CRATE_RULES: &[(&str, Allowed)] = &[
         ]),
     ),
     (
+        // Process-per-role deployment (deploy-engine): runs each service
+        // role, and hosts a package's cells through the package binary.
+        "mantis-deploy",
+        Allowed::Only(&[
+            "mantis-core",
+            "mantis-services",
+            "mantis-net",
+            "mantis-adapter-contract",
+            "mantis-idl",
+            "mantis-server",
+        ]),
+    ),
+    (
         "mantis-cook",
         // anim for the vertex-animation baker, ui so the cook validates
         // layouts with the runtime parser; no render edge (bakers are CPU-side).
@@ -127,10 +140,11 @@ pub const CRATE_RULES: &[(&str, Allowed)] = &[
 /// randomly seeded hash maps.
 pub const SIM_CRATES: &[&str] = &["crates/core", "crates/server", "crates/client"];
 
-/// File-level allows permitted in integration-test trees (`tests/**` of any
-/// crate or package). Everything else, and any file-level allow under `src/`,
-/// fails the architecture test (lead ruling).
-pub const TEST_FILE_ALLOWS: &[&str] = &[
+/// File-level lint expectations permitted in integration-test trees
+/// (`tests/**` of any crate or package), as `#![expect(...)]`. Everything
+/// else, and any file-level expectation under `src/`, fails the
+/// architecture test (lead ruling).
+pub const TEST_FILE_EXPECTS: &[&str] = &[
     "clippy::unwrap_used",
     "clippy::expect_used",
     "clippy::panic",
@@ -144,24 +158,57 @@ pub const TEST_FILE_ALLOWS: &[&str] = &[
     "dead_code",
 ];
 
-/// One file-level `#![allow(...)]` attribute.
+/// Item-level `#[allow(clippy::...)]` sites that cannot be expectations:
+/// `(file, lint)`. The wire codec's `FuzzSample` impl is written by a macro
+/// for every integer type, and whether a cast lint fires depends on the
+/// type, so some expansions would leave an `expect` unfulfilled.
+pub const ITEM_ALLOWS: &[(&str, &str)] = &[
+    ("crates/core/src/wire/mod.rs", "clippy::cast_possible_truncation"),
+    ("crates/core/src/wire/mod.rs", "clippy::cast_possible_wrap"),
+    ("crates/core/src/wire/mod.rs", "clippy::cast_lossless"),
+];
+
+/// A lint attribute's form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LintForm {
+    /// `allow`: silences the lint, needed or not.
+    Allow,
+    /// `expect`: silences it, and fails when the lint no longer fires.
+    Expect,
+}
+
+/// One lint attribute: file-level (`#![...]`) or on an item (`#[...]`).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FileAllow {
-    /// 1-based line of the `#![allow(`.
+pub struct LintAttr {
+    /// 1-based line of the attribute.
     pub line: usize,
+    /// `allow` or `expect`.
+    pub form: LintForm,
+    /// True for `#![...]`.
+    pub file_level: bool,
     /// The lints named, whitespace removed.
     pub lints: Vec<String>,
 }
 
-/// Finds file-level `#![allow(...)]` attributes in Rust source text,
-/// including ones spanning several lines. Line comments inside the attribute
-/// are ignored; lines that are comments are never attributes.
+/// Finds `allow` and `expect` attributes in Rust source text, file-level
+/// and item-level, including ones spanning several lines. Line comments
+/// inside the attribute are ignored; lines that are comments (or string
+/// text not starting a line) are never attributes.
 #[must_use]
-pub fn file_level_allows(source: &str) -> Vec<FileAllow> {
+pub fn lint_attrs(source: &str) -> Vec<LintAttr> {
     let mut out = Vec::new();
-    let mut lines = source.lines().enumerate();
-    while let Some((i, line)) = lines.next() {
-        let Some(rest) = line.trim_start().strip_prefix("#![allow(") else {
+    let mut rows = source.lines().enumerate();
+    while let Some((i, line)) = rows.next() {
+        let t = line.trim_start();
+        let (file_level, rest) = match t.strip_prefix("#!") {
+            Some(r) => (true, r),
+            None => (false, t.strip_prefix('#').unwrap_or("")),
+        };
+        let (form, rest) = if let Some(r) = rest.strip_prefix("[allow(") {
+            (LintForm::Allow, r)
+        } else if let Some(r) = rest.strip_prefix("[expect(") {
+            (LintForm::Expect, r)
+        } else {
             continue;
         };
         let mut body = String::new();
@@ -174,25 +221,28 @@ pub fn file_level_allows(source: &str) -> Vec<FileAllow> {
             }
             body.push_str(code);
             body.push(',');
-            match lines.next() {
+            match rows.next() {
                 Some((_, next)) => chunk = next,
                 None => break,
             }
         }
-        let names = body
+        let lints = body
             .split(',')
             .map(|l| l.split_whitespace().collect::<String>())
-            .filter(|l| !l.is_empty())
+            // `reason = "..."` is not a lint.
+            .filter(|l| !l.is_empty() && !l.starts_with("reason="))
             .collect();
-        out.push(FileAllow {
+        out.push(LintAttr {
             line: i + 1,
-            lints: names,
+            form,
+            file_level,
+            lints,
         });
     }
     out
 }
 
-/// Where a source file sits, for the file-level allow rule.
+/// Where a source file sits, for the lint-attribute rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TreeKind {
     /// Library or binary source (`src/**`, `build.rs`, and anything else).
@@ -218,20 +268,43 @@ pub fn classify_tree(path: &str) -> TreeKind {
     }
 }
 
-/// Violations of the file-level allow rule in one file's source.
+/// Violations of the lint-attribute rule in one file's source:
+///
+/// - lints are silenced with `expect`, so one that no longer fires fails
+///   the build; a file-level `#![expect]` only in `tests/**`, naming only
+///   [`TEST_FILE_EXPECTS`];
+/// - no `#[allow(clippy::...)]` on an item, except [`ITEM_ALLOWS`];
+/// - no file-level `#![allow]`, except `dead_code` in a test module shared
+///   by several test targets (`tests/**/mod.rs`), where each target uses a
+///   different subset and an `expect` would go unfulfilled in some;
+/// - generated code (`/generated/`) is the code generator's to decide.
 #[must_use]
-pub fn check_file_allows(path: &str, source: &str) -> Vec<String> {
-    let kind = classify_tree(path);
+pub fn check_lint_attrs(path: &str, source: &str) -> Vec<String> {
+    let normalized = path.replace('\\', "/");
+    if normalized.contains("/generated/") {
+        return Vec::new();
+    }
+    let kind = classify_tree(&normalized);
+    let shared_test_module = kind == TreeKind::Tests && normalized.ends_with("/mod.rs");
     let mut out = Vec::new();
-    for allow in file_level_allows(source) {
-        for lint in &allow.lints {
-            let ok = kind == TreeKind::Tests && TEST_FILE_ALLOWS.contains(&lint.as_str());
-            if !ok {
-                let place = match kind {
-                    TreeKind::Src => "file-level allow under src",
-                    TreeKind::Tests => "lint not permitted in a test file",
-                };
-                out.push(format!("{path}:{}: {place}: {lint}", allow.line));
+    for attr in lint_attrs(source) {
+        for lint in &attr.lints {
+            let why = match (attr.file_level, attr.form) {
+                (true, LintForm::Expect) => match kind {
+                    TreeKind::Src => Some("file-level expect under src"),
+                    TreeKind::Tests if TEST_FILE_EXPECTS.contains(&lint.as_str()) => None,
+                    TreeKind::Tests => Some("lint not permitted in a test file"),
+                },
+                (true, LintForm::Allow) if shared_test_module && lint == "dead_code" => None,
+                (true, LintForm::Allow) => Some("file-level allow (use expect)"),
+                (false, LintForm::Allow) if lint.starts_with("clippy::") => {
+                    let excepted = ITEM_ALLOWS.iter().any(|(f, l)| *f == normalized && l == lint);
+                    (!excepted).then_some("item-level allow (use expect)")
+                }
+                (false, _) => None,
+            };
+            if let Some(why) = why {
+                out.push(format!("{normalized}:{}: {why}: {lint}", attr.line));
             }
         }
     }
@@ -370,6 +443,9 @@ pub const PACKAGE_SERVER_DEPS: &[&str] = &[
     // The cell host's link to the service roles, and the one-process
     // cluster for local development.
     "mantis-services",
+    // The cell-host role in a per-process deployment
+    // (`toy-server node cell-host --config FILE`).
+    "mantis-deploy",
 ];
 
 /// Engine crates a package's client crate may depend on.
@@ -732,29 +808,30 @@ mod tests {
     }
 
     #[test]
-    fn finds_file_level_allows() {
-        let src = "//! doc\n#![allow(clippy::x)]\nfn f() {}\n    #![allow(dead_code)]\n// #![allow(no)]\n#[allow(item)]\n#![allow(\n    clippy::a, // why\n    clippy::b\n)]\n";
+    fn finds_lint_attributes() {
+        let src = "//! doc\n#![expect(clippy::x)]\nfn f() {}\n    #![allow(dead_code)]\n// #![allow(no)]\n#[allow(item)]\n#![expect(\n    clippy::a, // why\n    clippy::b,\n    reason = \"r\"\n)]\nlet s = \"#[allow(not)]\";\n";
+        let got: Vec<(usize, LintForm, bool, Vec<String>)> = lint_attrs(src)
+            .into_iter()
+            .map(|a| (a.line, a.form, a.file_level, a.lints))
+            .collect();
         assert_eq!(
-            file_level_allows(src),
+            got,
             vec![
-                FileAllow {
-                    line: 2,
-                    lints: vec!["clippy::x".to_owned()]
-                },
-                FileAllow {
-                    line: 4,
-                    lints: vec!["dead_code".to_owned()]
-                },
-                FileAllow {
-                    line: 7,
-                    lints: vec!["clippy::a".to_owned(), "clippy::b".to_owned()]
-                },
+                (2, LintForm::Expect, true, vec!["clippy::x".to_owned()]),
+                (4, LintForm::Allow, true, vec!["dead_code".to_owned()]),
+                (6, LintForm::Allow, false, vec!["item".to_owned()]),
+                (
+                    7,
+                    LintForm::Expect,
+                    true,
+                    vec!["clippy::a".to_owned(), "clippy::b".to_owned()]
+                ),
             ]
         );
     }
 
     #[test]
-    fn allow_rule_by_tree() {
+    fn the_lint_rule_by_tree_and_form() {
         assert_eq!(classify_tree("crates/x/src/a/tests.rs"), TreeKind::Src);
         assert_eq!(
             classify_tree("crates\\x\\tests\\support\\mod.rs"),
@@ -762,17 +839,33 @@ mod tests {
         );
         assert_eq!(classify_tree("packages/p/adapters/n/tests/t.rs"), TreeKind::Tests);
         assert_eq!(classify_tree("crates/x/build.rs"), TreeKind::Src);
-        let ok = "#![allow(clippy::unwrap_used, dead_code)]\n";
-        assert!(check_file_allows("crates/x/tests/t.rs", ok).is_empty());
-        assert_eq!(check_file_allows("crates/x/src/lib.rs", ok).len(), 2);
-        let bad = "#![allow(clippy::disallowed_methods)]\n";
+        let ok = "#![expect(clippy::unwrap_used, dead_code)]\n";
+        assert!(check_lint_attrs("crates/x/tests/t.rs", ok).is_empty());
+        assert_eq!(check_lint_attrs("crates/x/src/lib.rs", ok).len(), 2);
+        let bad = "#![expect(clippy::disallowed_methods)]\n";
         assert_eq!(
-            check_file_allows("crates/x/tests/t.rs", bad),
+            check_lint_attrs("crates/x/tests/t.rs", bad),
             vec![
                 "crates/x/tests/t.rs:1: lint not permitted in a test file: clippy::disallowed_methods"
                     .to_owned()
             ]
         );
+        // File-level allow: only dead_code, only in a shared test module.
+        let shared = "#![allow(dead_code)]\n";
+        assert!(check_lint_attrs("crates/x/tests/common/mod.rs", shared).is_empty());
+        assert_eq!(check_lint_attrs("crates/x/tests/t.rs", shared).len(), 1);
+        let shared_clippy = "#![allow(clippy::unwrap_used)]\n";
+        assert_eq!(
+            check_lint_attrs("crates/x/tests/common/mod.rs", shared_clippy).len(),
+            1
+        );
+        // Item-level: expect anywhere; an allowed clippy lint only where excepted.
+        let item = "#[allow(clippy::cast_lossless)] // why\nfn f() {}\n";
+        assert_eq!(check_lint_attrs("crates/x/src/lib.rs", item).len(), 1);
+        assert!(check_lint_attrs("crates/core/src/wire/mod.rs", item).is_empty());
+        assert!(check_lint_attrs("crates/x/src/lib.rs", "#[expect(clippy::cast_lossless)]\n").is_empty());
+        assert!(check_lint_attrs("crates/x/src/lib.rs", "#[allow(non_snake_case)]\n").is_empty());
+        assert!(check_lint_attrs("crates/x/src/generated/m.rs", item).is_empty());
     }
 
     #[test]

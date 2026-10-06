@@ -3,7 +3,7 @@
 //! baselines, the allowed-state list, corrections, zero allocation on the
 //! hot path (cell thread and every job), and replay from the cell's own log.
 
-#![allow(
+#![expect(
     clippy::unwrap_used,
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss
@@ -16,7 +16,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use mantis_adapter_contract::core_types::*;
 use mantis_adapter_contract::native::{BaselineStore, NativeAdapter, ServerFrame, decode_server_frame};
 use mantis_adapter_contract::{
-    AppearanceId, Channel, ConnectionId, MovementMode, Outbound, SnapshotFrame, WireAdapter,
+    AdapterError, AppearanceId, Channel, ConnectionId, EntityIdRange, Inbound, MovementMode, Outbound,
+    RemoteBases, RemoteSample, SnapshotFrame, TransportKind, WireAdapter,
 };
 use mantis_core::graph::GraphCatalog;
 use mantis_core::kinematics::{FlatGround, Motion, MotionParams};
@@ -452,4 +453,134 @@ fn a_cell_replays_from_its_own_log() {
 fn ground_is_exposed() {
     let c = cell(None);
     assert_eq!(c.ground().height_at(5.0, 5.0), Some(0.0));
+}
+
+/// The native adapter, counting remotes the encoder found a per-remote
+/// baseline for.
+struct OwnBaseCounting {
+    inner: NativeAdapter,
+    found: AtomicU64,
+}
+
+struct CountBases<'a> {
+    inner: &'a dyn RemoteBases,
+    found: &'a AtomicU64,
+}
+
+impl RemoteBases for CountBases<'_> {
+    fn base_for(&self, id: EntityId) -> Option<(Tick, &RemoteSample)> {
+        let base = self.inner.base_for(id);
+        if base.is_some() {
+            self.found.fetch_add(1, Ordering::Relaxed);
+        }
+        base
+    }
+}
+
+impl WireAdapter for OwnBaseCounting {
+    fn name(&self) -> &'static str {
+        "test.native.counting"
+    }
+    fn movement_mode(&self) -> MovementMode {
+        self.inner.movement_mode()
+    }
+    fn transport(&self) -> TransportKind {
+        self.inner.transport()
+    }
+    fn entity_ids(&self) -> EntityIdRange {
+        self.inner.entity_ids()
+    }
+    fn decode(&self, frame: &[u8], out: &mut dyn FnMut(Inbound)) -> Result<(), AdapterError> {
+        self.inner.decode(frame, out)
+    }
+    fn encode_outbound(&self, msg: &Outbound, out: &mut Vec<u8>) -> Result<(), AdapterError> {
+        self.inner.encode_outbound(msg, out)
+    }
+    fn encode_snapshot(
+        &self,
+        frame: &SnapshotFrame,
+        baseline: Option<&SnapshotFrame>,
+        out: &mut Vec<u8>,
+    ) -> Result<(), AdapterError> {
+        self.inner.encode_snapshot(frame, baseline, out)
+    }
+    fn encode_snapshot_based(
+        &self,
+        frame: &SnapshotFrame,
+        baseline: Option<&SnapshotFrame>,
+        older: &dyn RemoteBases,
+        out: &mut Vec<u8>,
+    ) -> Result<(), AdapterError> {
+        let count = CountBases {
+            inner: older,
+            found: &self.found,
+        };
+        self.inner.encode_snapshot_based(frame, baseline, &count, out)
+    }
+}
+
+#[test]
+fn remotes_the_budget_rotates_out_delta_against_their_own_acknowledged_frame() {
+    let adapter = Arc::new(OwnBaseCounting {
+        inner: NativeAdapter::new("test.native"),
+        found: AtomicU64::new(0),
+    });
+    let mut cfg = CellConfig::new(CellId(1), Seed(77));
+    cfg.max_entities = 256;
+    cfg.max_clients = 64;
+    // 30 remotes, 8 per snapshot: each is absent from most frame-level
+    // baselines.
+    cfg.tiers.budget = 8;
+    cfg.tiers.snapshot_own_bases = true;
+    let adapters: Vec<Arc<dyn WireAdapter>> = vec![adapter.clone()];
+    let mut c = Cell::new(
+        cfg,
+        Arc::new(FlatGround(0.0)),
+        adapters,
+        None,
+        Arc::new(GraphCatalog::new()),
+        BTreeMap::new(),
+    )
+    .unwrap();
+    join(&mut c, 1, 0.0, MovementMode::Predictive);
+    for i in 0..30u32 {
+        let s = 100 + u64::from(i);
+        c.inbox().push(
+            SessionId(s),
+            CellIntent::Join {
+                repl: ReplicationId(EntityId::new(s as u32, 0)),
+                spawn: Vec3::new(f32::from(i as u16) * 2.0, 0.0, 5.0),
+                yaw: Angle16(0),
+                look: AppearanceId(1),
+                mode: MovementMode::Predictive,
+                epoch: 1,
+                character: s,
+            },
+        );
+    }
+    let mut cap = Capture::default();
+    let mut client = Client::new();
+    for t in 0..60u32 {
+        // Every remote walks, so its samples change.
+        for i in 0..30u32 {
+            c.inbox()
+                .push(SessionId(100 + u64::from(i)), mv(t + 1, MoveButtons::FORWARD));
+        }
+        c.tick(&mut cap, None).unwrap();
+        for (_, conn, _, bytes) in cap.frames.drain(..) {
+            if conn == ConnectionId(1) {
+                // Every snapshot decodes against what the client holds.
+                client.receive(&bytes);
+            }
+        }
+        // Acknowledgements are lost two ticks in three: frames other than
+        // the newest acknowledged one serve as per-remote baselines.
+        if t % 3 == 0 {
+            let tick = client.latest.as_ref().unwrap().header.server_tick;
+            c.inbox().ack(SessionId(1), tick);
+        }
+    }
+    let found = adapter.found.load(Ordering::Relaxed);
+    assert!(found > 100, "per-remote baselines used {found} times");
+    assert_eq!(client.latest.unwrap().remotes.len(), 8);
 }

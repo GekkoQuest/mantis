@@ -25,7 +25,6 @@ use std::sync::Arc;
 
 use crate::importer::Importer;
 
-mod fields;
 pub mod gameplay;
 pub mod grading;
 pub mod material;

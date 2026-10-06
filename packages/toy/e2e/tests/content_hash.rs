@@ -5,7 +5,7 @@
 //! stable across cooks with different development keys, admit bots that
 //! announce it, and refuse a tampered or wrongly signed bundle.
 
-#![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
+#![expect(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use std::path::{Path, PathBuf};
 

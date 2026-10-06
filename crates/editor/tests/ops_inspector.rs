@@ -3,7 +3,7 @@
 //! parses, a wrong token or an unpinned certificate is refused, and the client only ever
 //! sends `GET`.
 
-#![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+#![expect(clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener};

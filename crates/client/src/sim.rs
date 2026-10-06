@@ -34,6 +34,7 @@ use crate::core_api::{
 };
 use crate::input::accumulator::{InputAccumulator, TickInput};
 use crate::input::intent::MoveIntentMap;
+use crate::jitter::{DelayConfig, JitterBuffer, JitterStats};
 use crate::predict::metrics::CorrectionHistogram;
 use crate::predict::{Predictor, Reconciliation};
 use crate::recording::RecordState;
@@ -42,7 +43,7 @@ use crate::recording::{Recorder, SimRecorder};
 use crate::render_world::{Correction, LocalAvatar, REMOTE_WINDOW, RemoteEntity, RemoteSample, RenderWorld};
 use crate::snapshot::{MarkerSender, ScheduledMarker, SnapshotInbox};
 use crate::threads::sim_thread::TickHandler;
-use crate::time::{HostInstant, ServerTimeline};
+use crate::time::{HostInstant, ServerTimeline, tick_start_nanos};
 
 // ---------------------------------------------------------------------------------------
 // Intents out
@@ -58,8 +59,9 @@ pub trait IntentSink: Send + 'static {
 // Remote tracks
 // ---------------------------------------------------------------------------------------
 
-/// Samples of history kept per remote entity.
-pub const REMOTE_HISTORY: usize = 8;
+/// Samples of history kept per remote entity: about half a second at 30 Hz, deeper than
+/// the interpolation delay may grow (the jitter buffer is capped to what this covers).
+pub const REMOTE_HISTORY: usize = 16;
 
 #[derive(Clone, Copy, Debug)]
 struct Track {
@@ -75,12 +77,34 @@ impl Track {
     }
 
     /// Appends a sample newer than every held one; older or equal ones are ignored.
-    fn push(&mut self, s: RemoteSample) {
-        if let Some(last) = self.samples().last()
-            && s.time <= last.time
-        {
+    ///
+    /// **Bridging.** When render time `shown` had already passed the newest sample (the
+    /// entity was being extrapolated, or held once extrapolation ran out: a stall or a
+    /// gap), a sample is first inserted at `shown` with the position the entity was
+    /// displayed at, so it moves on from there to the new sample instead of snapping.
+    fn push(&mut self, s: RemoteSample, shown: HostInstant, max_extrapolation: Duration) {
+        let Some(last) = self.samples().last().copied() else {
+            self.append(s);
+            return;
+        };
+        if s.time <= last.time {
             return;
         }
+        if shown > last.time && shown < s.time {
+            let ahead = shown.saturating_since(last.time).min(max_extrapolation);
+            #[expect(clippy::cast_possible_truncation)] // Bounded extrapolation seconds fit f32.
+            let dt = ahead.as_secs_f64() as f32;
+            self.append(RemoteSample {
+                time: shown,
+                position: last.position + last.velocity * dt,
+                velocity: last.velocity,
+                yaw: last.yaw,
+            });
+        }
+        self.append(s);
+    }
+
+    fn append(&mut self, s: RemoteSample) {
         if self.len == REMOTE_HISTORY {
             self.samples.copy_within(1.., 0);
             self.len -= 1;
@@ -121,7 +145,14 @@ impl RemoteTracks {
         }
     }
 
-    fn upsert(&mut self, id: EntityId, sample: RemoteSample, arrival: HostInstant) {
+    fn upsert(
+        &mut self,
+        id: EntityId,
+        sample: RemoteSample,
+        arrival: HostInstant,
+        shown: HostInstant,
+        max_extrapolation: Duration,
+    ) {
         let slot = match self.index.binary_search_by_key(&id, |e| e.0) {
             Ok(pos) => self.index.get(pos).map_or(usize::MAX, |e| e.1),
             Err(pos) => {
@@ -142,7 +173,7 @@ impl RemoteTracks {
             }
         };
         if let Some(Some(t)) = self.slots.get_mut(slot) {
-            t.push(sample);
+            t.push(sample, shown, max_extrapolation);
             t.last_arrival = arrival;
         }
     }
@@ -209,12 +240,19 @@ pub struct ClientSimConfig {
     pub remote_capacity: usize,
     /// Remote entities with no update for this long are dropped.
     pub remote_timeout: Duration,
-    /// Interpolation delay (must match the render world's presentation config).
-    pub interpolation_delay: Duration,
+    /// How long a remote may be extrapolated before it holds (must match the render
+    /// world's presentation config).
+    pub max_remote_extrapolation: Duration,
+    /// How remote entities' interpolation delay is chosen ([`crate::jitter`]); the delay in
+    /// use is published with every render world.
+    pub delay: DelayConfig,
     /// Unacknowledged inputs kept for replay.
     pub input_buffer: usize,
     /// How slowly the server timeline estimate rises (see [`ServerTimeline::new`]).
     pub timeline_rise_shift: u32,
+    /// Whether the timeline absorbs a sustained latency shift at once instead of only
+    /// slowly (see [`ServerTimeline`]'s adaptive rise).
+    pub timeline_adaptive: bool,
 }
 
 /// Counters for diagnostics and tests.
@@ -246,6 +284,9 @@ pub struct ClientSim<M: MotionStep, O: IntentSink> {
     outbox: O,
     markers: Option<MarkerSender>,
     timeline: ServerTimeline,
+    jitter: JitterBuffer,
+    delay: Duration,
+    reanchors: u64,
     local: Option<EntityId>,
     correction: Correction,
     remotes: RemoteTracks,
@@ -309,7 +350,19 @@ impl<M: MotionStep, O: IntentSink> ClientSim<M, O> {
             inbox: parts.inbox,
             outbox: parts.outbox,
             markers: parts.markers,
-            timeline: ServerTimeline::new(c.server_rate, c.timeline_rise_shift),
+            timeline: {
+                let mut t = ServerTimeline::new(c.server_rate, c.timeline_rise_shift);
+                t.set_adaptive_rise(c.timeline_adaptive, Duration::from_millis(5));
+                t
+            },
+            jitter: JitterBuffer::new(
+                c.delay,
+                tick_duration(c.server_rate),
+                // The window needs the bracketing pair and one sample of slack.
+                tick_duration(c.server_rate) * u32::try_from(REMOTE_HISTORY - REMOTE_WINDOW).unwrap_or(1),
+            ),
+            delay: c.delay.floor,
+            reanchors: 0,
             local: None,
             correction: Correction::NONE,
             remotes: RemoteTracks::with_capacity(c.remote_capacity),
@@ -319,6 +372,16 @@ impl<M: MotionStep, O: IntentSink> ClientSim<M, O> {
             #[cfg(debug_assertions)]
             recorder: None,
         }
+    }
+
+    /// The jitter buffer's measurements and the interpolation delay in use.
+    pub fn jitter(&self) -> JitterStats {
+        self.jitter.stats()
+    }
+
+    /// The server timeline (offset estimate and fast rises).
+    pub fn timeline(&self) -> &ServerTimeline {
+        &self.timeline
     }
 
     /// Counters.
@@ -463,12 +526,16 @@ impl<M: MotionStep, O: IntentSink> ClientSim<M, O> {
         let _ = (self, input, sent);
     }
 
-    fn drain_snapshots(&mut self) -> Option<Authoritative<M::State>> {
+    /// Applies every queued snapshot. `shown` is render time as last published (the tick
+    /// instant minus the delay), for bridging remotes that were extrapolated or held.
+    fn drain_snapshots(&mut self, shown: HostInstant) -> Option<Authoritative<M::State>> {
+        let max_extrapolation = self.config.max_remote_extrapolation;
         let mut newest_local = None;
-        let (last_server_tick, stats, timeline, remotes, markers) = (
+        let (last_server_tick, stats, timeline, jitter, remotes, markers) = (
             &mut self.last_server_tick,
             &mut self.stats,
             &mut self.timeline,
+            &mut self.jitter,
             &mut self.remotes,
             &mut self.markers,
         );
@@ -485,7 +552,7 @@ impl<M: MotionStep, O: IntentSink> ClientSim<M, O> {
             }
             *last_server_tick = Some(frame.server_tick);
             stats.snapshots = stats.snapshots.saturating_add(1);
-            timeline.observe(frame.server_tick, frame.received_at);
+            jitter.observe_lateness(timeline.observe(frame.server_tick, frame.received_at));
             for r in &frame.remotes {
                 if !r.position.is_finite() || !r.velocity.is_finite() || r.tick > frame.server_tick {
                     continue; // fail closed on corrupt state
@@ -499,7 +566,7 @@ impl<M: MotionStep, O: IntentSink> ClientSim<M, O> {
                     velocity: r.velocity,
                     yaw: r.yaw,
                 };
-                remotes.upsert(r.id, sample, frame.received_at);
+                remotes.upsert(r.id, sample, frame.received_at, shown, max_extrapolation);
             }
             for id in &frame.removed {
                 remotes.remove(*id);
@@ -563,6 +630,7 @@ impl<M: MotionStep, O: IntentSink> ClientSim<M, O> {
     }
 
     fn publish(&self, tick_time: HostInstant, world: &mut RenderWorld) {
+        world.set_interpolation_delay(self.delay);
         if let Some(id) = self.local {
             let s = self.predictor.state();
             world.set_local(Some(LocalAvatar {
@@ -574,7 +642,7 @@ impl<M: MotionStep, O: IntentSink> ClientSim<M, O> {
                 correction: self.correction,
             }));
         }
-        let t = tick_time.saturating_sub(self.config.interpolation_delay);
+        let t = tick_time.saturating_sub(self.delay);
         for track in self.remotes.iter() {
             if let Some(entity) = RemoteEntity::new(track.id, track.window(t)) {
                 // Overflow is counted by the world.
@@ -588,7 +656,8 @@ impl<M: MotionStep, O: IntentSink> TickHandler for ClientSim<M, O> {
     fn tick(&mut self, tick: Tick, tick_time: HostInstant, world: &mut RenderWorld) {
         self.stats.ticks = self.stats.ticks.saturating_add(1);
         self.record_begin(tick, tick_time);
-        if let Some(auth) = self.drain_snapshots() {
+        let shown = tick_time.saturating_sub(self.delay);
+        if let Some(auth) = self.drain_snapshots(shown) {
             // Future predictions integrate with the authoritative modifiers; replays use
             // the modifiers each input was originally predicted with.
             self.mods = auth.mods;
@@ -596,6 +665,11 @@ impl<M: MotionStep, O: IntentSink> TickHandler for ClientSim<M, O> {
         }
         self.remotes
             .evict_older_than(tick_time.saturating_sub(self.config.remote_timeout));
+        if self.timeline.reanchors() != self.reanchors {
+            self.reanchors = self.timeline.reanchors();
+            self.jitter.reanchored();
+        }
+        self.delay = self.jitter.tick(self.timeline.offset_nanos());
 
         let input = self.accumulator.take();
         let mut sent = None;
@@ -609,5 +683,58 @@ impl<M: MotionStep, O: IntentSink> TickHandler for ClientSim<M, O> {
         }
         self.publish(tick_time, world);
         self.record_end(&input, sent.as_ref());
+    }
+}
+
+/// One server tick, as a duration (the snapshot interval).
+fn tick_duration(rate: TickRate) -> Duration {
+    Duration::from_nanos(u64::try_from(tick_start_nanos(rate, Tick(1))).unwrap_or(u64::MAX))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core_api::{Angle16, Vec3};
+
+    fn sample(ms: u64, x: f32, vx: f32) -> RemoteSample {
+        RemoteSample {
+            time: HostInstant::from_nanos(ms * 1_000_000),
+            position: Vec3::new(x, 0.0, 0.0),
+            velocity: Vec3::new(vx, 0.0, 0.0),
+            yaw: Angle16(0),
+        }
+    }
+
+    fn track() -> Track {
+        Track {
+            id: EntityId::new(1, 0),
+            samples: [RemoteSample::default(); REMOTE_HISTORY],
+            len: 0,
+            last_arrival: HostInstant::ZERO,
+        }
+    }
+
+    #[test]
+    fn a_gap_is_bridged_from_where_the_entity_was_shown() {
+        let max = Duration::from_millis(250);
+        let mut t = track();
+        t.push(sample(0, 0.0, 2.0), HostInstant::ZERO, max);
+        // Shown behind the newest sample (the normal case): no bridge.
+        t.push(sample(33, 0.066, 2.0), HostInstant::ZERO, max);
+        assert_eq!(t.samples().len(), 2);
+        // Shown at 500 ms (extrapolated 250 ms, then held), the next sample is at 600 ms:
+        // a bridge sample at 500 ms holds the displayed position.
+        t.push(sample(600, 3.0, 2.0), HostInstant::from_nanos(500_000_000), max);
+        let s = t.samples();
+        assert_eq!(s.len(), 4);
+        let bridge = s.get(2).copied().unwrap_or_default();
+        assert_eq!(bridge.time, HostInstant::from_nanos(500_000_000));
+        assert!(
+            (bridge.position.x - (0.066 + 2.0 * 0.25)).abs() < 1e-4,
+            "{bridge:?}"
+        );
+        // Shown behind the new sample's time only: nothing to bridge.
+        t.push(sample(633, 3.066, 2.0), HostInstant::from_nanos(550_000_000), max);
+        assert_eq!(t.samples().len(), 5);
     }
 }

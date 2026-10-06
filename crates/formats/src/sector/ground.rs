@@ -60,7 +60,7 @@ fn patch_meshlet(vertices: &[MeshVertex], indices: &[u32], first: u32) -> Meshle
 }
 
 /// The renderable ground of a heightfield, in sector-local coordinates.
-#[allow(clippy::cast_precision_loss)] // Grid indices are at most 4097.
+#[expect(clippy::cast_precision_loss)] // Grid indices are at most 4097.
 pub fn mesh(grid: &GroundGrid) -> MeshAsset {
     let (cols, rows) = (grid.width.max(2), grid.depth.max(2));
     let cell = grid.cell_size;

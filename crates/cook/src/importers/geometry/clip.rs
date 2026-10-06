@@ -4,9 +4,9 @@ use mantis_anim::{Clip, Skeleton};
 use mantis_formats::anim_clip::{Channel, ClipAsset, Interpolation, MAX_KEYS, TrackDef};
 use mantis_formats::bundle::{AssetKind, Domain};
 
-use super::fields::{Doc, Fields, has_suffix, output_name};
 use super::skeleton::{bone_index, resolve_skeleton, unit_quaternion};
 use crate::importer::{CookError, Cooked, ImportContext, Importer, Source};
+use crate::source::{Doc, Fields, has_suffix, output_name};
 
 /// `*.clip.toml` to a clip (phase 10: it resolves its skeleton).
 #[derive(Clone, Copy, Debug, Default)]
@@ -30,21 +30,21 @@ impl Importer for ClipImporter {
     }
 
     fn import(&self, source: &Source<'_>, ctx: &ImportContext<'_>) -> Result<Vec<Cooked>, CookError> {
-        let doc = Doc::parse(source)?;
-        doc.only_tables(&["track"], &[])?;
+        let doc = Doc::from_source(source)?;
+        doc.only_tables(&[], &["track"])?;
         let root = doc.root();
         root.only(&["skeleton", "duration", "sample_rate", "looping", "root_motion"])?;
         let skeleton = resolve_skeleton(ctx, &root, source.path, "skeleton")?;
-        let duration = root.f32("duration")?;
+        let duration = root.f32("duration")?.0;
         if duration <= 0.0 {
             return Err(root.err(root.line_of("duration"), "`duration` must be positive"));
         }
-        let sample_rate = root.opt_f32("sample_rate")?.unwrap_or(30.0);
+        let sample_rate = root.f32_or("sample_rate", 30.0)?.0;
         if sample_rate <= 0.0 {
             return Err(root.err(root.line_of("sample_rate"), "`sample_rate` must be positive"));
         }
         let mut tracks = Vec::new();
-        for (rest, f) in doc.tables_under("track") {
+        for (rest, f) in doc.items("track") {
             let (bone_name, channel_name) = rest
                 .rsplit_once('.')
                 .ok_or_else(|| f.err(f.line(), "a track table is `[track.<bone>.<channel>]`"))?;
@@ -67,8 +67,8 @@ impl Importer for ClipImporter {
         let asset = ClipAsset {
             duration,
             sample_rate,
-            looping: root.opt_bool("looping")?.unwrap_or(false),
-            root_motion: root.opt_bool("root_motion")?.unwrap_or(false),
+            looping: root.bool_or("looping", false)?.0,
+            root_motion: root.bool_or("root_motion", false)?.0,
             bone_count: u32::try_from(skeleton.bones.len()).unwrap_or(u32::MAX),
             tracks,
         };
@@ -108,7 +108,7 @@ impl Importer for ClipImporter {
 
 fn track(f: &Fields<'_>, bone: u16, channel: Channel, duration: f32) -> Result<TrackDef, CookError> {
     f.only(&["times", "values", "interpolation"])?;
-    let interpolation = match f.opt_str("interpolation")?.unwrap_or("linear") {
+    let interpolation = match f.opt_str("interpolation")?.map_or("linear", |(s, _)| s) {
         "linear" => Interpolation::Linear,
         "step" => Interpolation::Step,
         other => {
@@ -118,7 +118,7 @@ fn track(f: &Fields<'_>, bone: u16, channel: Channel, duration: f32) -> Result<T
             ));
         }
     };
-    let times = f.floats("times")?;
+    let times = f.f32s("times")?.0;
     let times_line = f.line_of("times");
     if times.is_empty() || times.len() > MAX_KEYS as usize {
         return Err(f.err(times_line, &format!("a track has 1 to {MAX_KEYS} keys")));
@@ -136,7 +136,7 @@ fn track(f: &Fields<'_>, bone: u16, channel: Channel, duration: f32) -> Result<T
     if let Some(t) = times.iter().find(|t| !(0.0..=duration).contains(*t)) {
         return Err(f.err(times_line, &format!("key time {t} is outside 0 to {duration}")));
     }
-    let mut values = f.floats("values")?;
+    let mut values = f.f32s("values")?.0;
     let values_line = f.line_of("values");
     let width = channel.width();
     if values.len() != times.len() * width {

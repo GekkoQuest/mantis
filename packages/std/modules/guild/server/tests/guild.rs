@@ -3,7 +3,7 @@
 //! projection and its query, what the cell refuses before relaying, the
 //! `invites` flag, the module switched off, and replay.
 
-#![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+#![expect(clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
 

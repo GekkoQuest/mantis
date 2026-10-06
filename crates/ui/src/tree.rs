@@ -325,7 +325,7 @@ pub struct ListState {
 
 /// One node of the tree.
 #[derive(Clone, Debug)]
-#[allow(clippy::struct_excessive_bools)] // independent per-node flags (visible, enabled, label and placeholder state)
+#[expect(clippy::struct_excessive_bools)] // independent per-node flags (visible, enabled, label and placeholder state)
 pub struct Node {
     /// Kind.
     pub kind: NodeKind,

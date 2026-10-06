@@ -13,6 +13,10 @@ mantis-adapter-contract = { path = "../../../crates/adapter-contract" }
 mantis-script = { path = "../../../crates/script" }
 mantis-formats = { path = "../../../crates/formats" }
 mantis-services = { path = "../../../crates/services" }
+# The gateway login flow of `toy-server bots --login` runs on its own runtime.
+tokio = { workspace = true }
+# The cell-host role in a per-process deployment (`toy-server node`).
+mantis-deploy = { path = "../../../crates/deploy" }
 toy-adapter-native = { path = "../adapters/native" }
 toy-adapter-legacy = { path = "../adapters/legacy" }
 # BEGIN GENERATED MODULES (mantis-modsync; do not edit)
@@ -29,7 +33,6 @@ std-vendor-server = { path = "../../std/modules/vendor/server" }
 
 [dev-dependencies]
 mantis-testkit = { path = "../../../crates/testkit" }
-tokio = { workspace = true }
 tokio-rustls = { workspace = true }
 rustls = { workspace = true }
 

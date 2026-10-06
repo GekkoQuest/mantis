@@ -44,6 +44,16 @@ impl FrameSink for HeadlessSink {
     fn submit(&mut self, _frame: &FrameContext<'_>) {}
 }
 
+/// Overrides of the package's presentation timing.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ClientOptions {
+    /// The interpolation delay policy (the package's `[tunables.client]` when `None`).
+    pub delay: Option<mantis_client::jitter::DelayConfig>,
+    /// Whether the server timeline absorbs a sustained latency shift at once (the engine
+    /// default, on, when `None`).
+    pub timeline_adaptive: Option<bool>,
+}
+
 /// Errors building a toy client.
 #[derive(Debug)]
 pub enum ToyClientError {
@@ -156,6 +166,34 @@ impl<T: Transport, S: FrameSink> ToyClient<T, S> {
         events: std::sync::mpsc::Receiver<PlatformEvent>,
         content: mantis_core::content::ContentHash,
     ) -> Result<Self, ToyClientError> {
+        Self::build(transport, clock, sink, events, content, ClientOptions::default())
+    }
+
+    /// As [`ToyClient::new`], with `options` overriding the package's presentation timing
+    /// (tests compare the adaptive interpolation delay with a fixed one).
+    ///
+    /// # Errors
+    /// [`ToyClientError`] for an invalid manifest or control scheme.
+    pub fn new_with_options(
+        transport: T,
+        clock: Arc<dyn HostClock>,
+        sink: S,
+        options: ClientOptions,
+    ) -> Result<Self, ToyClientError> {
+        let (events, rx) = platform_event_channel();
+        let mut client = Self::build(transport, clock, sink, rx, package::content(), options)?;
+        client.events = Some(events);
+        Ok(client)
+    }
+
+    fn build(
+        transport: T,
+        clock: Arc<dyn HostClock>,
+        sink: S,
+        events: std::sync::mpsc::Receiver<PlatformEvent>,
+        content: mantis_core::content::ContentHash,
+        options: ClientOptions,
+    ) -> Result<Self, ToyClientError> {
         let tunables = package::Tunables::parse(package::PACKAGE_TOML).map_err(ToyClientError::Package)?;
         let motion = Motion::new(tunables.motion).map_err(ToyClientError::Motion)?;
         let graph = package::module_graph().map_err(ToyClientError::Modules)?;
@@ -167,7 +205,11 @@ impl<T: Transport, S: FrameSink> ToyClient<T, S> {
         let mut module_props = mantis_ui::Properties::new();
         let mut registry = registry;
         registry.start(&mut module_props);
-        let config = WorldSessionConfig::new(tunables.tick_rate);
+        let mut config = WorldSessionConfig::new(tunables.tick_rate);
+        config.sim.delay = options.delay.unwrap_or(tunables.delay);
+        if let Some(on) = options.timeline_adaptive {
+            config.sim.timeline_adaptive = on;
+        }
         let (outbox, moves) = move_channel(256);
         let build = build_world_session(
             &config,

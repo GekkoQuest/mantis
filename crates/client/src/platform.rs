@@ -27,7 +27,7 @@ pub use os_clock::MonotonicClock;
 /// [`HostClock`](crate::time::HostClock): the one place host time enters the client. The
 /// simulation never sees it; it sees ticks. This module is the crate's only exception to
 /// the determinism lint's wall-clock ban, and any such allow elsewhere is a bug.
-#[allow(clippy::disallowed_types, clippy::disallowed_methods)] // The single OS-clock allow site.
+#[expect(clippy::disallowed_types, clippy::disallowed_methods)] // The single OS-clock allow site.
 mod os_clock {
     use std::time::Instant;
 
@@ -55,7 +55,7 @@ mod os_clock {
     }
 
     impl HostClock for MonotonicClock {
-        #[allow(clippy::cast_possible_truncation)] // Saturated explicitly.
+        #[expect(clippy::cast_possible_truncation)] // Saturated explicitly.
         fn now(&self) -> HostInstant {
             let n = self.origin.elapsed().as_nanos();
             HostInstant::from_nanos(if n > u128::from(u64::MAX) {
@@ -324,7 +324,7 @@ where
                 self.forward(event_loop, PlatformEvent::Input(RawInput::FocusLost));
             }
             WindowEvent::CursorMoved { position, .. } => {
-                #[allow(clippy::cast_possible_truncation)] // Pixel coordinates fit f32.
+                #[expect(clippy::cast_possible_truncation)] // Pixel coordinates fit f32.
                 let (x, y) = (position.x as f32, position.y as f32);
                 self.forward(event_loop, PlatformEvent::CursorMoved { x, y });
             }
@@ -394,7 +394,7 @@ where
         }
     }
 
-    #[allow(clippy::cast_possible_truncation)] // Mouse counts per event fit f32.
+    #[expect(clippy::cast_possible_truncation)] // Mouse counts per event fit f32.
     fn device_event(&mut self, event_loop: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
         if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event {
             self.forward(
@@ -426,7 +426,7 @@ fn map_mouse(b: winit::event::MouseButton) -> MouseButton {
     }
 }
 
-#[allow(clippy::too_many_lines)] // One arm per key is the clearest form.
+#[expect(clippy::too_many_lines)] // One arm per key is the clearest form.
 fn map_key(k: winit::keyboard::KeyCode) -> Option<KeyCode> {
     use winit::keyboard::KeyCode as W;
     Some(match k {

@@ -11,7 +11,7 @@
 //! itself. A panic anywhere fails the test. The run is seeded and deterministic;
 //! `MANTIS_FUZZ_ITERS` raises the iteration count for long runs.
 
-#![allow(clippy::cast_possible_truncation)]
+#![expect(clippy::cast_possible_truncation)]
 
 use mantis_adapter_contract::core_types::{
     FuzzSample, Message, MessageId, Tick, ValidationError, Wire, WireError, encode_into,

@@ -1,6 +1,6 @@
 //! Shared fuzzing helpers: the iteration count and the mutator.
 
-#![allow(clippy::cast_possible_truncation, clippy::indexing_slicing)]
+#![expect(clippy::cast_possible_truncation, clippy::indexing_slicing)]
 
 use mantis_core::rng::Rng;
 

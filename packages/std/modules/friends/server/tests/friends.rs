@@ -3,7 +3,7 @@
 //! from the authority, a restarted authority, and replay. Every answer
 //! from the social role arrives the tick after the request.
 
-#![allow(clippy::unwrap_used)]
+#![expect(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
@@ -130,10 +130,13 @@ fn friends_anywhere_and_a_restarted_authority() {
     );
     h.ticks(2).unwrap();
     assert!(ask(h.world(), &AreFriends(11, 12)).unwrap());
-    // The social role restarts with nothing; the projection rebuilds it.
-    h.friends = mantis_core::social::FriendBook::default();
+    // The social role restarts and reads its durable rows back; the cell
+    // relays no restore of its own.
+    let relayed = h.to_services.len();
+    h.friends = mantis_core::social::FriendBook::from_rows(&h.friends.rows());
     h.ticks(10 * 30 + 1).unwrap();
     assert!(h.friends.are_friends(12, 11));
+    assert_eq!(h.to_services.len(), relayed);
     assert!(h.replay().unwrap() > 0);
 }
 

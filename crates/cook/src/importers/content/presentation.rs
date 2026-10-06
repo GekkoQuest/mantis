@@ -55,8 +55,8 @@ use mantis_formats::presentation::{
 };
 use mantis_formats::skeleton::bone_name_hash;
 
-use super::fields::{Doc, Fields, output_name, within};
 use crate::importer::{CookError, Cooked, ImportContext, Importer, Source};
+use crate::source::{Doc, Fields, output_name, within};
 
 const SUFFIX: &str = ".presentation.toml";
 
@@ -93,7 +93,7 @@ fn binding_header(f: &Fields<'_>) -> Result<(u32, u16, MarkerFilter), CookError>
         2 => MarkerFilter::Impact,
         3 => {
             allowed.push("tick");
-            MarkerFilter::Tick(f.opt_int::<u16>("tick", 0)?.0)
+            MarkerFilter::Tick(f.int_or::<u16>("tick", 0)?.0)
         }
         4 => MarkerFilter::Expire,
         _ => {
@@ -171,7 +171,7 @@ fn in_range(
     open_low: bool,
 ) -> Result<f32, CookError> {
     let (v, line) = match default {
-        Some(d) => f.opt_f32(key, d)?,
+        Some(d) => f.f32_or(key, d)?,
         None => f.f32(key)?,
     };
     let ok = if open_low {
@@ -210,12 +210,12 @@ fn action(f: &Fields<'_>, ctx: &ImportContext<'_>, from: &str) -> Result<Action,
         &[("source", Anchor::Source), ("target", Anchor::Target)],
         Some(Anchor::Source),
     )?;
-    let (offset, _) = f.opt_array::<3>("offset", [0.0; 3])?;
+    let (offset, _) = f.array_or::<3>("offset", [0.0; 3])?;
     let op = match kind {
         OpKind::Effect => {
             let (path, line) = f.str("effect")?;
             let effect = ctx.resolve(path, AssetKind::ParticleEffect, from, line)?;
-            let (scale, sl) = f.opt_f32("scale", 1.0)?;
+            let (scale, sl) = f.f32_or("scale", 1.0)?;
             if !(scale > 0.0 && scale <= mantis_formats::presentation::MAX_EFFECT_SCALE) {
                 return Err(f.err(
                     sl,
@@ -228,14 +228,14 @@ fn action(f: &Fields<'_>, ctx: &ImportContext<'_>, from: &str) -> Result<Action,
             ActionOp::SpawnEffect {
                 effect,
                 scale,
-                follow: f.opt_bool("follow", false)?.0,
+                follow: f.bool_or("follow", false)?.0,
             }
         }
         OpKind::Sound => ActionOp::PlaySound {
             sound: f.int::<u32>("sound")?.0,
             volume: in_range(f, "volume", Some(1.0), 0.0, 4.0, false)?,
             pitch: in_range(f, "pitch", Some(1.0), 0.25, 4.0, false)?,
-            follow: f.opt_bool("follow", false)?.0,
+            follow: f.bool_or("follow", false)?.0,
         },
         OpKind::Shake => ActionOp::CameraShake {
             amplitude: in_range(f, "amplitude", None, 0.0, 10.0, true)?,
@@ -271,27 +271,27 @@ fn collect_actions<'d>(
     pending: &mut BTreeMap<&'d str, Pending<'d>>,
     ctx: &ImportContext<'_>,
 ) -> Result<(), CookError> {
-    for (rest, f) in doc.prefixed("action.") {
+    for (rest, f) in doc.items("action") {
         let (binding, n) = rest.rsplit_once('.').ok_or_else(|| {
             f.err(
-                f.line,
+                f.line(),
                 &format!("`[action.{rest}]`: expected `[action.<binding>.<n>]`"),
             )
         })?;
         let n = n.parse::<u32>().map_err(|_| {
             f.err(
-                f.line,
+                f.line(),
                 &format!("`[action.{rest}]`: `{n}` is not an action number"),
             )
         })?;
         let p = pending.get_mut(binding).ok_or_else(|| {
             f.err(
-                f.line,
+                f.line(),
                 &format!("`[action.{rest}]` names unknown binding `{binding}`"),
             )
         })?;
         let a = action(&f, ctx, doc.path())?;
-        p.actions.insert(n, (f.line, a));
+        p.actions.insert(n, (f.line(), a));
     }
     Ok(())
 }
@@ -314,15 +314,13 @@ impl Importer for Presentations {
     }
 
     fn import(&self, source: &Source<'_>, ctx: &ImportContext<'_>) -> Result<Vec<Cooked>, CookError> {
-        let doc = Doc::parse(source)?;
-        doc.only_tables(&[], &["binding.", "action."])?;
-        if let Some(root) = doc.root() {
-            root.only(&[])?;
-        }
+        let doc = Doc::from_source(source)?;
+        doc.only_tables(&[], &["binding", "action"])?;
+        doc.root().only(&[])?;
         let mut pending: BTreeMap<&str, Pending<'_>> = BTreeMap::new();
-        for (name, f) in doc.prefixed("binding.") {
+        for (name, f) in doc.items("binding") {
             if name.contains('.') {
-                return Err(f.err(f.line, &format!("binding name `{name}` may not contain `.`")));
+                return Err(f.err(f.line(), &format!("binding name `{name}` may not contain `.`")));
             }
             pending.insert(
                 name,
@@ -338,14 +336,14 @@ impl Importer for Presentations {
         // Bindings sorted by marker and filter, each with its actions in number order.
         let mut sorted: BTreeMap<(u32, u16, u8, u16), (&str, Binding)> = BTreeMap::new();
         let mut by_line: Vec<(&str, &Pending<'_>)> = pending.iter().map(|(k, v)| (*k, v)).collect();
-        by_line.sort_by_key(|(_, p)| p.fields.line);
+        by_line.sort_by_key(|(_, p)| p.fields.line());
         for (name, p) in by_line {
             let f = &p.fields;
             let (graph, node, filter) = binding_header(f)?;
             check_marker(f, &graphs, filter)?;
             if p.actions.is_empty() || p.actions.len() > MAX_ACTIONS {
                 return Err(f.err(
-                    f.line,
+                    f.line(),
                     &format!(
                         "binding `{name}` has {} actions; a binding has 1 to {MAX_ACTIONS} (`[action.{name}.0]`, ...)",
                         p.actions.len()
@@ -367,7 +365,7 @@ impl Importer for Presentations {
             let key = sort_key(graph, node, filter);
             if let Some((other, _)) = sorted.get(&key) {
                 return Err(f.err(
-                    f.line,
+                    f.line(),
                     &format!("binding `{name}` repeats the marker and filter of binding `{other}`"),
                 ));
             }

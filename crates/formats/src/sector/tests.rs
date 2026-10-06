@@ -342,7 +342,7 @@ fn placements_must_be_similarities() {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)] // One table of placement rule cases.
+#[expect(clippy::too_many_lines)] // One table of placement rule cases.
 fn placement_rules() {
     let place = |edit: fn(&mut Sector)| {
         let mut s = full();

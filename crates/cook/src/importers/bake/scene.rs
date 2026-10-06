@@ -107,7 +107,7 @@ pub fn box_triangles(min: [f32; 3], max: [f32; 3]) -> Vec<Triangle> {
     out
 }
 
-#[allow(clippy::cast_precision_loss)] // Grid indices are at most 4097.
+#[expect(clippy::cast_precision_loss)] // Grid indices are at most 4097.
 fn ground_triangles(sector: &SectorSource, out: &mut Vec<Triangle>) -> Option<(f32, f32)> {
     let g = sector.ground.as_ref()?;
     let (w, d) = (g.width as usize, g.depth as usize);

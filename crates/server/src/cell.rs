@@ -47,7 +47,7 @@ use crate::interest::{RepView, Replicated, TierConfig};
 use crate::jobs::{BatchReport, Completion, JobBatch, WorkerSet};
 use crate::lock;
 use crate::modules::{ModuleCommand, ModuleOutcome, ModuleSet, ModuleStates, Registry, RegistryError, Route};
-use crate::movement::{Claim, EnvelopeConfig, buffer_input, handle_claim, next_input};
+use crate::movement::{Claim, EnvelopeConfig, InputConfig, buffer_input, handle_claim, next_input};
 use crate::replication::{ClientCaps, ClientRep};
 use crate::rewind::RewindBuffer;
 use crate::session::{CellSession, EnvelopeState, Sessions, allowed, tick_ms};
@@ -67,6 +67,8 @@ pub struct CellConfig {
     pub motion: MotionParams,
     /// Validated-mode tolerances.
     pub envelope: EnvelopeConfig,
+    /// Predictive input realignment after latency rises.
+    pub inputs: InputConfig,
     /// Interest tiers.
     pub tiers: TierConfig,
     /// Per-client replication capacities.
@@ -104,6 +106,7 @@ impl CellConfig {
             start: Tick::ZERO,
             motion: MotionParams::DEFAULT,
             envelope: EnvelopeConfig::DEFAULT,
+            inputs: InputConfig::DEFAULT,
             tiers: TierConfig::DEFAULT,
             caps: ClientCaps::DEFAULT,
             max_entities: 1024,
@@ -444,6 +447,7 @@ pub type BoxedSink = Box<dyn LogSink + Send>;
 struct Carried {
     character: u64,
     envelope: Option<(EnvelopeState, u32)>,
+    input: Option<crate::movement::InputCarry>,
 }
 
 /// One cell.
@@ -480,7 +484,8 @@ pub struct Cell {
     /// Replay: commands delivered whose outcome has not been read yet (an
     /// outcome with none pending was emitted by a system).
     commands_pending: usize,
-    outcomes: BoundedVec<ModuleOutcome>,
+    /// Outcomes not yet drained, with the tick each was made at.
+    outcomes: BoundedVec<(Tick, ModuleOutcome)>,
     feature_news: BoundedVec<SessionId>,
     feature_broadcast: bool,
     /// Diagnostics for the Ops inspector: the clock (when timed), graph
@@ -542,6 +547,7 @@ impl Cell {
             .build()?;
         let g = Arc::clone(&ground);
         let envelope = cfg.envelope;
+        let inputs = cfg.inputs;
         schedule.add(
             SystemDesc {
                 name: "server.movement",
@@ -549,7 +555,9 @@ impl Cell {
                 priority: 0,
                 access,
             },
-            move |w: &mut World, c: &TickContext| movement_system(w, c, &motion, &envelope, g.as_ref()),
+            move |w: &mut World, c: &TickContext| {
+                movement_system(w, c, &motion, &envelope, inputs, g.as_ref())
+            },
         )?;
         let q_repl = world.query()?;
         let rep = Arc::new(CellRep {
@@ -720,10 +728,12 @@ impl Cell {
     }
 
     /// Outcomes of executed commands since the last drain (for the
-    /// persistence writer).
-    pub fn drain_outcomes(&mut self, mut each: impl FnMut(&ModuleOutcome)) {
-        for o in self.outcomes.iter() {
-            each(o);
+    /// persistence writer), each with the tick it was made at: an outcome
+    /// a replay made (recovery) keeps its original tick, so the writer's
+    /// per-tick batch numbering knows it as already durable.
+    pub fn drain_outcomes(&mut self, mut each: impl FnMut(Tick, &ModuleOutcome)) {
+        for (tick, o) in self.outcomes.iter() {
+            each(*tick, o);
         }
         self.outcomes.clear();
     }
@@ -943,13 +953,12 @@ impl Cell {
             .position(|c| lock(c).is_none())
             .ok_or(CellError::ClientsFull)?;
         if let Some(c) = self.rep.clients.get(slot) {
-            *lock(c) = Some(ClientRep::new(
-                session,
-                conn,
-                adapter,
-                implicit_ack,
-                self.cfg.caps,
-            ));
+            let mut caps = self.cfg.caps;
+            if self.cfg.tiers.snapshot_own_bases && caps.own_base_history == 0 {
+                // Twice the known entities: few collisions.
+                caps.own_base_history = caps.known.saturating_mul(2);
+            }
+            *lock(c) = Some(ClientRep::new(session, conn, adapter, implicit_ack, caps));
         }
         self.slots.insert(session, slot);
         Ok(slot)
@@ -1046,6 +1055,7 @@ impl Cell {
                     Carried {
                         character,
                         envelope: None,
+                        input: None,
                     },
                 )
             }
@@ -1064,6 +1074,7 @@ impl Cell {
                         Carried {
                             character: t.character,
                             envelope: Some((t.envelope, t.cheats)),
+                            input: Some(t.input),
                         },
                     )
                 } else {
@@ -1078,19 +1089,15 @@ impl Cell {
             CellIntent::TransferAck(repl) => self.transfer_ack(repl),
             CellIntent::Leave => self.leave_session(session),
             CellIntent::Move(input) => {
+                let cfg = self.cfg.inputs;
                 let s = self.sessions_mut()?.map.get_mut(&session).ok_or("no session")?;
-                let _ = buffer_input(s, input);
+                let _ = buffer_input(s, input, cfg);
                 Ok(())
             }
             CellIntent::MoveClaim {
                 position,
                 client_time_ms,
-            } => {
-                let s = self.sessions_mut()?.map.get_mut(&session).ok_or("no session")?;
-                s.claims
-                    .push((position, client_time_ms))
-                    .map_err(|_| "too many claims")
-            }
+            } => self.claim(session, position, client_time_ms),
             CellIntent::Cast(c) => self.cast(session, c, tick),
             CellIntent::Interact(i) => self.interact(session, i, tick),
             CellIntent::Choose(_) => Ok(()),
@@ -1108,6 +1115,7 @@ impl Cell {
                 self.feature_broadcast = true;
                 Ok(())
             }
+            CellIntent::ClockSlip { ticks } => self.clock_slip(ticks),
             CellIntent::Throttled { count } => {
                 let s = self.sessions_mut()?.map.get_mut(&session).ok_or("no session")?;
                 s.cheats = s.cheats.saturating_add(count);
@@ -1115,6 +1123,35 @@ impl Cell {
             }
             CellIntent::ScriptReload { name, source } => self.script_reload(name.as_str(), source),
         }
+    }
+
+    /// Queues a Validated claim for this tick's movement. More claims than
+    /// the window in one tick (a host stall delivers them together): the
+    /// oldest pending one makes way. The envelope judges the next from the
+    /// last accepted position over the longer client time, so dropping one
+    /// never lets a mover go further.
+    fn claim(&mut self, session: SessionId, position: Vec3, client_time_ms: u32) -> Result<(), &'static str> {
+        let s = self.sessions_mut()?.map.get_mut(&session).ok_or("no session")?;
+        if s.claims.len() >= s.claims.capacity() {
+            s.claims.remove(0);
+        }
+        s.claims
+            .push((position, client_time_ms))
+            .map_err(|_| "too many claims")
+    }
+
+    /// The cell's clock slipped `ticks` behind wall time: Validated clock
+    /// baselines move with it ([`CellIntent::ClockSlip`]).
+    fn clock_slip(&mut self, ticks: u32) -> Result<(), &'static str> {
+        let slip = tick_ms(Tick(u64::from(ticks)), self.cfg.rate.hz());
+        for s in self.sessions_mut()?.map.values_mut() {
+            // Offsets are client time minus tick time: after a slip every
+            // honest client reads `slip` further ahead.
+            if let Some(m) = s.envelope.min_offset_ms.as_mut() {
+                *m = m.saturating_add(slip);
+            }
+        }
+        Ok(())
     }
 
     fn script_reload(
@@ -1348,7 +1385,7 @@ impl Cell {
             {
                 return Err(CellError::Config("replayed system outcome differs"));
             }
-            let _ = self.outcomes.push(*outcome);
+            let _ = self.outcomes.push((tick, *outcome));
         }
         sink.clear();
         Ok(())
@@ -1373,7 +1410,7 @@ impl Cell {
             if let (Err(reason), Some(session)) = (outcome.result, outcome.session) {
                 self.refuse_extension(session, outcome.kind, command.request, reason);
             }
-            let _ = self.outcomes.push(outcome);
+            let _ = self.outcomes.push((ctx.tick, outcome));
         }
         Ok(())
     }
@@ -1430,7 +1467,7 @@ impl Cell {
         }
     }
 
-    #[allow(clippy::too_many_arguments)] // one spawn record
+    #[expect(clippy::too_many_arguments)] // one spawn record
     fn spawn_avatar(
         &mut self,
         session: SessionId,
@@ -1457,6 +1494,9 @@ impl Cell {
         if let Some((envelope, cheats)) = carried.envelope {
             s.envelope = envelope;
             s.cheats = cheats;
+        }
+        if let Some(input) = carried.input {
+            input.apply(&mut s);
         }
         self.sessions_mut()?.map.insert(session, s);
         Ok(())
@@ -1850,6 +1890,7 @@ impl Cell {
                     envelope: s.map_or(EnvelopeState::new(e.position, 0), |s| s.envelope),
                     cheats: s.map_or(0, |s| s.cheats),
                     character: s.map_or(0, |s| s.character),
+                    input: s.map(crate::movement::InputCarry::of).unwrap_or_default(),
                 };
                 if self.transfers_out.push(t).is_ok() {
                     let _ = self.offered.push(e.repl);
@@ -1866,6 +1907,7 @@ fn movement_system(
     c: &TickContext,
     motion: &Motion,
     envelope: &EnvelopeConfig,
+    inputs: InputConfig,
     ground: &(dyn GroundQuery + Send + Sync),
 ) -> Result<(), SystemError> {
     let World {
@@ -1888,7 +1930,7 @@ fn movement_system(
         };
         match s.mode {
             mantis_adapter_contract::MovementMode::Predictive => {
-                if let Some(input) = next_input(s) {
+                if let Some(input) = next_input(s, inputs) {
                     body.0 = motion.step(ground, &body.0, &input, &mods, dt);
                 }
             }
@@ -1975,6 +2017,20 @@ impl OutboundSink for NullSink {
 /// A cell replays from its own log: intents go through the inbox and the same
 /// dispatch, and each `TickEnd` runs one tick (decision 0007). Build the
 /// replaying cell without a log and with the recording's seed and start tick.
+impl Cell {
+    /// Drops what a replay queued for a tick whose log records end before
+    /// its `TickEnd` (a crash tore the log): that tick never completed, so
+    /// nothing of it runs. Recovery calls this after a replay that reports
+    /// trailing records.
+    pub fn discard_incomplete_tick(&mut self) {
+        lock(&self.inbox.items).clear();
+        lock(&self.commands.items).clear();
+        self.commands_pending = 0;
+        self.expected.clear();
+        self.expected_system.clear();
+    }
+}
+
 impl mantis_core::replay::Replayable for Cell {
     type Schema = CellLogSchema;
     type Error = CellError;

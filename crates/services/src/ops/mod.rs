@@ -22,10 +22,11 @@ use mantis_core::wire::{BoundedArray, WireString};
 
 use crate::generated::services as m;
 use crate::host::RPC_TIMEOUT;
+use crate::host::clock::ServiceClock;
+use crate::host::lock;
 use crate::host::rpc::{Router, RpcClient, RpcError};
-use crate::host::{lock, now_ms};
 use crate::methods;
-use crate::persist::{AuditRow, PersistService};
+use crate::persist::{AuditRow, PersistService, StoredLedger, audit_row, clip};
 use live::LiveSigner;
 
 /// One operator command.
@@ -175,18 +176,164 @@ impl std::error::Error for OpsError {}
 
 #[derive(Default)]
 struct LiveState {
+    /// This run: its start time in Unix milliseconds.
+    epoch: u64,
     changes: Vec<m::LiveChange>,
     current: BTreeMap<String, f32>,
+}
+
+/// Where Ops keeps its audit trail and reads ledgers: the persistence
+/// writer, in this process or over RPC as the `Ops` role.
+#[derive(Clone)]
+enum AuditStore {
+    Local(PersistService),
+    Remote(Arc<RpcClient>),
+}
+
+impl AuditStore {
+    async fn begin(&self, actor: &str, command: &str, args: &str, at_ms: u64) -> Result<u64, String> {
+        match self {
+            Self::Local(p) => p
+                .with_store(|s| s.audit_begin(actor, command, args, at_ms))
+                .map_err(|e| e.0),
+            Self::Remote(c) => {
+                let req = Box::new(m::AuditBegin {
+                    actor: clip(actor),
+                    command: clip(command),
+                    args: clip(args),
+                    at_ms,
+                });
+                Box::pin(c.call::<methods::AuditOpen>(&req, RPC_TIMEOUT))
+                    .await
+                    .map(|r| r.id)
+                    .map_err(|e| e.to_string())
+            }
+        }
+    }
+
+    async fn complete(
+        &self,
+        id: u64,
+        status: &str,
+        before: &str,
+        after: &str,
+        undo: &str,
+    ) -> Result<(), String> {
+        match self {
+            Self::Local(p) => p
+                .with_store(|s| s.audit_complete(id, status, before, after, undo))
+                .map_err(|e| e.0),
+            Self::Remote(c) => {
+                let req = Box::new(m::AuditComplete {
+                    id,
+                    status: clip(status),
+                    before: clip(before),
+                    after: clip(after),
+                    undo: clip(undo),
+                });
+                Box::pin(c.call::<methods::AuditClose>(&req, RPC_TIMEOUT))
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            }
+        }
+    }
+
+    async fn rows(&self) -> Result<Vec<AuditRow>, String> {
+        match self {
+            Self::Local(p) => p.with_store(|s| s.audit_rows()).map_err(|e| e.0),
+            Self::Remote(c) => {
+                let mut out = Vec::new();
+                loop {
+                    let req = m::ReadAudit {
+                        since: out.last().map_or(0, |r: &AuditRow| r.id),
+                        limit: methods::AUDIT_PAGE,
+                    };
+                    let page = Box::new(
+                        Box::pin(c.call::<methods::AuditTrail>(&req, RPC_TIMEOUT))
+                            .await
+                            .map_err(|e| e.to_string())?,
+                    );
+                    out.extend(page.rows.iter().map(audit_row));
+                    if !page.more || page.rows.is_empty() {
+                        return Ok(out);
+                    }
+                }
+            }
+        }
+    }
+
+    async fn set_live(&self, name: &str, kind: u8, value: f32) -> Result<(), String> {
+        match self {
+            Self::Local(p) => p.with_store(|s| s.set_live(name, kind, value)).map_err(|e| e.0),
+            Self::Remote(c) => {
+                let req = m::StoreLive {
+                    name: WireString::new(name).ok_or("live names are at most 96 bytes")?,
+                    kind,
+                    value,
+                };
+                Box::pin(c.call::<methods::StoreLiveValue>(&req, RPC_TIMEOUT))
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            }
+        }
+    }
+
+    async fn live_values(&self) -> Result<Vec<(String, u8, f32)>, String> {
+        match self {
+            Self::Local(p) => p.with_store(|s| s.live_values()).map_err(|e| e.0),
+            Self::Remote(c) => {
+                let got = Box::pin(c.call::<methods::ReadLiveValues>(&m::ReadLive {}, RPC_TIMEOUT))
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(got
+                    .values
+                    .iter()
+                    .map(|v| (v.name.as_str().to_owned(), v.kind, v.value))
+                    .collect())
+            }
+        }
+    }
+
+    async fn ledger_of(&self, character: u64) -> Result<Vec<StoredLedger>, String> {
+        match self {
+            Self::Local(p) => p.with_store(|s| s.ledger_of(character)).map_err(|e| e.0),
+            Self::Remote(c) => {
+                let req = m::LedgerOf {
+                    character: m::CharacterId(character),
+                };
+                let rows = c
+                    .call::<methods::Ledger>(&req, RPC_TIMEOUT)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(rows
+                    .rows
+                    .iter()
+                    .map(|r| StoredLedger {
+                        month: r.month,
+                        cell: r.cell.0,
+                        tick: r.tick,
+                        character,
+                        item: r.item,
+                        delta: r.delta,
+                        at_ms: r.at_ms,
+                    })
+                    .collect())
+            }
+        }
+    }
 }
 
 /// The Ops role.
 #[derive(Clone)]
 pub struct OpsService {
-    audit: PersistService,
+    audit: AuditStore,
     account: Arc<RpcClient>,
     cells: Arc<Mutex<BTreeMap<u64, Arc<RpcClient>>>>,
     signer: Arc<LiveSigner>,
     live: Arc<Mutex<LiveState>>,
+    clock: ServiceClock,
 }
 
 impl OpsService {
@@ -194,13 +341,65 @@ impl OpsService {
     /// the account role (calling as `Ops`), and the live-data key.
     #[must_use]
     pub fn new(audit: PersistService, account: Arc<RpcClient>, signer: LiveSigner) -> Self {
+        Self::with_store(AuditStore::Local(audit), account, signer)
+    }
+
+    /// Ops in its own process: the audit trail and ledger traces go to the
+    /// persistence writer over RPC (`persist` calls as `Ops`). A command
+    /// whose audit row cannot be opened is not run, as in-process.
+    #[must_use]
+    pub fn remote(persist: Arc<RpcClient>, account: Arc<RpcClient>, signer: LiveSigner) -> Self {
+        Self::with_store(AuditStore::Remote(persist), account, signer)
+    }
+
+    fn with_store(audit: AuditStore, account: Arc<RpcClient>, signer: LiveSigner) -> Self {
         Self {
             audit,
             account,
             cells: Arc::default(),
             signer: Arc::new(signer),
-            live: Arc::default(),
+            live: Arc::new(Mutex::new(LiveState {
+                epoch: ServiceClock::default().now_ms().max(1),
+                ..LiveState::default()
+            })),
+            clock: ServiceClock::default(),
         }
+    }
+
+    /// The same role on `clock`: audit times, and its live-data run epoch
+    /// (the clock's time now).
+    #[must_use]
+    pub fn clocked(mut self, clock: ServiceClock) -> Self {
+        lock(&self.live).epoch = clock.now_ms().max(1);
+        self.clock = clock;
+        self
+    }
+
+    /// Reads every durable live value and publishes it again, in the order
+    /// they were set, as this run's first changes: call once at start,
+    /// before serving. Cells following an older run start over and so hold
+    /// the current flags and tunables again. Returns how many.
+    ///
+    /// # Errors
+    /// The writer's failure: Ops must not serve without its live values.
+    pub async fn load_live(&self) -> Result<usize, String> {
+        let values = self.audit.live_values().await?;
+        let mut live = lock(&self.live);
+        let epoch = live.epoch;
+        live.changes.clear();
+        live.current.clear();
+        for (seq, (name, kind, value)) in (1u64..).zip(&values) {
+            let change = self.signer.sign(epoch, seq, name, *kind, *value)?;
+            live.changes.push(change);
+            live.current.insert(name.clone(), *value);
+        }
+        Ok(values.len())
+    }
+
+    /// This run's epoch (its start time in Unix milliseconds).
+    #[must_use]
+    pub fn live_epoch(&self) -> u64 {
+        lock(&self.live).epoch
     }
 
     /// Adds a cell host the inspector may read (a client calling as `Ops`).
@@ -217,15 +416,17 @@ impl OpsService {
     /// The audit trail, oldest first.
     ///
     /// # Errors
-    /// The store's failure.
-    pub fn audit_rows(&self) -> Result<Vec<AuditRow>, String> {
-        self.audit.with_store(|s| s.audit_rows()).map_err(|e| e.0)
+    /// The store's (or the writer's) failure.
+    pub async fn audit_rows(&self) -> Result<Vec<AuditRow>, String> {
+        self.audit.rows().await
     }
 
-    /// Live changes after `since`, at most 32, oldest first.
+    /// Live changes after `since` in run `epoch`, at most 32, oldest first.
+    /// A poll counting in another run starts over at this run's first.
     #[must_use]
-    pub fn live_since(&self, since: u64) -> m::LiveChanges {
+    pub fn live_since(&self, since: u64, epoch: u64) -> m::LiveChanges {
         let live = lock(&self.live);
+        let since = if epoch == live.epoch { since } else { 0 };
         let next: Vec<m::LiveChange> = live
             .changes
             .iter()
@@ -248,15 +449,17 @@ impl OpsService {
         let args = cmd.args();
         let audit = self
             .audit
-            .with_store(|s| s.audit_begin(actor, cmd.name(), &args, now_ms()))
-            .map_err(|e| OpsError::Audit(e.0))?;
+            .begin(actor, cmd.name(), &args, self.clock.now_ms())
+            .await
+            .map_err(OpsError::Audit)?;
         match self.dispatch(cmd).await {
             Ok((before, after, undo)) => {
                 self.audit
-                    .with_store(|s| s.audit_complete(audit, "done", &before, &after, &undo))
+                    .complete(audit, "done", &before, &after, &undo)
+                    .await
                     .map_err(|e| OpsError::Failed {
                         audit,
-                        why: format!("it ran, but its audit row could not be completed: {}", e.0),
+                        why: format!("it ran, but its audit row could not be completed: {e}"),
                     })?;
                 Ok(Executed {
                     audit,
@@ -266,15 +469,16 @@ impl OpsService {
                 })
             }
             Err(why) => {
-                let _ = self.audit.with_store(|s| {
-                    s.audit_complete(
+                let _ = self
+                    .audit
+                    .complete(
                         audit,
                         "failed",
                         "unchanged",
                         "unchanged",
                         &format!("none: nothing changed ({why})"),
                     )
-                });
+                    .await;
                 Err(OpsError::Failed { audit, why })
             }
         }
@@ -318,12 +522,12 @@ impl OpsService {
                     format!("maintenance on={was}"),
                 ))
             }
-            Command::Flag { name, on } => self.publish(name, live::FLAG, if *on { 1.0 } else { 0.0 }),
-            Command::Tunable { name, value } => self.publish(name, live::TUNABLE, *value),
+            Command::Flag { name, on } => self.publish(name, live::FLAG, if *on { 1.0 } else { 0.0 }).await,
+            Command::Tunable { name, value } => self.publish(name, live::TUNABLE, *value).await,
             Command::Kick { character } => self.kick(*character).await,
             Command::Drain { on, grace_seconds } => self.drain(*on, *grace_seconds).await,
             Command::LedgerTrace { character } => {
-                let rows = self.ledger_trace(*character)?;
+                let rows = self.ledger_trace(*character).await?;
                 let gold: i64 = rows.iter().filter(|r| r.item == 0).map(|r| r.delta).sum();
                 let summary = format!("character={character} rows={} net_gold={gold}", rows.len());
                 Ok((summary.clone(), summary, "none: read-only".to_owned()))
@@ -414,18 +618,20 @@ impl OpsService {
         let args = format!("cell={cell} component={component} offset={offset} limit={limit}");
         let audit = self
             .audit
-            .with_store(|s| s.audit_begin(actor, "inspect_entities", &args, now_ms()))
-            .map_err(|e| OpsError::Audit(e.0))?;
+            .begin(actor, "inspect_entities", &args, self.clock.now_ms())
+            .await
+            .map_err(OpsError::Audit)?;
         let req = m::InspectEntities {
             cell: m::CellNo(cell),
             component: name,
             offset,
             limit,
         };
+        // Boxed: a page is large, and it waits across the audit completion.
         let result = match self.cell_client(cell) {
-            Ok(c) => c
-                .call::<methods::InspectEntityPage>(&req, RPC_TIMEOUT)
+            Ok(c) => Box::pin(c.call::<methods::InspectEntityPage>(&req, RPC_TIMEOUT))
                 .await
+                .map(Box::new)
                 .map_err(|e| e.to_string()),
             Err(e) => Err(e),
         };
@@ -434,13 +640,15 @@ impl OpsService {
                 let after = format!("total={} page={}", page.total, page.count);
                 let _ = self
                     .audit
-                    .with_store(|s| s.audit_complete(audit, "done", "unchanged", &after, "none: read-only"));
-                Ok(page)
+                    .complete(audit, "done", "unchanged", &after, "none: read-only")
+                    .await;
+                Ok(*page)
             }
             Err(why) => {
-                let _ = self.audit.with_store(|s| {
-                    s.audit_complete(audit, "failed", "unchanged", "unchanged", "none: read-only")
-                });
+                let _ = self
+                    .audit
+                    .complete(audit, "failed", "unchanged", "unchanged", "none: read-only")
+                    .await;
                 Err(OpsError::Failed { audit, why })
             }
         }
@@ -450,8 +658,8 @@ impl OpsService {
     ///
     /// # Errors
     /// The store's failure.
-    pub fn ledger_trace(&self, character: u64) -> Result<Vec<crate::persist::StoredLedger>, String> {
-        self.audit.with_store(|s| s.ledger_of(character)).map_err(|e| e.0)
+    pub async fn ledger_trace(&self, character: u64) -> Result<Vec<StoredLedger>, String> {
+        self.audit.ledger_of(character).await
     }
 
     /// Every distinct cell host Ops knows.
@@ -518,11 +726,18 @@ impl OpsService {
         ))
     }
 
-    /// Signs and queues one live change for the cells.
-    fn publish(&self, name: &str, kind: u8, value: f32) -> Result<(String, String, String), String> {
+    /// Makes one live value durable, then signs and queues it for the
+    /// cells.
+    async fn publish(&self, name: &str, kind: u8, value: f32) -> Result<(String, String, String), String> {
+        // Checked before anything is written: a value the signer refuses
+        // must not become durable either.
+        if !value.is_finite() || WireString::<96>::new(name).is_none() {
+            return Err("live values are finite, with names of at most 96 bytes".to_owned());
+        }
+        self.audit.set_live(name, kind, value).await?;
         let mut live = lock(&self.live);
         let seq = live.changes.last().map_or(1, |c| c.seq + 1);
-        let change = self.signer.sign(seq, name, kind, value)?;
+        let change = self.signer.sign(live.epoch, seq, name, kind, value)?;
         let what = if kind == live::FLAG { "flag" } else { "tunable" };
         let show = |v: f32| {
             if kind == live::FLAG {
@@ -560,7 +775,7 @@ impl OpsService {
     pub fn router(&self) -> Router {
         let mut r = Router::validated(methods::validate);
         let me = self.clone();
-        r.serve::<methods::Live>(move |_, req| Ok(me.live_since(req.since)));
+        r.serve::<methods::Live>(move |_, req| Ok(me.live_since(req.since, req.epoch)));
         r
     }
 }

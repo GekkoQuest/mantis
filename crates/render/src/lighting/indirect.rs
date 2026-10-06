@@ -23,14 +23,14 @@ pub fn blend_probes(volume: &ProbeVolume, time: f32, out: &mut Vec<ShL1>) {
 }
 
 /// Trilinear sample of blended probes at world position `position`, clamped to the volume.
-#[allow(clippy::cast_precision_loss)] // Probe counts per axis are far below 2^24.
+#[expect(clippy::cast_precision_loss)] // Probe counts per axis are far below 2^24.
 pub fn sample_probes(volume: &ProbeVolume, blended: &[ShL1], position: Vec3) -> Option<ShL1> {
     let [nx, ny, nz] = volume.dims;
     let last = Vec3::new((nx - 1) as f32, (ny - 1) as f32, (nz - 1) as f32);
     let grid = ((position - Vec3::from(volume.origin)) / Vec3::from(volume.spacing)).clamp(Vec3::ZERO, last);
     let cell = grid.floor().min(last - Vec3::ONE).max(Vec3::ZERO);
     let frac = grid - cell;
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Clamped above.
+    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Clamped above.
     let (cx, cy, cz) = (cell.x as u32, cell.y as u32, cell.z as u32);
     let mut acc = ShL1::ZERO;
     let mut total = 0.0f32;

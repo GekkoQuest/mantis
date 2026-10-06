@@ -1,7 +1,7 @@
 //! Animation importers: skeletons, clips, graphs, and VAT bakes cook, bind with
 //! `mantis_anim`, and report errors at their lines; the VAT payload round-trips.
 
-#![allow(clippy::too_many_lines, clippy::indexing_slicing)]
+#![expect(clippy::too_many_lines, clippy::indexing_slicing)]
 
 use std::sync::Arc;
 

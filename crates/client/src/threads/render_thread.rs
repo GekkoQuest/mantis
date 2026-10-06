@@ -178,7 +178,7 @@ impl<S: FrameSink> RenderLoop<S> {
     }
 
     /// Runs one frame.
-    #[allow(clippy::cast_possible_truncation)] // Frame deltas fit f32.
+    #[expect(clippy::cast_possible_truncation)] // Frame deltas fit f32.
     pub fn frame(&mut self) -> FrameReport {
         let now = self.clock.now();
         let frame_dt = self

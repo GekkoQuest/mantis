@@ -1,7 +1,7 @@
 //! The persistence writer and the migration runner, proven against the
 //! in-memory store in every run and against Postgres when
 //! `MANTIS_TEST_POSTGRES` is set (a counted, printed skip otherwise).
-#![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+#![expect(clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::time::Duration;
 
@@ -74,9 +74,14 @@ const V2: &str = "CREATE TABLE b (y INTEGER);";
 #[test]
 fn applying_the_set_twice_is_a_no_op() {
     let mut store = MemoryStore::new();
-    assert_eq!(store.migrate().unwrap(), vec![1, 2, 3]);
+    let every: Vec<u32> = MIGRATIONS.iter().map(|m| m.version).collect();
+    assert_eq!(
+        every,
+        (1..=u32::try_from(MIGRATIONS.len()).unwrap()).collect::<Vec<_>>(),
+        "numbered 1, 2, 3..."
+    );
+    assert_eq!(store.migrate().unwrap(), every);
     assert_eq!(store.migrate().unwrap(), Vec::<u32>::new());
-    assert_eq!(MIGRATIONS.len(), 3);
 }
 
 #[test]
@@ -207,6 +212,99 @@ fn writer_contract(store: Box<dyn LedgerStore>) {
     let done = rows.iter().find(|r| r.id == id).unwrap();
     assert_eq!(done.status, "done");
     assert_eq!(done.undo.as_deref(), Some("ban account=3 until=0"));
+
+    social_rows_contract(&writer);
+}
+
+/// Guild and friend rows: batches apply once, in order, and read back as
+/// the book holds them.
+fn social_rows_contract(writer: &PersistService) {
+    use mantis_core::social::{FriendChange, GuildChange, guild_rank};
+    use mantis_services::persist::{friend_row, guild_row};
+    let guilds = |seq, rows: &[GuildChange]| m::StoreGuildRows {
+        seq,
+        rows: BoundedArray::from_slice(&rows.iter().map(guild_row).collect::<Vec<_>>()).unwrap(),
+    };
+    let member = |guild, character, rank, since| GuildChange::Member {
+        guild,
+        character,
+        rank,
+        since,
+    };
+    let found = [
+        GuildChange::Guild {
+            id: 1,
+            name: "Lamplighters".to_owned(),
+        },
+        member(1, 7, guild_rank::LEADER, 1),
+    ];
+    assert_eq!(writer.write_guilds(&guilds(1, &found)).unwrap().seq, 1);
+    let more = [
+        member(1, 8, guild_rank::MEMBER, 2),
+        member(1, 7, guild_rank::OFFICER, 1),
+    ];
+    assert_eq!(writer.write_guilds(&guilds(2, &more)).unwrap().seq, 2);
+    // A resent batch is acknowledged and not applied again.
+    let gone = [GuildChange::NoMember {
+        guild: 1,
+        character: 8,
+    }];
+    assert_eq!(writer.write_guilds(&guilds(2, &gone)).unwrap().seq, 2);
+    let rows = writer.with_store(|s| s.guild_rows()).unwrap();
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    assert!(rows.contains(&member(1, 7, guild_rank::OFFICER, 1)));
+    let disband = [GuildChange::NoGuild { id: 1 }];
+    writer.write_guilds(&guilds(3, &disband)).unwrap();
+    assert!(
+        writer.with_store(|s| s.guild_rows()).unwrap().is_empty(),
+        "members go with the guild"
+    );
+
+    let friends = |seq, rows: &[FriendChange]| m::StoreFriendRows {
+        seq,
+        rows: BoundedArray::from_slice(&rows.iter().map(friend_row).collect::<Vec<_>>()).unwrap(),
+    };
+    let first = [
+        FriendChange::Asked { asker: 9, asked: 4 },
+        FriendChange::Friends { a: 4, b: 5 },
+    ];
+    writer.write_friends(&friends(1, &first)).unwrap();
+    let second = [
+        FriendChange::NoAsk { asker: 9, asked: 4 },
+        FriendChange::Friends { a: 4, b: 9 },
+        FriendChange::Asked { asker: 5, asked: 6 },
+    ];
+    writer.write_friends(&friends(2, &second)).unwrap();
+    writer.write_friends(&friends(2, &first)).unwrap();
+    assert_eq!(
+        writer.with_store(|s| s.friend_rows()).unwrap(),
+        vec![
+            FriendChange::Friends { a: 4, b: 5 },
+            FriendChange::Friends { a: 4, b: 9 },
+            FriendChange::Asked { asker: 5, asked: 6 },
+        ]
+    );
+    assert_eq!(writer.with_store(|s| s.friend_seq()).unwrap(), 2);
+    // A friendship not stored lower id first is refused at the boundary.
+    let backwards = m::StoreFriendRows {
+        seq: 3,
+        rows: BoundedArray::from_slice(&[m::FriendRow { kind: 1, a: 9, b: 4 }]).unwrap(),
+    };
+    assert!(writer.write_friends(&backwards).is_err());
+
+    // Live values: the latest of each, in the order last set.
+    writer.with_store(|s| s.set_live("std.chat", 0, 0.0)).unwrap();
+    writer
+        .with_store(|s| s.set_live("std.vendor.markup", 1, 1.5))
+        .unwrap();
+    writer.with_store(|s| s.set_live("std.chat", 0, 1.0)).unwrap();
+    assert_eq!(
+        writer.with_store(|s| s.live_values()).unwrap(),
+        vec![
+            ("std.vendor.markup".to_owned(), 1, 1.5),
+            ("std.chat".to_owned(), 0, 1.0)
+        ]
+    );
 }
 
 #[test]
@@ -291,6 +389,52 @@ async fn postgres_migrations_are_idempotent_and_guarded() {
     .await
     .unwrap();
     probe.drop_schema(&schema).await.unwrap();
-    assert_eq!(outcome.0.unwrap(), vec![1, 2, 3]);
+    assert_eq!(
+        outcome.0.unwrap(),
+        MIGRATIONS.iter().map(|m| m.version).collect::<Vec<_>>()
+    );
     assert_eq!(outcome.1.unwrap(), Vec::<u32>::new());
+}
+
+/// Concurrent pushes to a PostgreSQL writer on a two-worker runtime never
+/// deadlock: waiting for the store never pins a worker the database
+/// connection needs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_pushes_to_a_postgres_writer_do_not_deadlock() {
+    let Some(config) = postgres_or_skip("concurrent_pushes_to_a_postgres_writer_do_not_deadlock") else {
+        return;
+    };
+    let schema = format!("mantis_conc_{}", std::process::id());
+    let store = PgStore::connect(&config, &schema).await.unwrap();
+    let probe = PgStore::connect(&config, &schema).await.unwrap();
+    let writer = tokio::task::spawn(async move { PersistService::new(Box::new(store), NOW) })
+        .await
+        .unwrap()
+        .unwrap();
+    let key = b"k".to_vec();
+    let server = RpcServer::bind("127.0.0.1:0".parse().unwrap(), key.clone(), writer.router())
+        .await
+        .unwrap();
+    let mut tasks = Vec::new();
+    for cell in 1..=4u64 {
+        let client = RpcClient::new(server.addr(), Role::Cell, key.clone());
+        tasks.push(tokio::spawn(async move {
+            for seq in 1..=25u64 {
+                let rows = [row(seq, NOW, true, &ledger_payload(&[(cell, GOLD, 1)], &[]))];
+                client
+                    .call::<methods::Push>(&push(cell, seq, &rows), Duration::from_secs(5))
+                    .await
+                    .unwrap();
+            }
+        }));
+    }
+    let all = async {
+        for t in tasks {
+            t.await.unwrap();
+        }
+    };
+    let done = tokio::time::timeout(Duration::from_secs(30), all).await;
+    drop(server);
+    probe.drop_schema(&schema).await.unwrap();
+    assert!(done.is_ok(), "concurrent pushes deadlocked");
 }

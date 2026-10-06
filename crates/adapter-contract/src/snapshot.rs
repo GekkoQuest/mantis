@@ -175,6 +175,24 @@ impl SnapshotFrame {
     }
 }
 
+/// Where an encoder finds a per-remote baseline: for a remote missing from
+/// the frame-level baseline, the newest frame the client acknowledged that
+/// carries it (native codec, `MASK_OWN_BASE`).
+pub trait RemoteBases {
+    /// The tick of an acknowledged frame carrying `id`, and its sample
+    /// there; `None` when no such frame is held.
+    fn base_for(&self, id: EntityId) -> Option<(Tick, &RemoteSample)>;
+}
+
+/// No per-remote baselines.
+pub struct NoRemoteBases;
+
+impl RemoteBases for NoRemoteBases {
+    fn base_for(&self, _id: EntityId) -> Option<(Tick, &RemoteSample)> {
+        None
+    }
+}
+
 impl SnapshotVisitor for SnapshotFrame {
     fn header(&mut self, header: &SnapshotHeader) {
         self.header = *header;

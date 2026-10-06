@@ -185,7 +185,7 @@ impl VatInfo {
     /// The frame position (integer part a frame, fraction the blend to the next) at
     /// `seconds` of playback.
     pub fn frame_at(&self, seconds: f32) -> f32 {
-        #[allow(clippy::cast_precision_loss)] // Frame counts are far below 2^24.
+        #[expect(clippy::cast_precision_loss)] // Frame counts are far below 2^24.
         let frames = self.frame_count.max(1) as f32;
         let f = if self.seconds_per_frame > 0.0 && seconds.is_finite() {
             seconds.max(0.0) / self.seconds_per_frame

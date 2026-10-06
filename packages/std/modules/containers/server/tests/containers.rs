@@ -1,7 +1,7 @@
 //! std.containers end to end: grants from services, moving, merging,
 //! splitting, destroying, atomic rollback, ledgers on outcomes, and replay.
 
-#![allow(clippy::unwrap_used, clippy::cast_possible_truncation)]
+#![expect(clippy::unwrap_used, clippy::cast_possible_truncation)]
 
 use std::sync::Arc;
 

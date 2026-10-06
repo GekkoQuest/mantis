@@ -3,7 +3,7 @@
 //! bundles, streamed around a moving camera through the streaming pool into the
 //! renderer, with unloads, a tampered object, and a wrong key failing closed.
 
-#![allow(clippy::cast_precision_loss, clippy::too_many_lines, clippy::indexing_slicing)] // Test geometry.
+#![expect(clippy::cast_precision_loss, clippy::too_many_lines, clippy::indexing_slicing)] // Test geometry.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;

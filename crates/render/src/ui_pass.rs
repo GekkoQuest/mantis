@@ -53,7 +53,7 @@ pub struct UiRenderer {
 
 impl UiRenderer {
     /// A pass drawing up to `capacity` quads per frame into `format` targets.
-    #[allow(clippy::too_many_lines)] // One-time pipeline construction, declarative descriptors.
+    #[expect(clippy::too_many_lines)] // One-time pipeline construction, declarative descriptors.
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat, capacity: u32) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("ui"),
@@ -216,7 +216,7 @@ impl UiRenderer {
 
     /// Uploads this frame's quads (beyond capacity they are dropped and counted) and the
     /// atlas changes, for a `target` of `[width, height]` pixels.
-    #[allow(clippy::cast_precision_loss)] // Pixel sizes are far below 2^24.
+    #[expect(clippy::cast_precision_loss)] // Pixel sizes are far below 2^24.
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,

@@ -1,7 +1,7 @@
 //! The forward renderer end to end. API validation runs on the no-op backend everywhere;
 //! pixel checks run on a real headless adapter (skipped and counted when none exists).
 
-#![allow(
+#![expect(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss

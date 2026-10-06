@@ -27,3 +27,17 @@ note = "soak-10m, first half of the cross-architecture pair"
 [tier.ci-aarch64]
 cpu = "CI runner, aarch64, 4 vCPU or more"
 note = "soak-10m, second half of the cross-architecture pair"
+
+[tier.min]
+cpu = "4 cores / 8 threads, 2019-era mobile or desktop class (about Ryzen 5 3500U / Core i5-10210U)"
+gpu = "integrated graphics, Vulkan 1.2 (about Radeon Vega 8 / Iris Xe), 2 GB shared"
+display = "1280x720 windowed"
+memory_gb = 8
+note = "lowest supported client; no budget row is measured here yet"
+
+[tier.mid]
+cpu = "6 cores / 12 threads, 2021-era desktop class (about Ryzen 5 5600 / Core i5-12400)"
+gpu = "discrete, 6 GB or more (about GeForce GTX 1660 / Radeon RX 6600)"
+display = "1920x1080 fullscreen"
+memory_gb = 16
+note = "the mainstream client target; no budget row is measured here yet"

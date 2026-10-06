@@ -247,7 +247,7 @@ fn light_texel(
             (dir.dot(tri.face) > 0.0).then(|| trace(&scene.bvh, origin, dir))
         })
         .collect();
-    #[allow(clippy::cast_precision_loss)] // Sample counts are at most 16384.
+    #[expect(clippy::cast_precision_loss)] // Sample counts are at most 16384.
     let inv = 1.0 / dirs.len().max(1) as f32;
     settings
         .keyframes
@@ -268,7 +268,7 @@ fn light_texel(
         .collect()
 }
 
-#[allow(clippy::cast_precision_loss)] // Texel coordinates are at most 8192.
+#[expect(clippy::cast_precision_loss)] // Texel coordinates are at most 8192.
 fn rasterize(
     scene: &Scene,
     settings: &Settings,
@@ -290,7 +290,7 @@ fn rasterize(
         let hi = texel_tri
             .iter()
             .fold([f32::MIN; 2], |m, q| [m[0].max(q[0]), m[1].max(q[1])]);
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Clamped to the side.
+        #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Clamped to the side.
         let clamp = |v: f32| v.floor().clamp(0.0, scale - 1.0) as u32;
         for row in clamp(lo[1])..=clamp(hi[1]) {
             for col in clamp(lo[0])..=clamp(hi[0]) {
@@ -333,7 +333,7 @@ fn rasterize(
 }
 
 /// Fills empty texels of `rect` from filled 8-neighbors inside it, `passes` times.
-#[allow(clippy::cast_precision_loss)] // At most 8 neighbors.
+#[expect(clippy::cast_precision_loss)] // At most 8 neighbors.
 fn dilate(out: &mut Texels, rect: Rect, passes: u32) {
     for _ in 0..passes {
         let snapshot = out.filled.clone();
@@ -375,7 +375,7 @@ fn dilate(out: &mut Texels, rect: Rect, passes: u32) {
 }
 
 /// The content side (texels) of each receiver at `density`.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Clamped to the atlas.
+#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Clamped to the atlas.
 fn sides(scene: &Scene, settings: &Settings, density: f32) -> Vec<u32> {
     let most = settings.max_size.saturating_sub(2 * settings.padding).max(2);
     scene
@@ -393,7 +393,7 @@ fn sides(scene: &Scene, settings: &Settings, density: f32) -> Vec<u32> {
 /// # Errors
 /// [`CookError`] at the first lightmapped placement when the rectangles cannot fit in
 /// `lightmap_max_size` at any density.
-#[allow(clippy::cast_precision_loss)] // Atlas sizes are at most 8192.
+#[expect(clippy::cast_precision_loss)] // Atlas sizes are at most 8192.
 pub fn bake(scene: &Scene, settings: &Settings, path: &str) -> Result<Option<Baked>, CookError> {
     let Some(first) = scene.receivers.first() else {
         return Ok(None);

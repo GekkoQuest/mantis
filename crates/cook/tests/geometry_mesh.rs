@@ -1,7 +1,7 @@
 //! Mesh importers: OBJ parsing, handedness, normals, welding, meshlets, sidecars, skinned
 //! meshes, errors with locations, determinism.
 
-#![allow(
+#![expect(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,

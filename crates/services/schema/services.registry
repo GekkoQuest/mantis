@@ -60,3 +60,16 @@
 59 StoreGuildRows
 60 ReadGuildRows
 61 GuildRows
+62 StoreFriendRows
+63 ReadFriendRows
+64 FriendRows
+65 AuditBegin
+66 AuditId
+67 AuditComplete
+68 ReadAudit
+69 AuditRows
+70 PollRealm
+71 RealmEpoch
+72 StoreLive
+73 ReadLive
+74 LiveValues

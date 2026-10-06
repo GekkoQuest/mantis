@@ -1,0 +1,45 @@
+# The Mantis service registry of the local compose cluster. scripts/deploy-local.ps1 fills
+# in the serial, the live-data public key and the cluster CA, then signs it with the deploy key: any change
+# after signing is refused by every node.
+format = "mantis.registry"
+version = 2
+serial = @SERIAL@
+cluster = "compose-local"
+live_key = "@LIVE_KEY@"
+ca = ["@CA@"]
+
+[instance.persist-1]
+role = "persist"
+rpc = "10.77.0.5:7505"
+health = "10.77.0.5:7605"
+
+[instance.account-1]
+role = "account"
+rpc = "10.77.0.11:7501"
+health = "10.77.0.11:7601"
+
+[instance.realm-1]
+role = "realm"
+rpc = "10.77.0.12:7502"
+health = "10.77.0.12:7602"
+
+[instance.social-1]
+role = "social"
+rpc = "10.77.0.13:7503"
+health = "10.77.0.13:7603"
+
+[instance.matchmaking-1]
+role = "matchmaking"
+rpc = "10.77.0.14:7504"
+health = "10.77.0.14:7604"
+
+[instance.ops-1]
+role = "ops"
+rpc = "10.77.0.15:7506"
+health = "10.77.0.15:7606"
+
+[instance.cells-1]
+role = "cell-host"
+rpc = "10.77.0.20:7520"
+health = "10.77.0.20:7620"
+cells = [1, 2, 3]

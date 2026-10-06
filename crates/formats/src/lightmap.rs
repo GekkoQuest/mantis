@@ -39,7 +39,7 @@ pub struct Lightmap {
 }
 
 /// Decodes one `Rgb9e5Ufloat` texel to linear RGB.
-#[allow(clippy::cast_possible_wrap, clippy::cast_precision_loss)] // 5- and 9-bit fields.
+#[expect(clippy::cast_possible_wrap, clippy::cast_precision_loss)] // 5- and 9-bit fields.
 pub fn rgb9e5_to_rgb(v: u32) -> [f32; 3] {
     let exponent = (v >> 27) as i32 - 15 - 9;
     let scale = 2.0f32.powi(exponent);
@@ -49,7 +49,7 @@ pub fn rgb9e5_to_rgb(v: u32) -> [f32; 3] {
 
 /// Encodes linear RGB as `Rgb9e5Ufloat` (negative and non-finite components become 0;
 /// values beyond the format's range saturate).
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Ranges clamped.
+#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Ranges clamped.
 pub fn rgb_to_rgb9e5(color: [f32; 3]) -> u32 {
     const MAX: f32 = 65_408.0; // (511 / 512) * 2^16
     let clean = |x: f32| if x.is_finite() { x.clamp(0.0, MAX) } else { 0.0 };
@@ -107,7 +107,7 @@ impl Lightmap {
                 actual: bytes.len() as u64,
             });
         }
-        #[allow(clippy::cast_possible_truncation)] // At most 2^26 texels.
+        #[expect(clippy::cast_possible_truncation)] // At most 2^26 texels.
         let texels = texels as usize;
         let mut layers = Vec::with_capacity(keyframes.len());
         for _ in 0..keyframes.len() {

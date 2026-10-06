@@ -33,7 +33,7 @@ pub(crate) fn from_u8(t: [u8; 4]) -> V4 {
 }
 
 /// `v` rounded to the nearest integer (halves up) and clamped to `0..=max`; NaN is 0.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to 0..=max first
+#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to 0..=max first
 pub(crate) fn round_clamp(v: f32, max: u8) -> u8 {
     let v = if v.is_nan() { 0.0 } else { v };
     (v.clamp(0.0, f32::from(max)) + 0.5).floor() as u8

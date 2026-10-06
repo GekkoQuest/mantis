@@ -1,0 +1,12 @@
+# Owner: deploy-engine
+# Build context of base.Containerfile: the sources cargo needs, nothing built or generated.
+**/target
+target
+.git
+.github
+.claude
+deploy/local
+**/*.der
+**/*.log
+**/soak-out
+docs

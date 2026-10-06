@@ -74,7 +74,7 @@ impl Default for PostSettings {
 }
 
 /// The radical inverse of `index` in `base`.
-#[allow(clippy::cast_precision_loss)] // Small indices and bases.
+#[expect(clippy::cast_precision_loss)] // Small indices and bases.
 pub fn halton(mut index: u32, base: u32) -> f32 {
     let mut f = 1.0f32;
     let mut r = 0.0f32;
@@ -97,7 +97,7 @@ pub fn jitter(frame: u64) -> Vec2 {
 /// `proj` shifted so geometry lands `jitter_px` pixels right and down on a
 /// `width x height` target.
 #[must_use]
-#[allow(clippy::cast_precision_loss)] // Pixel sizes are far below 2^24.
+#[expect(clippy::cast_precision_loss)] // Pixel sizes are far below 2^24.
 pub fn jittered(proj: Mat4, jitter_px: Vec2, width: u32, height: u32) -> Mat4 {
     let jx = 2.0 * jitter_px.x / width.max(1) as f32;
     let jy = -2.0 * jitter_px.y / height.max(1) as f32;
@@ -111,7 +111,7 @@ pub fn jittered(proj: Mat4, jitter_px: Vec2, width: u32, height: u32) -> Mat4 {
 }
 
 /// Bakes the grading table: `LUT_SIZE` cubed RGBA16F texels, red fastest.
-#[allow(clippy::cast_precision_loss)] // LUT coordinates are tiny.
+#[expect(clippy::cast_precision_loss)] // LUT coordinates are tiny.
 pub fn bake_lut(grading: &ColorGrading) -> Vec<[u16; 4]> {
     let n = LUT_SIZE;
     let scale = 1.0 / (n - 1) as f32;
@@ -282,7 +282,7 @@ pub fn bloom_desc(width: u32, height: u32) -> crate::graph::TextureDesc {
 
 impl PostChain {
     /// Creates every post pipeline and the persistent history and grading textures.
-    #[allow(clippy::too_many_lines)] // One-time construction, in pass order.
+    #[expect(clippy::too_many_lines)] // One-time construction, in pass order.
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -474,7 +474,7 @@ impl PostChain {
     ///
     /// # Errors
     /// A message naming a graph texture without a physical backing.
-    #[allow(clippy::too_many_lines)] // Declarative bind group tables, one entry per binding.
+    #[expect(clippy::too_many_lines)] // Declarative bind group tables, one entry per binding.
     pub fn bind<F: ?Sized>(
         &mut self,
         device: &wgpu::Device,
@@ -652,7 +652,7 @@ impl PostChain {
     }
 
     /// Per-frame parameters. `view_proj` is the unjittered camera matrix. Allocation-free.
-    #[allow(clippy::cast_precision_loss)] // Pixel sizes are far below 2^24.
+    #[expect(clippy::cast_precision_loss)] // Pixel sizes are far below 2^24.
     pub fn prepare(&mut self, view_proj: Mat4, settings: &PostSettings, exposure: f32) {
         let (w, h) = (self.width.max(1) as f32, self.height.max(1) as f32);
         let j = if settings.taa {

@@ -115,10 +115,22 @@ pub struct SessionLimiter {
 
 impl SessionLimiter {
     /// True when a message of `kind` may pass at host poll `poll`.
-    pub fn admit(&mut self, kind: Kind, poll: u64, tick_rate: u32, limits: &RateLimits) -> bool {
+    /// `slipped` is the ticks of wall time this poll follows without the
+    /// host reading (a stall): what clients sent at their real rate meanwhile
+    /// arrives together, so the bucket holds that much more for this poll.
+    pub fn admit(
+        &mut self,
+        kind: Kind,
+        poll: u64,
+        tick_rate: u32,
+        limits: &RateLimits,
+        slipped: u64,
+    ) -> bool {
         let b = kind.bucket(limits);
-        let cap = u64::from(b.burst).saturating_mul(1000);
         let per_poll = u64::from(b.per_second).saturating_mul(1000) / u64::from(tick_rate.max(1));
+        let cap = u64::from(b.burst)
+            .saturating_mul(1000)
+            .saturating_add(per_poll.saturating_mul(slipped));
         let (tokens, last) = self.buckets.entry(kind).or_insert((cap, poll));
         let elapsed = poll.saturating_sub(*last);
         *tokens = tokens.saturating_add(per_poll.saturating_mul(elapsed)).min(cap);

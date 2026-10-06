@@ -2,7 +2,7 @@
 //! stock table, and the `selling` flag. Bags come from a stand-in
 //! implementing the `std.containers` contract.
 
-#![allow(clippy::unwrap_used)]
+#![expect(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

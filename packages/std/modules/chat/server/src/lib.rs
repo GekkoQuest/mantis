@@ -32,6 +32,9 @@ pub struct Chat {
     /// Character -> (window start tick, lines in the window).
     pub windows: BTreeMap<u64, (Tick, u32)>,
     lines: Option<MetricId>,
+    /// Whether the package has a guild module (resolved at start; Ops may
+    /// still switch it on and off). Configuration, not state.
+    guilds: bool,
 }
 
 impl StateHash for Chat {
@@ -203,17 +206,20 @@ fn say(
     Ok(())
 }
 
-/// The speaker's guild, through the `std.guild` contract. The guild
-/// module is optional (chat does not depend on it): a package without one
-/// has no guild channel.
+/// The speaker's guild, through the `std.guild` contract, an optional one
+/// (the manifest's `optional`): a package without a guild module has no
+/// guild channel, as resolved at start.
 fn guild_of(world: &World, from: u64) -> Result<u32, ExtensionRefusal> {
+    if !world.resource::<Chat>().is_some_and(|c| c.guilds) {
+        return Err(ExtensionRefusal::NotAllowed);
+    }
     match ask(world, &GuildOf(from)) {
         Ok(Some(g)) => Ok(g.id),
-        // No guild, the guild module off, or no guild module in this
-        // package: not allowed (the chat module itself is still on).
-        Ok(None) | Err(QueryError::FeatureDisabled(_) | QueryError::NoProvider(_)) => {
-            Err(ExtensionRefusal::NotAllowed)
-        }
+        // No guild, or the guild module off: not allowed (the chat module
+        // itself is still on).
+        Ok(None) | Err(QueryError::FeatureDisabled(_)) => Err(ExtensionRefusal::NotAllowed),
+        // Resolved present, yet nothing answers: a broken package.
+        Err(QueryError::NoProvider(_)) => Err(ExtensionRefusal::Invalid),
     }
 }
 
@@ -252,8 +258,10 @@ impl ServerModule for Module {
 
     fn register(&self, r: &mut Registrar<'_>) -> Result<(), RegistryError> {
         let lines = r.metric("lines");
+        let guilds = r.optional("std.guild").exists();
         r.resource(Chat {
             lines: Some(lines),
+            guilds,
             ..Chat::default()
         })?;
         r.handler(ExtensionKind(Say::ID.0), Require::Avatar, say)?;

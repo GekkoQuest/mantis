@@ -6,7 +6,7 @@
 //!   allocation harness through the worker set's job wrapper;
 //! - total snapshot bytes per client per second: under 20 KB.
 
-#![allow(clippy::cast_precision_loss)]
+#![expect(clippy::cast_precision_loss)]
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -79,9 +79,44 @@ fn cell_500_100_allocates_nothing_per_tick_including_encode_jobs() {
     assert_eq!(JOB_ALLOCS.load(Ordering::Relaxed), 0, "an encode job allocated");
 }
 
+/// Snapshot bytes per client per second and per frame.
+fn snapshot_bytes(t: &Tunables, ticks: u64) -> Result<(f64, f64), mantis_server::cell::CellError> {
+    let mut crowd = Crowd::cell_500_100(t, 2)?;
+    let mut sink = Bytes::default();
+    for _ in 0..60 {
+        crowd.tick(&mut sink, None)?;
+    }
+    let mut sink = Bytes::default();
+    for _ in 0..ticks {
+        crowd.tick(&mut sink, None)?;
+    }
+    let seconds = ticks as f64 / f64::from(t.tick_rate.hz());
+    let per_client = sink.total as f64 / crowd.clients() as f64 / seconds;
+    let per_frame = sink.total as f64 / sink.frames as f64;
+    Ok((per_client, per_frame))
+}
+
+/// Per-remote snapshot baselines are off in the shipped tunables (the
+/// encode row's headroom); their bandwidth is tracked here, not gated.
+#[test]
+fn cell_500_100_snapshot_bytes_with_own_bases_is_reported() {
+    let mut t = Tunables::defaults().unwrap();
+    let (off, _) = snapshot_bytes(&t, 300).unwrap();
+    t.interest.snapshot_own_bases = true;
+    let (on, per_frame) = snapshot_bytes(&t, 300).unwrap();
+    println!(
+        "MANTIS-METRIC cell_500_100_own_bases snapshot_bytes_per_client_per_s={on:.0} per_frame={per_frame:.0} without={off:.0}"
+    );
+    assert!(on < off, "own bases send fewer bytes: {on:.0} vs {off:.0}");
+}
+
 #[test]
 fn cell_500_100_snapshot_bytes_per_client_per_second() {
     let t = Tunables::defaults().unwrap();
+    assert!(
+        !t.interest.snapshot_own_bases,
+        "budget rows measure the shipped default"
+    );
     let mut crowd = Crowd::cell_500_100(&t, 2).unwrap();
     let mut sink = Bytes::default();
     for _ in 0..60 {

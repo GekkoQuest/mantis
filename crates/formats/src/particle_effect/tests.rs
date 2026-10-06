@@ -211,7 +211,7 @@ fn record_bytes_reject() {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)] // One declarative table of rule cases.
+#[expect(clippy::too_many_lines)] // One declarative table of rule cases.
 fn value_rules_reject() {
     let d = FormatError::Dimensions;
     let k = FormatError::Keyframes;

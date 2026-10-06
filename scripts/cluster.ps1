@@ -2,7 +2,7 @@
 # Runs `toy-server cluster`: serve plus every service role in one process (account,
 # realm, social, matchmaking, the persistence writer, Ops and its HTTPS dashboard on
 # -Ops). The operator token is written to -OpsTokenFile, the dashboard's certificate
-# to -OpsCertOut.
+# to -OpsCertOut, and where load bots log in to -LoginOut (for `bots.ps1 -Login`).
 #
 # The store is in memory unless -Postgres names a connection string to a PostgreSQL
 # you already run (for example "host=localhost user=mantis dbname=mantis"). This
@@ -13,6 +13,7 @@ param(
     [string]$Ops = '127.0.0.1:7443',
     [string]$OpsTokenFile = 'ops-token.txt',
     [string]$OpsCertOut = 'ops-cert.der',
+    [string]$LoginOut = 'login.txt',
     [string]$Cooked = 'packages/toy/cooked',
     [string]$Key = 'packages/toy/cooked/keys/dev.pub',
     [string]$CertOut = 'dev-cert.der',
@@ -27,7 +28,8 @@ param(
 
 $a = (Get-ToyServerArgs -Release:$Release) + @('cluster', '--quic', $Quic, '--tcp', $Tcp,
     '--cooked', $Cooked, '--key', $Key, '--cert-out', $CertOut, '--seed', "$Seed",
-    '--ops', $Ops, '--ops-token-file', $OpsTokenFile, '--ops-cert-out', $OpsCertOut)
+    '--ops', $Ops, '--ops-token-file', $OpsTokenFile, '--ops-cert-out', $OpsCertOut,
+    '--login-out', $LoginOut)
 if ($Postgres) {
     Write-Host 'store: PostgreSQL at the given connection (an existing database; nothing is pulled)'
     $a += @('--postgres', $Postgres)

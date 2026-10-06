@@ -167,7 +167,7 @@ impl WorldIndex {
     /// # Errors
     /// [`WorldError`] for an unreadable or malformed sector, or
     /// [`WorldError::OrphanVisual`].
-    #[allow(clippy::cast_precision_loss)] // Sector coordinates are far below 2^24.
+    #[expect(clippy::cast_precision_loss)] // Sector coordinates are far below 2^24.
     pub fn build(store: &ContentStore, gameplay: &Bundle, presentation: &Bundle) -> Result<Self, WorldError> {
         let mut visuals: BTreeMap<(i32, i32), ContentHash> = presentation
             .entries
@@ -482,7 +482,7 @@ struct Loader {
     unloads: Vec<ContentHash>,
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Clamped to u32.
+#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Clamped to u32.
 fn priority(p: f32) -> Priority {
     Priority((p.clamp(0.0, 1.0) * 1_000_000.0) as u32)
 }

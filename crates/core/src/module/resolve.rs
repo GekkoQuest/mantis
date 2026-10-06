@@ -37,6 +37,38 @@ pub struct Resolved {
     pub depends_on: Vec<String>,
     /// Gameplay graph actions it declares (its manifest's `graph_actions`).
     pub graph_actions: Vec<String>,
+    /// Its optional contracts and what the package provides for each.
+    pub optional: Vec<(String, OptionalProvider)>,
+}
+
+/// What a package provides for a module's optional contract: a resolved
+/// fact, not something found out when a query has no answer.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum OptionalProvider {
+    /// This module implements it and is enabled.
+    Present(String),
+    /// This module implements it but is disabled (Ops may enable it live).
+    Disabled(String),
+    /// No module of the package implements it.
+    Absent,
+}
+
+impl OptionalProvider {
+    /// True when some module implements the contract (enabled or not).
+    #[must_use]
+    pub fn exists(&self) -> bool {
+        !matches!(self, Self::Absent)
+    }
+}
+
+impl std::fmt::Display for OptionalProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Present(k) => write!(f, "{k}"),
+            Self::Disabled(k) => write!(f, "{k}, disabled"),
+            Self::Absent => f.write_str("absent"),
+        }
+    }
 }
 
 /// A package's resolved modules, in registration order (dependencies first;
@@ -113,6 +145,9 @@ impl ModuleGraph {
             }
             if !m.depends_on.is_empty() {
                 let _ = write!(s, ", needs {}", m.depends_on.join(", "));
+            }
+            for (contract, provider) in &m.optional {
+                let _ = write!(s, ", optional {contract}: {provider}");
             }
             let off: Vec<&str> = m
                 .flags
@@ -348,7 +383,15 @@ fn edges<'a>(
             }
             deps.push(t.key.clone());
         }
+        // An optional contract a module of the package implements orders
+        // that module first, like a dependency, but never stops this one.
+        for contract in &m.optional {
+            if let Some(target) = by_contract.get(contract.as_str()) {
+                deps.push(target.manifest.key.clone());
+            }
+        }
         deps.sort();
+        deps.dedup();
         edges.insert(m.key.as_str(), deps);
     }
     Ok(edges)
@@ -409,8 +452,36 @@ pub fn resolve(
                     .map(|k| (*k).to_owned()),
                 enabled: enabled(&flags, key),
                 flags: flags.get(key).cloned().unwrap_or_default(),
-                depends_on: edges.get(key).cloned().unwrap_or_default(),
+                depends_on: edges
+                    .get(key)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|k| {
+                        !m.optional.iter().any(|c| {
+                            kept.iter()
+                                .any(|o| o.manifest.key == *k && o.manifest.contract == *c)
+                        })
+                    })
+                    .collect(),
                 graph_actions: m.graph_actions.clone(),
+                optional: m
+                    .optional
+                    .iter()
+                    .map(|c| {
+                        let provider = kept.iter().find(|o| o.manifest.contract == *c).map_or(
+                            OptionalProvider::Absent,
+                            |o| {
+                                if enabled(&flags, &o.manifest.key) {
+                                    OptionalProvider::Present(o.manifest.key.clone())
+                                } else {
+                                    OptionalProvider::Disabled(o.manifest.key.clone())
+                                }
+                            },
+                        );
+                        (c.clone(), provider)
+                    })
+                    .collect(),
             })
         })
         .collect();

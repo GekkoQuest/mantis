@@ -1,7 +1,7 @@
 //! Runtime integration: a full graph built from encoded assets updates without
 //! allocating, and parallel batch evaluation matches serial evaluation bit for bit.
 
-#![allow(clippy::cast_precision_loss)] // Test data generation from small loop indices.
+#![expect(clippy::cast_precision_loss)] // Test data generation from small loop indices.
 
 use std::sync::Arc;
 

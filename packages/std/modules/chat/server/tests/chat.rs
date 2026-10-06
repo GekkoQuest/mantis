@@ -3,7 +3,7 @@
 //! stand-in implementing the `std.party` contract: a module depends on
 //! contracts, never on another module's implementation.
 
-#![allow(clippy::unwrap_used)]
+#![expect(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
@@ -193,4 +193,67 @@ fn a_whisper_names_its_recipient() {
         })
         .collect();
     assert_eq!(got, [(WHISPER, 13), (LOCAL, 0)]);
+}
+
+const GUILD_STAND_IN: &str =
+    "[module]\nkey = \"test.guild\"\nversion = \"0.1.0\"\ncontract = \"std.guild\"\n";
+
+/// Implements the std.guild contract: 11 and 12 are in guild 5.
+struct StandInGuild;
+
+impl ServerModule for StandInGuild {
+    fn key(&self) -> &'static str {
+        "test.guild"
+    }
+    fn register(&self, r: &mut Registrar<'_>) -> Result<(), RegistryError> {
+        r.query::<std_guild_contract::GuildOf>(|_, q| {
+            [11, 12]
+                .contains(&q.0)
+                .then_some(std_guild_contract::GuildView { id: 5, rank: 2 })
+        })
+    }
+}
+
+#[test]
+fn the_guild_channel_follows_whether_the_package_has_guilds() {
+    use mantis_server::service::SocialLine as Wire;
+    // No guild module: resolved absent at start; the channel is refused,
+    // and nothing is asked or sent.
+    let mut h = bed(&[]);
+    let graph = h.graph().render();
+    assert!(graph.contains("optional std.guild: absent"), "{graph}");
+    say(&mut h, 1, std_chat_contract::GUILD, 0, "anyone?");
+    h.tick().unwrap();
+    assert_eq!(h.take(1).refusals[0].1, ExtensionRefusal::NotAllowed);
+    assert!(h.to_services.is_empty());
+
+    // With one: the speaker sees the line and social carries it.
+    let mut h = Harness::new(
+        &[
+            Arc::new(std_chat_server::Module),
+            Arc::new(StandInParty),
+            Arc::new(StandInGuild),
+        ],
+        &[CHAT, STAND_IN, GUILD_STAND_IN],
+        &[],
+        &[],
+    )
+    .unwrap();
+    h.join(1, 11, 0.0, 0.0);
+    h.join(3, 13, 100.0, 0.0);
+    h.tick().unwrap();
+    say(&mut h, 1, std_chat_contract::GUILD, 0, "meet at the gate");
+    h.tick().unwrap();
+    assert_eq!(
+        lines(&mut h, 1),
+        vec![(std_chat_contract::GUILD, 11, "meet at the gate".to_owned())]
+    );
+    let (topic, bytes) = h.to_services.last().unwrap().clone();
+    assert_eq!(topic, SOCIAL_PUBLISH);
+    let out = Wire::parse(&bytes).unwrap();
+    assert_eq!((out.channel, out.to), (social::GUILD, 5));
+    // 13 has no guild.
+    say(&mut h, 3, std_chat_contract::GUILD, 0, "me too");
+    h.tick().unwrap();
+    assert_eq!(h.take(3).refusals[0].1, ExtensionRefusal::NotAllowed);
 }

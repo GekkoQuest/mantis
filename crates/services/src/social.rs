@@ -9,28 +9,30 @@
 //! projections. A character arriving in a cell is sent its roster, lists,
 //! and guild, so the projection follows it across transfers.
 //!
-//! Parties and friends are in memory: a restarted role starts a new epoch
-//! and rebuilds them from what cells offer back (their projections).
-//! Guilds are durable: every guild change is written through the
-//! persistence writer before anyone is told of it, and a restarted role
-//! reads the rows back ([`SocialService::load_guilds`]).
+//! Parties are in memory: a restarted role starts a new epoch and rebuilds
+//! them from what cells offer back (their projections). Guilds, friend
+//! lists, and open friend requests are durable: every change is written
+//! through the persistence writer before anyone is told of it, and a
+//! restarted role reads the rows back ([`SocialService::load_durable`]), so
+//! they survive a restart even between characters that are all offline.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use mantis_core::social::{
-    FRIEND_OP, FRIEND_UPDATE, FriendBook, FriendOp, FriendUpdate, GUILD_OP, GUILD_UPDATE, GuildBook,
-    GuildChange, GuildOp, GuildOutcome, GuildUpdate, PARTY_OP, PARTY_UPDATE, PartyBook, PartyOp,
+    FRIEND_OP, FRIEND_UPDATE, FriendBook, FriendOp, FriendOutcome, FriendUpdate, GUILD_OP, GUILD_UPDATE,
+    GuildBook, GuildOp, GuildOutcome, GuildUpdate, PARTY_OP, PARTY_UPDATE, PartyBook, PartyOp,
 };
 use mantis_core::wire::{BoundedArray, Wire, WireString, decode_exact};
 
 use crate::generated::services as m;
 use crate::host::RPC_TIMEOUT;
-use crate::host::rpc::{Router, RpcClient, RpcError};
-use crate::host::{now_ms, refused};
+use crate::host::clock::ServiceClock;
+use crate::host::refused;
+use crate::host::rpc::{Method, Router, RpcClient, RpcError};
 use crate::methods;
-use crate::persist::{guild_change, guild_row};
+use crate::persist::{friend_change, friend_row, guild_change, guild_row};
 
 /// The longest wait between attempts to make a guild change durable.
 pub const DURABLE_RETRY_MAX: Duration = Duration::from_secs(1);
@@ -52,8 +54,9 @@ struct State {
     friends: FriendBook,
     /// Per cell: the next projection sequence number, and the queue.
     projections: BTreeMap<u64, (u64, Vec<m::Projected>)>,
-    /// Per cell: the last relayed operation applied.
-    relayed: BTreeMap<u64, u64>,
+    /// Per cell: the relaying link's run and the last operation applied in
+    /// it.
+    relayed: BTreeMap<u64, (u64, u64)>,
     /// Cells whose projection this run has received (after a restart, a
     /// cell's operations wait until its host restored it).
     restored: BTreeSet<u64>,
@@ -64,6 +67,14 @@ struct State {
     guilds: GuildBook,
     /// The last guild batch made durable.
     guild_seq: u64,
+    /// The last friend batch made durable.
+    friend_seq: u64,
+}
+
+/// A durable operation's outcome: written through the writer, then told.
+enum Durable {
+    Guild(GuildOutcome),
+    Friends(FriendOutcome),
 }
 
 impl State {
@@ -126,22 +137,30 @@ impl State {
                     self.project(u.to(), PARTY_UPDATE, &u);
                 }
             }
-            FRIEND_OP => {
-                let op: FriendOp = decode_exact(payload).map_err(|_| RpcError::Malformed)?;
-                for u in self.friends.apply(&op) {
-                    self.project(u.to(), FRIEND_UPDATE, &u);
-                }
-            }
             _ => return Err(refused("no such topic")),
         }
         Ok(())
     }
 
-    /// Applies a guild operation; its updates wait until its changes are
-    /// durable.
-    fn relay_guild(&mut self, payload: &[u8], now_ms: u64) -> Result<GuildOutcome, RpcError> {
-        let op: GuildOp = decode_exact(payload).map_err(|_| RpcError::Malformed)?;
-        Ok(self.guilds.apply(&op, now_ms))
+    /// Applies a guild or friends operation; its updates wait until its
+    /// changes are durable. `None` for any other topic.
+    fn relay_durable(
+        &mut self,
+        topic: u16,
+        payload: &[u8],
+        now_ms: u64,
+    ) -> Result<Option<Durable>, RpcError> {
+        Ok(match topic {
+            GUILD_OP => {
+                let op: GuildOp = decode_exact(payload).map_err(|_| RpcError::Malformed)?;
+                Some(Durable::Guild(self.guilds.apply(&op, now_ms)))
+            }
+            FRIEND_OP => {
+                let op: FriendOp = decode_exact(payload).map_err(|_| RpcError::Malformed)?;
+                Some(Durable::Friends(self.friends.apply(&op)))
+            }
+            _ => None,
+        })
     }
 
     /// Queues a chat line for the cell hosting `to` (dropped when `to` is
@@ -176,20 +195,29 @@ pub struct SocialService {
     /// One operation at a time from apply to projection, so updates leave
     /// in the order their changes became durable.
     order: Arc<tokio::sync::Mutex<()>>,
+    clock: ServiceClock,
 }
 
 impl SocialService {
-    /// No guilds, nobody online, no writer (guilds in memory only). Its
+    /// No guilds, nobody online, no writer (guilds and friends in memory
+    /// only, for tests of the rules alone). Its
     /// epoch is the start time, so a restarted role is a new epoch.
     #[must_use]
     pub fn new() -> Self {
-        let s = Self::default();
-        s.lock().epoch = now_ms().max(1);
-        s
+        Self::default().clocked(ServiceClock::default())
     }
 
-    /// [`SocialService::new`] writing guild rows through `writer`. Call
-    /// [`SocialService::load_guilds`] before serving.
+    /// The same role on `clock`: its epoch is the clock's time now, and
+    /// guild and party changes are stamped with it.
+    #[must_use]
+    pub fn clocked(mut self, clock: ServiceClock) -> Self {
+        self.lock().epoch = clock.now_ms().max(1);
+        self.clock = clock;
+        self
+    }
+
+    /// [`SocialService::new`] writing guild and friend rows through
+    /// `writer`. Call [`SocialService::load_durable`] before serving.
     #[must_use]
     pub fn with_writer(writer: RpcClient) -> Self {
         let mut s = Self::new();
@@ -197,34 +225,50 @@ impl SocialService {
         s
     }
 
-    /// Reads every durable guild row back from the writer (after a
-    /// restart, before serving). Invitations are not durable and lapse.
+    /// Reads every durable guild and friend row back from the writer (after
+    /// a restart, before serving); returns (guilds, friend rows). Guild
+    /// invitations are not durable and lapse.
     ///
     /// # Errors
     /// The writer's refusal or a malformed row: the role must not serve.
-    pub async fn load_guilds(&self) -> Result<usize, String> {
+    pub async fn load_durable(&self) -> Result<(usize, usize), String> {
         let Some(writer) = &self.writer else {
-            return Ok(0);
+            return Ok((0, 0));
         };
-        let mut rows = Vec::new();
-        let mut seq = 0;
+        let (mut guilds, mut guild_seq) = (Vec::new(), 0);
         for page in 0.. {
             let got = writer
                 .call::<methods::LoadGuilds>(&m::ReadGuildRows { page }, RPC_TIMEOUT)
                 .await
                 .map_err(|e| format!("loading guilds: {e}"))?;
-            seq = got.seq;
+            guild_seq = got.seq;
             for r in got.rows.iter() {
-                rows.push(guild_change(r).ok_or("loading guilds: a malformed row")?);
+                guilds.push(guild_change(r).ok_or("loading guilds: a malformed row")?);
+            }
+            if !got.more {
+                break;
+            }
+        }
+        let (mut friends, mut friend_seq) = (Vec::new(), 0);
+        for page in 0.. {
+            let got = writer
+                .call::<methods::LoadFriends>(&m::ReadFriendRows { page }, RPC_TIMEOUT)
+                .await
+                .map_err(|e| format!("loading friends: {e}"))?;
+            friend_seq = got.seq;
+            for r in got.rows.iter() {
+                friends.push(friend_change(r).ok_or("loading friends: a malformed row")?);
             }
             if !got.more {
                 break;
             }
         }
         let mut s = self.lock();
-        s.guilds = GuildBook::from_rows(&rows);
-        s.guild_seq = seq;
-        Ok(s.guilds.len())
+        s.guilds = GuildBook::from_rows(&guilds);
+        s.guild_seq = guild_seq;
+        s.friends = FriendBook::from_rows(&friends);
+        s.friend_seq = friend_seq;
+        Ok((s.guilds.len(), friends.len()))
     }
 
     /// The guild `character` is in (Ops and tests).
@@ -239,40 +283,59 @@ impl SocialService {
         self.lock().guilds.rank_of(character)
     }
 
-    /// Makes `changes` durable through the writer (retrying the same batch
-    /// until it is), then returns. Without a writer, returns at once.
-    async fn durable(&self, changes: &[GuildChange]) {
-        let Some(writer) = &self.writer else {
-            return;
-        };
-        if changes.is_empty() {
-            return;
-        }
-        let seq = {
-            let mut s = self.lock();
-            s.guild_seq += 1;
-            s.guild_seq
-        };
-        let rows: Vec<m::GuildRow> = changes.iter().map(guild_row).collect();
-        let req = m::StoreGuildRows {
-            seq,
-            rows: BoundedArray::from_slice(&rows).unwrap_or_default(),
-        };
+    /// Calls `M` with `req` until the writer answers (the same batch every
+    /// time: the writer applies it once).
+    async fn until_durable<M: Method>(writer: &RpcClient, req: &M::Request) {
         let mut delay = Duration::from_millis(20);
-        while writer
-            .call::<methods::WriteGuilds>(&req, RPC_TIMEOUT)
-            .await
-            .is_err()
-        {
+        while writer.call::<M>(req, RPC_TIMEOUT).await.is_err() {
             tokio::time::sleep(delay).await;
             delay = (delay * 2).min(DURABLE_RETRY_MAX);
         }
     }
 
-    /// Applies a guild outcome: durable first, then told.
-    async fn settle(&self, outcome: GuildOutcome) {
-        self.durable(&outcome.changes).await;
-        self.lock().project_guild(&outcome.updates);
+    /// Makes an outcome's changes durable through the writer, then projects
+    /// its updates. Without a writer, projects at once.
+    async fn settle(&self, outcome: Durable) {
+        if let Some(writer) = &self.writer {
+            match &outcome {
+                Durable::Guild(o) if !o.changes.is_empty() => {
+                    let seq = {
+                        let mut s = self.lock();
+                        s.guild_seq += 1;
+                        s.guild_seq
+                    };
+                    let rows: Vec<m::GuildRow> = o.changes.iter().map(guild_row).collect();
+                    let req = m::StoreGuildRows {
+                        seq,
+                        rows: BoundedArray::from_slice(&rows).unwrap_or_default(),
+                    };
+                    Self::until_durable::<methods::WriteGuilds>(writer, &req).await;
+                }
+                Durable::Friends(o) if !o.changes.is_empty() => {
+                    let seq = {
+                        let mut s = self.lock();
+                        s.friend_seq += 1;
+                        s.friend_seq
+                    };
+                    let rows: Vec<m::FriendRow> = o.changes.iter().map(friend_row).collect();
+                    let req = m::StoreFriendRows {
+                        seq,
+                        rows: BoundedArray::from_slice(&rows).unwrap_or_default(),
+                    };
+                    Self::until_durable::<methods::WriteFriends>(writer, &req).await;
+                }
+                _ => {}
+            }
+        }
+        let mut s = self.lock();
+        match outcome {
+            Durable::Guild(o) => s.project_guild(&o.updates),
+            Durable::Friends(o) => {
+                for u in &o.updates {
+                    s.project(u.to(), FRIEND_UPDATE, u);
+                }
+            }
+        }
     }
 
     /// This run's epoch.
@@ -331,11 +394,11 @@ impl SocialService {
     /// are sent once its changes are durable, and only then acknowledged.
     async fn relay_op(&self, req: &m::Relay) -> Result<m::RelayAck, RpcError> {
         let _order = self.order.lock().await;
-        let guild = {
+        let durable = {
             let mut s = self.lock();
             let payload: Vec<u8> = req.payload.iter().copied().collect();
             if req.restore {
-                s.relay(req.topic, &payload, now_ms())?;
+                s.relay(req.topic, &payload, self.clock.now_ms())?;
                 return Ok(m::RelayAck {
                     applied: true,
                     needs_restore: false,
@@ -347,23 +410,27 @@ impl SocialService {
                     needs_restore: true,
                 });
             }
-            let last = s.relayed.get(&req.cell.0).copied().unwrap_or(0);
+            // A new run of the cell's host numbers from 1 again.
+            let last = s
+                .relayed
+                .get(&req.cell.0)
+                .filter(|(run, _)| *run == req.run)
+                .map_or(0, |(_, seq)| *seq);
             if req.seq != 0 && req.seq <= last {
                 return Ok(m::RelayAck {
                     applied: false,
                     needs_restore: false,
                 });
             }
-            let guild = if req.topic == GUILD_OP {
-                Some(s.relay_guild(&payload, now_ms())?)
-            } else {
-                s.relay(req.topic, &payload, now_ms())?;
-                None
-            };
-            s.relayed.insert(req.cell.0, req.seq);
-            guild
+            let now = self.clock.now_ms();
+            let durable = s.relay_durable(req.topic, &payload, now)?;
+            if durable.is_none() {
+                s.relay(req.topic, &payload, now)?;
+            }
+            s.relayed.insert(req.cell.0, (req.run, req.seq));
+            durable
         };
-        if let Some(outcome) = guild {
+        if let Some(outcome) = durable {
             self.settle(outcome).await;
         }
         Ok(m::RelayAck {
@@ -443,14 +510,14 @@ impl SocialService {
                         me: req.leader.0,
                         name: req.name.as_str().to_owned(),
                     };
-                    let outcome = s.guilds.apply(&op, now_ms());
+                    let outcome = s.guilds.apply(&op, me.clock.now_ms());
                     let guild = s.guilds.guild_of(req.leader.0);
                     (outcome, guild)
                 };
                 if outcome.changes.is_empty() {
                     return Err(refused("name taken, invalid, or already in a guild"));
                 }
-                me.settle(outcome).await;
+                me.settle(Durable::Guild(outcome)).await;
                 Ok(m::Guild {
                     guild: u64::from(guild.unwrap_or(0)),
                 })
@@ -468,7 +535,7 @@ impl SocialService {
                         .admit(req.character.0, guild)
                         .ok_or_else(|| refused("no such guild, guild full, or already in a guild"))?
                 };
-                me.settle(outcome).await;
+                me.settle(Durable::Guild(outcome)).await;
                 Ok(m::Empty {})
             }
         });

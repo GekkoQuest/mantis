@@ -44,7 +44,7 @@ impl EntityId {
 
     /// Unpacks [`EntityId::to_bits`].
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)] // deliberate split of the two halves
+    #[expect(clippy::cast_possible_truncation)] // deliberate split of the two halves
     pub const fn from_bits(bits: u64) -> Self {
         Self {
             index: bits as u32,

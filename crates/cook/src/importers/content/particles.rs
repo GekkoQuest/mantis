@@ -38,8 +38,8 @@ use mantis_formats::particle_effect::{
     MAX_KEYS, ParticleEffect, SimulationSpace, SizeKey,
 };
 
-use super::fields::{Doc, Fields, output_name, within};
 use crate::importer::{CookError, Cooked, ImportContext, Importer, Source};
+use crate::source::{Doc, Fields, output_name, within};
 
 const SUFFIX: &str = ".particles.toml";
 
@@ -105,7 +105,7 @@ fn numbered(f: &Fields<'_>, prefix: &str, width: usize) -> Result<Vec<(Vec<f32>,
 fn check_keys(f: &Fields<'_>, what: &str, keys: &[(f32, usize)]) -> Result<(), CookError> {
     if keys.is_empty() || keys.len() > MAX_KEYS {
         return Err(f.err(
-            f.line,
+            f.line(),
             &format!("`{what}` needs 1 to {MAX_KEYS} keys, not {}", keys.len()),
         ));
     }
@@ -171,7 +171,7 @@ fn sizes(f: &Fields<'_>) -> Result<Vec<SizeKey>, CookError> {
         keys.push(CurveKey { t, value: [size] });
     }
     if !keys.iter().any(|k| k.value[0] > 0.0) {
-        return Err(f.err(f.line, "every size key is 0: at least one must be positive"));
+        return Err(f.err(f.line(), "every size key is 0: at least one must be positive"));
     }
     Ok(keys)
 }
@@ -180,7 +180,7 @@ fn bursts(f: &Fields<'_>, duration: f32, capacity: u32) -> Result<Vec<Burst>, Co
     let raw = numbered(f, "burst", 2)?;
     if raw.len() > MAX_BURSTS {
         return Err(f.err(
-            f.line,
+            f.line(),
             &format!("{} bursts; an emitter has at most {MAX_BURSTS}", raw.len()),
         ));
     }
@@ -235,7 +235,7 @@ fn shape(f: &Fields<'_>) -> Result<EmitterShape, CookError> {
             if !(angle > 0.0 && angle <= core::f32::consts::PI) {
                 return Err(f.err(al, &format!("cone `angle` = {angle} must be in (0, pi] radians")));
             }
-            let (radius, rl) = f.opt_f32("radius", 0.0)?;
+            let (radius, rl) = f.f32_or("radius", 0.0)?;
             if radius < 0.0 {
                 return Err(f.err(rl, &format!("`radius` = {radius} must be >= 0")));
             }
@@ -275,8 +275,8 @@ fn emitter(f: &Fields<'_>) -> Result<EmitterDef, CookError> {
         ));
     }
     let duration = positive(f, "duration")?;
-    let (looping, _) = f.opt_bool("looping", false)?;
-    let (rate, rl) = f.opt_f32("rate", 0.0)?;
+    let (looping, _) = f.bool_or("looping", false)?;
+    let (rate, rl) = f.f32_or("rate", 0.0)?;
     if rate < 0.0 {
         return Err(f.err(rl, &format!("`rate` = {rate} must be >= 0")));
     }
@@ -288,16 +288,16 @@ fn emitter(f: &Fields<'_>) -> Result<EmitterDef, CookError> {
             &format!("`lifetime_max` = {lifetime_max} is below `lifetime_min` = {lifetime_min}"),
         ));
     }
-    let (speed_min, _) = f.opt_f32("speed_min", 0.0)?;
-    let (speed_max, sl) = f.opt_f32("speed_max", speed_min)?;
+    let (speed_min, _) = f.f32_or("speed_min", 0.0)?;
+    let (speed_max, sl) = f.f32_or("speed_max", speed_min)?;
     if speed_max < speed_min {
         return Err(f.err(
             sl,
             &format!("`speed_max` = {speed_max} is below `speed_min` = {speed_min}"),
         ));
     }
-    let (acceleration, _) = f.opt_array::<3>("acceleration", [0.0; 3])?;
-    let (drag, dl) = f.opt_f32("drag", 0.0)?;
+    let (acceleration, _) = f.array_or::<3>("acceleration", [0.0; 3])?;
+    let (drag, dl) = f.f32_or("drag", 0.0)?;
     if drag < 0.0 {
         return Err(f.err(dl, &format!("`drag` = {drag} must be >= 0")));
     }
@@ -318,7 +318,7 @@ fn emitter(f: &Fields<'_>) -> Result<EmitterDef, CookError> {
     let bursts = bursts(f, duration, capacity)?;
     if rate == 0.0 && bursts.is_empty() {
         return Err(f.err(
-            f.line,
+            f.line(),
             "the emitter never emits: give it a `rate` > 0 or a `burst.0`",
         ));
     }
@@ -341,7 +341,7 @@ fn emitter(f: &Fields<'_>) -> Result<EmitterDef, CookError> {
         space,
     };
     def.validate()
-        .map_err(|e| f.err(f.line, &format!("emitter fails validation: {e}")))?;
+        .map_err(|e| f.err(f.line(), &format!("emitter fails validation: {e}")))?;
     Ok(def)
 }
 
@@ -363,16 +363,14 @@ impl Importer for Particles {
     }
 
     fn import(&self, source: &Source<'_>, _ctx: &ImportContext<'_>) -> Result<Vec<Cooked>, CookError> {
-        let doc = Doc::parse(source)?;
-        doc.only_tables(&[], &["emitter."])?;
-        if let Some(root) = doc.root() {
-            root.only(&[])?;
-        }
+        let doc = Doc::from_source(source)?;
+        doc.only_tables(&[], &["emitter"])?;
+        doc.root().only(&[])?;
         let mut emitters = Vec::new();
         let mut last_line = 0;
-        for (_, f) in doc.prefixed("emitter.") {
+        for (_, f) in doc.items("emitter") {
             emitters.push(emitter(&f)?);
-            last_line = f.line;
+            last_line = f.line();
         }
         if emitters.is_empty() || emitters.len() > MAX_EMITTERS {
             return Err(doc.err(

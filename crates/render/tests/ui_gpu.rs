@@ -3,7 +3,7 @@
 //! a real adapter the pixels must match the UI crate's CPU reference rasterizer, which
 //! defines the shading math.
 
-#![allow(
+#![expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::cast_precision_loss

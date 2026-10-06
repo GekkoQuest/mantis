@@ -34,7 +34,7 @@ pub type Grid = ([u32; 3], [f32; 3], [f32; 3]);
 ///
 /// # Errors
 /// A message when the grid would exceed the format's probe limit.
-#[allow(
+#[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::cast_precision_loss
@@ -79,7 +79,7 @@ fn project(samples: &[(V3, V3)]) -> ShL1 {
             }
         }
     }
-    #[allow(clippy::cast_possible_truncation)] // Clamped to the half range.
+    #[expect(clippy::cast_possible_truncation)] // Clamped to the half range.
     ShL1 {
         rgb: acc.map(|ch| ch.map(|c| c.clamp(-SH_LIMIT, SH_LIMIT) as f32)),
     }
@@ -89,7 +89,7 @@ fn project(samples: &[(V3, V3)]) -> ShL1 {
 ///
 /// # Errors
 /// A message when the grid would exceed the format's probe limit.
-#[allow(clippy::cast_precision_loss)] // Grid indices are below 2^20.
+#[expect(clippy::cast_precision_loss)] // Grid indices are below 2^20.
 pub fn bake(info: &SectorInfo, scene: &Scene, settings: &Settings) -> Result<ProbeVolume, String> {
     let (dims, origin, spacing) = grid(info, scene, settings)?;
     let directions = sphere_directions(settings.samples);

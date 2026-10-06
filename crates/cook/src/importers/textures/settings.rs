@@ -1,7 +1,7 @@
 //! The `<image>.texture.toml` sidecar: per-texture cook settings, with line-located
 //! errors. See the [module documentation](super) for the keys and defaults.
 
-use mantis_core::module::toml::{self, Entry, Table, Value};
+use crate::source::{Doc, Fields};
 use mantis_formats::texture::Encoding;
 
 use crate::importer::{CookError, Source};
@@ -23,73 +23,6 @@ pub struct Settings {
 
 const KEYS: [&str; 5] = ["encoding", "srgb", "normal_map", "mips", "alpha_cutoff"];
 
-/// Typed, line-located access to one table's fields.
-struct Fields<'a> {
-    file: &'a str,
-    table: &'a Table,
-}
-
-impl<'a> Fields<'a> {
-    fn entry(&self, key: &str) -> Option<&'a Entry> {
-        self.table.entries.iter().find(|e| e.key == key)
-    }
-
-    fn err(&self, line: usize, message: &str) -> CookError {
-        CookError::at(self.file, line, message)
-    }
-
-    /// Refuses keys outside `known`.
-    fn only(&self, known: &[&str]) -> Result<(), CookError> {
-        match self
-            .table
-            .entries
-            .iter()
-            .find(|e| !known.contains(&e.key.as_str()))
-        {
-            Some(e) => Err(self.err(
-                e.line,
-                &format!("unknown key `{}` (expected one of: {})", e.key, known.join(", ")),
-            )),
-            None => Ok(()),
-        }
-    }
-
-    fn opt_bool(&self, key: &str) -> Result<Option<(bool, usize)>, CookError> {
-        self.entry(key)
-            .map(|e| match e.value {
-                Value::Bool(b) => Ok((b, e.line)),
-                _ => Err(self.err(e.line, &format!("`{key}` must be true or false"))),
-            })
-            .transpose()
-    }
-
-    fn opt_str(&self, key: &str) -> Result<Option<(&'a str, usize)>, CookError> {
-        self.entry(key)
-            .map(|e| match &e.value {
-                Value::Str(s) => Ok((s.as_str(), e.line)),
-                _ => Err(self.err(e.line, &format!("`{key}` must be a string"))),
-            })
-            .transpose()
-    }
-
-    /// A finite number (written as a float or a small integer).
-    fn opt_f32(&self, key: &str) -> Result<Option<(f32, usize)>, CookError> {
-        self.entry(key)
-            .map(|e| {
-                let v = match &e.value {
-                    Value::Float(s) => s.parse::<f32>().ok(),
-                    Value::Int(i) => i16::try_from(*i).ok().map(f32::from),
-                    _ => None,
-                };
-                match v {
-                    Some(v) if v.is_finite() => Ok((v, e.line)),
-                    _ => Err(self.err(e.line, &format!("`{key}` must be a finite number"))),
-                }
-            })
-            .transpose()
-    }
-}
-
 /// The settings for an image with `channels` channels, from its optional `sidecar`.
 ///
 /// # Errors
@@ -110,24 +43,11 @@ pub fn resolve(sidecar: Option<&Source<'_>>, channels: u8) -> Result<Settings, C
             alpha_cutoff: None,
         });
     };
-    let file = sidecar.path;
-    let text = sidecar.text()?;
-    let doc = toml::parse(text).map_err(|e| CookError::at(file, e.line, e.what))?;
-    if doc.tables.len() > 1 {
-        let line = text
-            .lines()
-            .position(|l| l.trim_start().starts_with('['))
-            .map_or(0, |n| n + 1);
-        return Err(CookError::at(
-            file,
-            line,
-            "texture settings take no tables, only top-level keys",
-        ));
+    let doc = Doc::from_source(sidecar)?;
+    if let Some(t) = doc.tables().next() {
+        return Err(t.err(t.line(), "texture settings take no tables, only top-level keys"));
     }
-    let Some(root) = doc.table("") else {
-        return Err(CookError::at(file, 0, "no settings"));
-    };
-    let f = Fields { file, table: root };
+    let f = doc.root();
     f.only(&KEYS)?;
     let encoding = f
         .opt_str("encoding")?

@@ -3,6 +3,8 @@
 key = "std.chat"
 version = "0.1.0"
 schemas = ["contract/schema/chat.idl"]
+# The guild channel, when the package has guilds.
+optional = ["std.guild"]
 
 [dependencies]
 "std.party" = "0.1"

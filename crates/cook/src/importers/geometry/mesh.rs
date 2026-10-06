@@ -272,7 +272,7 @@ fn assemble(
 
 /// Quantizes non-negative weights (summing to about 1) to bytes that sum to exactly 255,
 /// by largest remainder (ties to the lower slot).
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Floors of values in 0..=255.
+#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Floors of values in 0..=255.
 pub(crate) fn quantize_weights(weights: &[f32]) -> [u8; 4] {
     let total: f64 = weights.iter().map(|w| f64::from(*w)).sum();
     let mut out = [0u8; 4];

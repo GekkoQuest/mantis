@@ -2,7 +2,7 @@
 //! parse with the runtime parser, buses checked against the named mixer graph, every
 //! rule failing at its file and line, and determinism.
 
-#![allow(clippy::cast_possible_truncation)]
+#![expect(clippy::cast_possible_truncation)]
 
 use std::fmt::Write as _;
 

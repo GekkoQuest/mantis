@@ -3,7 +3,7 @@
 //! Predictive over a QUIC-shaped link and one Validated over a TCP-shaped
 //! link, and play. Honest bots are never rejected; cheating bots are caught.
 
-#![allow(
+#![expect(
     clippy::unwrap_used,
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
@@ -45,6 +45,10 @@ impl WireAdapter for ValidatedNative {
     fn transport(&self) -> TransportKind {
         TransportKind::Tcp
     }
+
+    fn entity_ids(&self) -> mantis_adapter_contract::EntityIdRange {
+        mantis_adapter_contract::EntityIdRange::ALL
+    }
     fn decode(&self, frame: &[u8], out: &mut dyn FnMut(Inbound)) -> Result<(), AdapterError> {
         self.0.decode(frame, out)
     }
@@ -58,6 +62,15 @@ impl WireAdapter for ValidatedNative {
         out: &mut Vec<u8>,
     ) -> Result<(), AdapterError> {
         self.0.encode_snapshot(frame, baseline, out)
+    }
+    fn encode_snapshot_based(
+        &self,
+        frame: &SnapshotFrame,
+        baseline: Option<&SnapshotFrame>,
+        older: &dyn mantis_adapter_contract::RemoteBases,
+        out: &mut Vec<u8>,
+    ) -> Result<(), AdapterError> {
+        self.0.encode_snapshot_based(frame, baseline, older, out)
     }
 }
 

@@ -112,12 +112,14 @@ pub struct NetConfig {
 }
 
 impl NetConfig {
-    /// Defaults for `content`: 32 baselines, frames of 64 entered, 256 remotes, 64
-    /// removed, 64 markers, repeated moves.
+    /// Defaults for `content`: 64 baselines, frames of 64 entered, 256 remotes, 64
+    /// removed, 64 markers, repeated moves. 64 baselines keep every applied snapshot of
+    /// the last 64 server ticks (one snapshot per tick), the window the encoder may
+    /// reference a remote's own delta baseline in (per-remote baselines, M13).
     pub fn new(content: ContentHash) -> Self {
         Self {
             content,
-            baselines: 32,
+            baselines: 64,
             frame_capacity: [64, 256, 64, 64],
             repeat_moves: true,
         }

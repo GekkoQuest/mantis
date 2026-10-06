@@ -18,6 +18,9 @@ ruling, M8): characters may ask characters anywhere. This module relays
 requests and keeps a read-only projection of the lists of characters in
 the cell, fed by logged service updates; answers arrive on a later tick,
 and a refusal by the authority arrives as `FriendRefused`. Presence bits
-in `FriendList` say whether each friend is in this cell. Lists are offered
-back to the social role every 10 seconds, so an authority that restarted
-rebuilds them; open requests are not rebuilt.
+in `FriendList` say whether each friend is in this cell.
+
+Lists and open requests are durable. The social role writes every change
+through the persistence writer before telling anyone, and reads them back
+after a restart, so a friendship between two characters who are both
+offline survives it.

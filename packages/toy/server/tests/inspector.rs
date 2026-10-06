@@ -4,7 +4,7 @@
 //! component list names the engine's components, entity pages carry every
 //! value as text, and nothing is served without a token.
 
-#![allow(clippy::unwrap_used, clippy::panic)]
+#![expect(clippy::unwrap_used, clippy::panic)]
 
 use std::net::SocketAddr;
 use std::sync::Arc;

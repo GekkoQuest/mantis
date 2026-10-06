@@ -74,9 +74,9 @@ use mantis_formats::sound_bank::{
     MAX_SAMPLE_RATE, MAX_SOUNDS, MAX_VOLUME, MIN_PITCH, MIN_SAMPLE_RATE, Sound, SoundBank, StealPolicy,
 };
 
-use super::fields::{Doc, Fields, output_name, within};
 use super::wav;
 use crate::importer::{CookError, Cooked, ImportContext, Importer, Source};
+use crate::source::{Doc, Fields, output_name, within};
 
 const MIXER_SUFFIX: &str = ".mixer.toml";
 const BANK_SUFFIX: &str = ".soundbank.toml";
@@ -135,24 +135,24 @@ fn effect(f: &Fields<'_>) -> Result<Effect, CookError> {
 /// Reads `[effect.<bus>.<n>]` tables into each bus's chain.
 fn effects(doc: &Doc<'_>, buses: &BTreeMap<&str, usize>) -> Result<Vec<Vec<Effect>>, CookError> {
     let mut chains: Vec<BTreeMap<u32, (usize, Effect)>> = vec![BTreeMap::new(); buses.len()];
-    for (rest, f) in doc.prefixed("effect.") {
+    for (rest, f) in doc.items("effect") {
         let (bus, n) = rest.rsplit_once('.').ok_or_else(|| {
             f.err(
-                f.line,
+                f.line(),
                 &format!("`[effect.{rest}]`: expected `[effect.<bus>.<n>]`"),
             )
         })?;
         let n = n.parse::<u32>().map_err(|_| {
             f.err(
-                f.line,
+                f.line(),
                 &format!("`[effect.{rest}]`: `{n}` is not an effect number"),
             )
         })?;
         let chain = buses
             .get(bus)
             .and_then(|i| chains.get_mut(*i))
-            .ok_or_else(|| f.err(f.line, &format!("`[effect.{rest}]` names unknown bus `{bus}`")))?;
-        chain.insert(n, (f.line, effect(&f)?));
+            .ok_or_else(|| f.err(f.line(), &format!("`[effect.{rest}]` names unknown bus `{bus}`")))?;
+        chain.insert(n, (f.line(), effect(&f)?));
     }
     let mut out = Vec::with_capacity(chains.len());
     for chain in chains {
@@ -193,7 +193,7 @@ fn check_tree(
             at = parent;
             steps += 1;
             if steps > specs.len() {
-                return Err(doc.err(f.line, &format!("bus `{name}` is in a parent cycle")));
+                return Err(doc.err(f.line(), &format!("bus `{name}` is in a parent cycle")));
             }
         }
     }
@@ -205,7 +205,7 @@ impl Mixers {
         // (name, fields, id, parent name)
         let mut specs = Vec::new();
         let mut ids: BTreeMap<u32, &str> = BTreeMap::new();
-        for (name, f) in doc.prefixed("bus.") {
+        for (name, f) in doc.items("bus") {
             f.only(&["id", "parent", "gain"])?;
             let (id, line) = f.int::<u32>("id")?;
             if id == NO_PARENT {
@@ -229,7 +229,7 @@ impl Mixers {
                 None => {
                     if let Some(m) = master {
                         return Err(f.err(
-                            f.line,
+                            f.line(),
                             &format!("bus `{name}` has no parent, but `{m}` is already the master"),
                         ));
                     }
@@ -251,7 +251,7 @@ impl Mixers {
         let chains = effects(doc, &index)?;
         let mut buses = Vec::with_capacity(specs.len());
         for ((_, f, id, parent), effects) in specs.iter().zip(chains) {
-            let (gain, line) = f.opt_f32("gain", 1.0)?;
+            let (gain, line) = f.f32_or("gain", 1.0)?;
             if !within(gain, 0.0, MAX_GAIN) {
                 return Err(f.err(line, &format!("`gain` = {gain} is outside 0 to {MAX_GAIN}")));
             }
@@ -288,11 +288,9 @@ impl Importer for Mixers {
     }
 
     fn import(&self, source: &Source<'_>, _ctx: &ImportContext<'_>) -> Result<Vec<Cooked>, CookError> {
-        let doc = Doc::parse(source)?;
-        doc.only_tables(&[], &["bus.", "effect."])?;
-        if let Some(root) = doc.root() {
-            root.only(&[])?;
-        }
+        let doc = Doc::from_source(source)?;
+        doc.only_tables(&[], &["bus", "effect"])?;
+        doc.root().only(&[])?;
         let graph = Mixers::graph(&doc)?;
         let bytes = graph.encode();
         MixerGraph::parse(&bytes)
@@ -376,18 +374,18 @@ fn attenuation(f: &Fields<'_>) -> Result<Attenuation, CookError> {
         ("exponential", AttenuationModel::Exponential),
     ];
     let (model, _) = f.choice("attenuation", &models, Some(AttenuationModel::Inverse))?;
-    let (min_distance, nl) = f.opt_f32("min_distance", 1.0)?;
+    let (min_distance, nl) = f.f32_or("min_distance", 1.0)?;
     if min_distance <= 0.0 {
         return Err(f.err(nl, &format!("`min_distance` = {min_distance} must be > 0")));
     }
-    let (max_distance, xl) = f.opt_f32("max_distance", 50.0)?;
+    let (max_distance, xl) = f.f32_or("max_distance", 50.0)?;
     if max_distance <= min_distance {
         return Err(f.err(
             xl,
             &format!("`max_distance` = {max_distance} must be greater than `min_distance` = {min_distance}"),
         ));
     }
-    let (rolloff, rl) = f.opt_f32("rolloff", 1.0)?;
+    let (rolloff, rl) = f.f32_or("rolloff", 1.0)?;
     if rolloff <= 0.0 {
         return Err(f.err(rl, &format!("`rolloff` = {rolloff} must be > 0")));
     }
@@ -438,25 +436,25 @@ fn sound<'d>(
         ],
         Some(ClipSelection::RoundRobin),
     )?;
-    let (volume, vl) = f.opt_f32("volume", 1.0)?;
+    let (volume, vl) = f.f32_or("volume", 1.0)?;
     if !within(volume, 0.0, MAX_VOLUME) {
         return Err(f.err(vl, &format!("`volume` = {volume} is outside 0 to {MAX_VOLUME}")));
     }
-    let (pitch_min, pl) = f.opt_f32("pitch_min", 1.0)?;
+    let (pitch_min, pl) = f.f32_or("pitch_min", 1.0)?;
     if !within(pitch_min, MIN_PITCH, MAX_PITCH) {
         return Err(f.err(
             pl,
             &format!("`pitch_min` = {pitch_min} is outside {MIN_PITCH} to {MAX_PITCH}"),
         ));
     }
-    let (pitch_max, ml) = f.opt_f32("pitch_max", pitch_min)?;
+    let (pitch_max, ml) = f.f32_or("pitch_max", pitch_min)?;
     if !within(pitch_max, pitch_min, MAX_PITCH) {
         return Err(f.err(
             ml,
             &format!("`pitch_max` = {pitch_max} is outside `pitch_min` ({pitch_min}) to {MAX_PITCH}"),
         ));
     }
-    let (max_instances, il) = f.opt_int::<u16>("max_instances", 1)?;
+    let (max_instances, il) = f.int_or::<u16>("max_instances", 1)?;
     if max_instances == 0 {
         return Err(f.err(il, "`max_instances` must be at least 1"));
     }
@@ -472,10 +470,10 @@ fn sound<'d>(
         volume,
         pitch_min,
         pitch_max,
-        looping: f.opt_bool("looping", false)?.0,
-        spatial: f.opt_bool("spatial", false)?.0,
+        looping: f.bool_or("looping", false)?.0,
+        spatial: f.bool_or("spatial", false)?.0,
         bus,
-        priority: f.opt_int::<u8>("priority", 0)?.0,
+        priority: f.int_or::<u8>("priority", 0)?.0,
         max_instances,
         steal: f.choice("steal", &steals, Some(StealPolicy::Oldest))?.0,
         attenuation: attenuation(f)?,
@@ -506,9 +504,9 @@ impl Importer for SoundBanks {
     }
 
     fn import(&self, source: &Source<'_>, ctx: &ImportContext<'_>) -> Result<Vec<Cooked>, CookError> {
-        let doc = Doc::parse(source)?;
-        doc.only_tables(&[], &["sound."])?;
-        let root = doc.root().ok_or_else(|| doc.err(0, "empty document"))?;
+        let doc = Doc::from_source(source)?;
+        doc.only_tables(&[], &["sound"])?;
+        let root = doc.root();
         root.only(&["sample_rate", "mixer"])?;
         let (sample_rate, rate_line) = root.int::<u32>("sample_rate")?;
         if !(MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE).contains(&sample_rate) {
@@ -533,7 +531,7 @@ impl Importer for SoundBanks {
         };
         let mut sounds = Vec::new();
         let mut ids: BTreeMap<u32, &str> = BTreeMap::new();
-        for (name, f) in doc.prefixed("sound.") {
+        for (name, f) in doc.items("sound") {
             let s = sound(&f, &mut clips, &mixer, ctx)?;
             if let Some(other) = ids.insert(s.id, name) {
                 return Err(f.err(
@@ -542,7 +540,7 @@ impl Importer for SoundBanks {
                 ));
             }
             if sounds.len() == MAX_SOUNDS as usize {
-                return Err(f.err(f.line, &format!("a bank has at most {MAX_SOUNDS} sounds")));
+                return Err(f.err(f.line(), &format!("a bank has at most {MAX_SOUNDS} sounds")));
             }
             sounds.push(s);
         }

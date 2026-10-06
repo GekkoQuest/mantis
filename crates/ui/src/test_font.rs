@@ -216,7 +216,7 @@ impl TestFontBuilder {
 
     /// Writes the font file.
     #[must_use]
-    #[allow(clippy::too_many_lines)] // declarative table layout, field by field
+    #[expect(clippy::too_many_lines)] // declarative table layout, field by field
     pub fn build(&self) -> Vec<u8> {
         let mut entries = self.glyphs.clone();
         entries.sort_by_key(|(c, _)| *c);

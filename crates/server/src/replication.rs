@@ -1,13 +1,18 @@
 //! Per-client replication (plan 7.4): interest with priority accumulation,
 //! one delta snapshot per client per tick against the client's last
 //! acknowledged baseline, and the reliable-over-unreliable `entered` and
-//! `removed` lists. Runs inside a per-client job (decision 0008): reads only
-//! the cell's [`RepView`] and writes only this client's state and buffer.
+//! `removed` lists. With `TierConfig::snapshot_own_bases` on (off by
+//! default), a remote the baseline lacks (the budget rotated it out) deltas
+//! against the newest other frame the client acknowledged that carries it,
+//! within `own_base_max_age` ticks (`MASK_OWN_BASE`, per-remote baselines).
+//! Runs inside a per-client job (decision 0008): reads only the cell's
+//! [`RepView`] and writes only this client's state and buffer.
 //! Allocation-free after construction.
 
 use mantis_adapter_contract::core_types::{EntityId, Tick};
 use mantis_adapter_contract::{
-    AdapterError, ConnectionId, RemoteSample, SnapshotFrame, SnapshotHeader, SnapshotVisitor, WireAdapter,
+    AdapterError, ConnectionId, RemoteBases, RemoteSample, SnapshotFrame, SnapshotHeader, SnapshotVisitor,
+    WireAdapter,
 };
 use mantis_core::log::SessionId;
 use mantis_core::mem::BoundedVec;
@@ -17,6 +22,66 @@ use crate::interest::{RepView, Tier, TierConfig};
 
 /// Frames kept for delta baselines.
 pub const FRAME_RING: usize = 16;
+
+/// Sends of one entity remembered for per-remote baselines.
+const SENT_HISTORY: usize = 4;
+
+/// Where an entity was sent: the frame's tick, its ring slot, and the
+/// sample's position in the frame. `tick` zero is empty.
+#[derive(Clone, Copy, Debug, Default)]
+struct Sent {
+    tick: Tick,
+    pos: u16,
+    slot: u8,
+}
+
+/// One entity's recent sends, in a direct-mapped table keyed by id: a
+/// collision forgets the older entity's history (it is then sent in full or
+/// against the frame-level baseline), never misattributes it, because a use
+/// checks the frame's tick and the sample's id.
+#[derive(Clone, Copy, Debug, Default)]
+struct History {
+    id: Option<EntityId>,
+    /// Newest first.
+    sent: [Sent; SENT_HISTORY],
+}
+
+fn history_slot(id: EntityId, len: usize) -> usize {
+    // `len` is a power of two.
+    let h = id.to_bits().wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    usize::try_from(h >> 32).unwrap_or(0) & len.wrapping_sub(1)
+}
+
+/// Per-remote baselines from the ring: for a remote, the newest frame the
+/// client acknowledged that carries it, other than the frame being encoded
+/// (which has a newer tick than any recorded send). The encoder applies the
+/// codec's window; `oldest` applies `own_base_max_age`.
+struct RingBases<'a> {
+    frames: &'a [SnapshotFrame],
+    history: &'a [History],
+    acked: &'a [bool; FRAME_RING],
+    /// The oldest tick a base may have.
+    oldest: Tick,
+}
+
+impl RemoteBases for RingBases<'_> {
+    fn base_for(&self, id: EntityId) -> Option<(Tick, &RemoteSample)> {
+        let h = self
+            .history
+            .get(history_slot(id, self.history.len()))
+            .filter(|h| h.id == Some(id))?;
+        h.sent.iter().find_map(|s| {
+            let slot = usize::from(s.slot);
+            if s.tick == Tick::ZERO || s.tick < self.oldest || !self.acked.get(slot).copied().unwrap_or(false)
+            {
+                return None;
+            }
+            let f = self.frames.get(slot).filter(|f| f.header.server_tick == s.tick)?;
+            let r = f.remotes.get(usize::from(s.pos)).filter(|r| r.id == id)?;
+            Some((s.tick, r))
+        })
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 struct Known {
@@ -46,6 +111,9 @@ pub struct ClientCaps {
     /// View entries (a cell's entities plus ghosts) covered by the lookup
     /// hint table; entries beyond it fall back to a binary search.
     pub view: usize,
+    /// Entries of the per-remote baseline table (rounded up to a power of
+    /// two); 0 when per-remote baselines are off, so they cost nothing.
+    pub own_base_history: usize,
 }
 
 impl ClientCaps {
@@ -58,6 +126,7 @@ impl ClientCaps {
         markers: 32,
         out: 4096,
         view: 4096,
+        own_base_history: 0,
     };
 }
 
@@ -99,6 +168,11 @@ pub struct ClientRep {
     hint: Vec<u16>,
     acked: Option<Tick>,
     frames: Vec<SnapshotFrame>,
+    /// Per slot: the client acknowledged that frame, so it holds it and an
+    /// encode may delta a remote against it. Cleared when the slot is reused.
+    slot_acked: [bool; FRAME_RING],
+    /// Recent sends per entity, for per-remote baselines (empty when off).
+    history: Vec<History>,
     next_slot: usize,
     /// The encoded snapshot of this tick.
     pub out: Vec<u8>,
@@ -135,6 +209,15 @@ impl ClientRep {
             frames: (0..FRAME_RING)
                 .map(|_| SnapshotFrame::with_capacity(caps.entered, caps.remotes, caps.leaving, caps.markers))
                 .collect(),
+            slot_acked: [false; FRAME_RING],
+            history: vec![
+                History::default();
+                if caps.own_base_history == 0 {
+                    0
+                } else {
+                    caps.own_base_history.next_power_of_two()
+                }
+            ],
             next_slot: 0,
             out: Vec::with_capacity(caps.out),
             caps,
@@ -148,14 +231,20 @@ impl ClientRep {
         self.acked
     }
 
-    /// Records an acknowledgement. Ignored unless it names a frame still held
-    /// and newer than the current baseline.
+    /// Records an acknowledgement. Ignored unless it names a frame still
+    /// held. The newest becomes the frame-level baseline; an older one (acks
+    /// arrive out of order) still makes its frame a per-remote baseline.
     pub fn on_ack(&mut self, tick: Tick) {
-        let held = self
-            .frames
-            .iter()
-            .any(|f| f.header.server_tick == tick && f.header.server_tick != Tick::ZERO);
-        if held && self.acked.is_none_or(|a| tick > a) {
+        if tick == Tick::ZERO {
+            return;
+        }
+        let Some(slot) = self.frames.iter().position(|f| f.header.server_tick == tick) else {
+            return;
+        };
+        if let Some(flag) = self.slot_acked.get_mut(slot) {
+            *flag = true;
+        }
+        if self.acked.is_none_or(|a| tick > a) {
             self.acked = Some(tick);
         }
     }
@@ -325,6 +414,9 @@ impl ClientRep {
         self.update_interest(view, tiers);
         let slot = self.next_slot;
         self.next_slot = (self.next_slot + 1) % FRAME_RING;
+        if let Some(flag) = self.slot_acked.get_mut(slot) {
+            *flag = false;
+        }
         let base_slot = self
             .acked
             .and_then(|a| self.frames.iter().position(|f| f.header.server_tick == a));
@@ -332,19 +424,22 @@ impl ClientRep {
         loop {
             self.fill_frame(slot, view, budget);
             self.out.clear();
-            let (frame, baseline) = match base_slot {
-                Some(b) if b != slot => match self.frames.get_disjoint_mut([slot, b]) {
-                    Ok([f, b]) => (&*f, Some(&*b)),
-                    Err(_) => return Err(AdapterError::Unsupported("baseline slot")),
-                },
-                _ => (
-                    self.frames
-                        .get(slot)
-                        .ok_or(AdapterError::Unsupported("frame slot"))?,
-                    None,
-                ),
+            let frame = self
+                .frames
+                .get(slot)
+                .ok_or(AdapterError::Unsupported("frame slot"))?;
+            let baseline = base_slot.filter(|b| *b != slot).and_then(|b| self.frames.get(b));
+            let own_bases = RingBases {
+                frames: &self.frames,
+                history: &self.history,
+                acked: &self.slot_acked,
+                oldest: Tick(view.tick.0.saturating_sub(tiers.own_base_max_age)),
             };
-            let result = adapter.encode_snapshot(frame, baseline, &mut self.out);
+            let result = if tiers.snapshot_own_bases && !self.history.is_empty() {
+                adapter.encode_snapshot_based(frame, baseline, &own_bases, &mut self.out)
+            } else {
+                adapter.encode_snapshot(frame, baseline, &mut self.out)
+            };
             self.stats.overflow += u64::from(frame.overflowed);
             if let Err(e) = result {
                 self.stats.errors += 1;
@@ -356,9 +451,37 @@ impl ClientRep {
             budget -= budget.div_ceil(4);
             self.stats.shrunk += 1;
         }
+        // Remember where each remote went, for later per-remote baselines.
+        if tiers.snapshot_own_bases && !self.history.is_empty() {
+            let len = self.history.len();
+            let slot_u8 = u8::try_from(slot).unwrap_or(u8::MAX);
+            let frame = self.frames.get(slot).map_or(&[][..], |f| &f.remotes[..]);
+            for (pos, r) in frame.iter().enumerate() {
+                let Some(h) = self.history.get_mut(history_slot(r.id, len)) else {
+                    continue;
+                };
+                if h.id != Some(r.id) {
+                    *h = History {
+                        id: Some(r.id),
+                        sent: [Sent::default(); SENT_HISTORY],
+                    };
+                }
+                h.sent.rotate_right(1);
+                if let Some(newest) = h.sent.first_mut() {
+                    *newest = Sent {
+                        tick: view.tick,
+                        pos: u16::try_from(pos).unwrap_or(u16::MAX),
+                        slot: slot_u8,
+                    };
+                }
+            }
+        }
         self.stats.frames += 1;
         self.stats.bytes += self.out.len() as u64;
         if self.implicit_ack {
+            if let Some(flag) = self.slot_acked.get_mut(slot) {
+                *flag = true;
+            }
             self.acked = Some(view.tick);
             let acked = self.acked;
             self.leaving.retain(|(_, t)| acked.is_none_or(|a| *t > a));

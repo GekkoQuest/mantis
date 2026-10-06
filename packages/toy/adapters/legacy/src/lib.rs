@@ -30,8 +30,8 @@ use mantis_adapter_contract::core_types::{
     BoundedArray, ContentHash, DecodeError, Decoder, Encoder, EntityId, MarkerKind, Tick, Vec3,
 };
 use mantis_adapter_contract::{
-    AbilityId, AdapterError, Cast, Choose, Extension, ExtensionKind, Goodbye, Hello, Inbound, Interact,
-    MoveClaim, MovementMode, Outbound, PROTOCOL_VERSION, PromptId, RefuseReason, SnapshotFrame,
+    AbilityId, AdapterError, Cast, Choose, EntityIdRange, Extension, ExtensionKind, Goodbye, Hello, Inbound,
+    Interact, MoveClaim, MovementMode, Outbound, PROTOCOL_VERSION, PromptId, RefuseReason, SnapshotFrame,
     TransportKind, WireAdapter,
 };
 
@@ -158,6 +158,12 @@ pub fn packets<'a>(
 pub fn tick32(t: Tick) -> u32 {
     u32::try_from(t.0 & u64::from(u32::MAX)).unwrap_or(0)
 }
+
+/// The ids the legacy wire carries: an object id is the entity's bits plus
+/// one, so the all-ones id has none ([`object_id`]).
+pub const ENTITY_IDS: EntityIdRange = EntityIdRange {
+    max_bits: u64::MAX - 1,
+};
 
 /// An entity's object id on the legacy wire: its bits plus one, so that 0
 /// is free to mean "none", as legacy protocols have it.
@@ -364,6 +370,10 @@ impl WireAdapter for LegacyAdapter {
 
     fn transport(&self) -> TransportKind {
         TransportKind::Tcp
+    }
+
+    fn entity_ids(&self) -> EntityIdRange {
+        ENTITY_IDS
     }
 
     fn decode(&self, frame: &[u8], out: &mut dyn FnMut(Inbound)) -> Result<(), AdapterError> {

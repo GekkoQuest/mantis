@@ -1,7 +1,7 @@
 //! The toy server over real loopback sockets: a native bot over QUIC and a
 //! legacy bot over TCP log in, play, and receive snapshots.
 
-#![allow(clippy::unwrap_used)]
+#![expect(clippy::unwrap_used)]
 
 use std::time::Duration;
 

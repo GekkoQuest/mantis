@@ -1,7 +1,7 @@
 //! MCRC client recordings: the format round trip, every rejection rule, the byte cap, and
 //! the cost of the simulation hook (nothing allocated per tick, recording on or off).
 
-#![allow(
+#![expect(
     clippy::too_many_lines,
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss
@@ -593,9 +593,11 @@ fn sim_config() -> Result<ClientSimConfig, Box<dyn std::error::Error>> {
         snap_distance: 5.0,
         remote_capacity: 8,
         remote_timeout: Duration::from_secs(2),
-        interpolation_delay: Duration::from_millis(100),
+        max_remote_extrapolation: Duration::from_millis(250),
+        delay: mantis_client::jitter::DelayConfig::default(),
         input_buffer: 64,
         timeline_rise_shift: 4,
+        timeline_adaptive: true,
     })
 }
 

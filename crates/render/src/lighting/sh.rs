@@ -23,7 +23,7 @@ pub fn irradiance(sh: &ShL1, n: Vec3) -> Vec3 {
 }
 
 /// Projects a radiance function over the sphere with a deterministic Fibonacci sample set.
-#[allow(clippy::cast_precision_loss)] // Sample counts are far below 2^24.
+#[expect(clippy::cast_precision_loss)] // Sample counts are far below 2^24.
 pub fn project(samples: u32, mut radiance: impl FnMut(Vec3) -> Vec3) -> ShL1 {
     let count = samples.max(1);
     let weight = 4.0 * core::f32::consts::PI / count as f32;

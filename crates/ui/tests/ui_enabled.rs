@@ -1,6 +1,6 @@
 //! Disabled widgets render as unavailable and never act.
 
-#![allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#![expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 
 mod common;
 

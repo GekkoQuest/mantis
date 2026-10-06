@@ -592,7 +592,7 @@ impl Sector {
         Ok(s)
     }
 
-    #[allow(clippy::cast_precision_loss)] // Sample counts are far below 2^24.
+    #[expect(clippy::cast_precision_loss)] // Sample counts are far below 2^24.
     fn validate_cross(&self) -> Result<(), FormatError> {
         if let Some(g) = &self.ground {
             let size = self.info.sector_size;

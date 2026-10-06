@@ -5,7 +5,7 @@
 //! stays allocation-free outside the scripts' exempt scope; hot reload
 //! happens at a tick boundary.
 
-#![allow(
+#![expect(
     clippy::unwrap_used,
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss

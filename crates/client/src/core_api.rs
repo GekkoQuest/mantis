@@ -20,7 +20,7 @@ pub use mantis_core::time::{Clock, Tick, TickRate};
 
 /// Quantizes an angle in turns (1.0 = full circle) to the nearest [`Angle16`] step. Any
 /// finite input wraps; a non-finite input maps to zero (fail closed).
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Range-checked below.
+#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Range-checked below.
 pub fn angle_from_turns(turns: f32) -> Angle16 {
     if !turns.is_finite() {
         return Angle16(0);

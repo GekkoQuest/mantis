@@ -74,17 +74,17 @@ fn prop(props: &mut Properties, name: &str) -> Option<Value> {
     props.get(id).cloned()
 }
 
-#[allow(clippy::unnecessary_wraps)] // Compared with `prop`, which is an `Option`.
+#[expect(clippy::unnecessary_wraps)] // Compared with `prop`, which is an `Option`.
 fn text(s: &str) -> Option<Value> {
     Some(Value::Text(s.to_owned()))
 }
 
-#[allow(clippy::unnecessary_wraps)] // Compared with `prop`, which is an `Option`.
+#[expect(clippy::unnecessary_wraps)] // Compared with `prop`, which is an `Option`.
 fn int(v: i64) -> Option<Value> {
     Some(Value::Int(v))
 }
 
-#[allow(clippy::unnecessary_wraps)] // Compared with `prop`, which is an `Option`.
+#[expect(clippy::unnecessary_wraps)] // Compared with `prop`, which is an `Option`.
 fn flag(v: bool) -> Option<Value> {
     Some(Value::Bool(v))
 }

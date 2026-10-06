@@ -19,14 +19,14 @@ pub fn pcg_hash(v: u32) -> u32 {
 }
 
 /// A float in (0, 1) from the top 24 bits of `h`.
-#[allow(clippy::cast_precision_loss)] // At most 2^24, exact in f32.
+#[expect(clippy::cast_precision_loss)] // At most 2^24, exact in f32.
 pub fn unit_float(h: u32) -> f32 {
     ((h >> 8) as f32 + 0.5) * (1.0 / 16_777_216.0)
 }
 
 /// Sine and cosine of `turns` full turns: the shaders' quadrant reduction and
 /// polynomials (absolute error below 1e-6).
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Quadrant index of a value in [0, 4].
+#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Quadrant index of a value in [0, 4].
 pub fn sincos_turns(turns: f32) -> (f32, f32) {
     let quarters = turns * 4.0;
     let quadrant = (quarters + 0.5).floor();

@@ -1009,7 +1009,7 @@ fn apply_style_attr(s: &mut StyleSpec, key: &str, v: &AttrValue) -> Result<bool,
 }
 
 /// A non-negative count from a parsed number (clamped to a million).
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to 0..=1e6 first
+#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to 0..=1e6 first
 fn count(n: f32) -> u32 {
     n.clamp(0.0, 1e6).round() as u32
 }

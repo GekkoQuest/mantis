@@ -74,7 +74,7 @@ impl DepthPyramid {
     }
 
     /// `[width, height, levels, 1]` for [`OcclusionUniform::pyramid`].
-    #[allow(clippy::cast_precision_loss)] // Pixel sizes are far below 2^24.
+    #[expect(clippy::cast_precision_loss)] // Pixel sizes are far below 2^24.
     pub fn params(&self) -> [f32; 4] {
         [self.width as f32, self.height as f32, self.levels as f32, 1.0]
     }

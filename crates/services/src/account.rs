@@ -16,8 +16,9 @@ use ring::{digest, pbkdf2};
 
 use crate::generated::services as m;
 use crate::host::Role;
+use crate::host::clock::ServiceClock;
+use crate::host::refused;
 use crate::host::rpc::{Router, RpcError};
-use crate::host::{now_ms, refused};
 use crate::methods;
 
 /// How long a session token stays valid, in milliseconds.
@@ -45,6 +46,7 @@ struct State {
 pub struct AccountService {
     state: Arc<Mutex<State>>,
     rng: Arc<crate::host::Random>,
+    clock: ServiceClock,
 }
 
 fn derive(salt: &[u8], password: &str) -> [u8; 32] {
@@ -65,6 +67,13 @@ impl AccountService {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The same role on `clock` (token lifetimes and bans).
+    #[must_use]
+    pub fn clocked(mut self, clock: ServiceClock) -> Self {
+        self.clock = clock;
+        self
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -118,7 +127,7 @@ impl AccountService {
         if !ok {
             return Err(refused("bad credentials"));
         }
-        if banned > now_ms() {
+        if banned > self.clock.now_ms() {
             return Err(refused("banned"));
         }
         let mut token = [0u8; 32];
@@ -126,7 +135,8 @@ impl AccountService {
             .0
             .fill(&mut token)
             .map_err(|_| refused("no randomness"))?;
-        self.lock().tokens.insert(token, (id, now_ms() + TOKEN_MS));
+        let expires = self.clock.now_ms() + TOKEN_MS;
+        self.lock().tokens.insert(token, (id, expires));
         Ok(m::Session {
             account: m::AccountId(id),
             token: BoundedArray::from_slice(&token).unwrap_or_default(),
@@ -141,7 +151,7 @@ impl AccountService {
             .tokens
             .remove(&token)
             .ok_or_else(|| refused("bad token"))?;
-        if expires < now_ms() {
+        if expires < self.clock.now_ms() {
             return Err(refused("expired token"));
         }
         Ok(m::Verified {

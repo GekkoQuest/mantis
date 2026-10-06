@@ -108,7 +108,7 @@ pub struct TownLayout {
 /// looking north (all four sectors within the load radius), the avatars on arcs 2 m apart from 4 m out, about 1.5 m apart along
 /// each arc within 30 degrees of the view axis (so every avatar is inside the toy world
 /// and in view), and the braziers on four arcs among them.
-#[allow(
+#[expect(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss
@@ -495,7 +495,7 @@ impl TownScene {
     }
 
     /// The camera.
-    #[allow(clippy::cast_precision_loss)] // Pixel sizes are far below 2^24.
+    #[expect(clippy::cast_precision_loss)] // Pixel sizes are far below 2^24.
     pub fn camera(&self) -> Camera {
         Camera {
             position: self.layout.eye,
@@ -560,7 +560,7 @@ impl TownScene {
     ///
     /// # Errors
     /// A renderer refusal, as text.
-    #[allow(clippy::cast_precision_loss)] // Pixel sizes are far below 2^24.
+    #[expect(clippy::cast_precision_loss)] // Pixel sizes are far below 2^24.
     pub fn record(
         &mut self,
         gpu: &Gpu<'_>,

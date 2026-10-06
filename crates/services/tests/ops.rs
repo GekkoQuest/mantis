@@ -3,7 +3,7 @@
 //! dashboard on its own loopback listener; and proof that game-protocol
 //! traffic never reaches an Ops handler.
 
-#![allow(clippy::unwrap_used)]
+#![expect(clippy::unwrap_used)]
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -32,6 +32,8 @@ use tokio::net::TcpStream;
 const KEY: &[u8] = b"cluster-key-for-tests";
 const TOKEN: &str = "operator-token-0123456789";
 const NOW: u64 = 1_700_000_000_000;
+/// An Ops run (epoch).
+const RUN: u64 = 7;
 
 struct Cluster {
     account: AccountService,
@@ -80,10 +82,12 @@ fn live_changes_are_signed_ordered_and_verified() {
     let (signer, pkcs8) = LiveSigner::generate(&rng).unwrap();
     let again = LiveSigner::from_pkcs8(&pkcs8).unwrap();
     assert_eq!(signer.public_key(), again.public_key());
-    let a = signer.sign(1, "std.chat.whispers", live::FLAG, 0.0).unwrap();
-    let b = signer.sign(2, "std.vendor.markup", live::TUNABLE, 1.5).unwrap();
+    let a = signer.sign(RUN, 1, "std.chat.whispers", live::FLAG, 0.0).unwrap();
+    let b = signer
+        .sign(RUN, 2, "std.vendor.markup", live::TUNABLE, 1.5)
+        .unwrap();
     assert!(live::verify(&signer.public_key(), &a));
-    assert!(signer.sign(3, "x", live::TUNABLE, f32::INFINITY).is_err());
+    assert!(signer.sign(RUN, 3, "x", live::TUNABLE, f32::INFINITY).is_err());
 
     // Any field changed after signing fails verification.
     let mut forged = b;
@@ -106,9 +110,9 @@ fn live_changes_are_signed_ordered_and_verified() {
     feed.accept(&batch(&[a, b]), &mut out).unwrap();
     assert!(out.is_empty());
     // A gap or a forgery stops the feed; what came before it still applies.
-    let c = signer.sign(3, "std.party.invites", live::FLAG, 1.0).unwrap();
-    let e = signer.sign(5, "std.party.invites", live::FLAG, 0.0).unwrap();
-    let mut bad = signer.sign(4, "std.party.invites", live::FLAG, 0.0).unwrap();
+    let c = signer.sign(RUN, 3, "std.party.invites", live::FLAG, 1.0).unwrap();
+    let e = signer.sign(RUN, 5, "std.party.invites", live::FLAG, 0.0).unwrap();
+    let mut bad = signer.sign(RUN, 4, "std.party.invites", live::FLAG, 0.0).unwrap();
     bad.kind = live::TUNABLE;
     assert_eq!(
         feed.accept(&batch(&[c, e]), &mut out),
@@ -120,6 +124,30 @@ fn live_changes_are_signed_ordered_and_verified() {
         Err(LiveRefused::BadSignature { seq: 4 })
     );
     assert_eq!(feed.since(), 3);
+
+    // A newer Ops run starts over at 1 with every current value; an older
+    // run's change is stale and skipped; a run switch is not taken on a
+    // forged change.
+    let newer = |seq, value| {
+        signer
+            .sign(RUN + 1, seq, "std.party.invites", live::FLAG, value)
+            .unwrap()
+    };
+    let mut forged = newer(1, 1.0);
+    forged.value = 0.0;
+    assert_eq!(
+        feed.accept(&batch(&[forged]), &mut out),
+        Err(LiveRefused::BadSignature { seq: 1 })
+    );
+    assert_eq!((feed.epoch(), feed.since()), (RUN, 3));
+    out.clear();
+    feed.accept(&batch(&[newer(1, 1.0), newer(2, 0.0)]), &mut out)
+        .unwrap();
+    assert_eq!((feed.epoch(), feed.since(), out.len()), (RUN + 1, 2, 2));
+    let old = signer.sign(RUN, 4, "std.party.invites", live::FLAG, 1.0).unwrap();
+    out.clear();
+    feed.accept(&batch(&[old]), &mut out).unwrap();
+    assert!(out.is_empty(), "an older run's change is stale");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -193,7 +221,7 @@ async fn every_command_is_audited_before_dispatch_with_before_after_and_undo() {
         )
         .await
         .unwrap();
-    let feed = c.ops.live_since(0);
+    let feed = c.ops.live_since(0, c.ops.live_epoch());
     assert_eq!(
         feed.changes.iter().map(|c| c.seq).collect::<Vec<_>>(),
         vec![1, 2, 3]
@@ -203,10 +231,10 @@ async fn every_command_is_audited_before_dispatch_with_before_after_and_undo() {
             .iter()
             .all(|ch| live::verify(&c.ops.public_key(), ch))
     );
-    assert_eq!(c.ops.live_since(2).changes.iter().count(), 1);
+    assert_eq!(c.ops.live_since(2, c.ops.live_epoch()).changes.iter().count(), 1);
 
     // A malformed command is refused before any audit row.
-    let before_rows = c.ops.audit_rows().unwrap().len();
+    let before_rows = c.ops.audit_rows().await.unwrap().len();
     let bad = Command::Tunable {
         name: "std.vendor.markup".to_owned(),
         value: f32::NAN,
@@ -215,9 +243,9 @@ async fn every_command_is_audited_before_dispatch_with_before_after_and_undo() {
         c.ops.execute("bob", &bad).await,
         Err(OpsError::Invalid(_))
     ));
-    assert_eq!(c.ops.audit_rows().unwrap().len(), before_rows);
+    assert_eq!(c.ops.audit_rows().await.unwrap().len(), before_rows);
 
-    let rows = c.ops.audit_rows().unwrap();
+    let rows = c.ops.audit_rows().await.unwrap();
     assert_eq!(rows.len(), 6);
     assert!(rows.iter().all(|r| r.status == "done"));
     assert!(rows.iter().all(|r| r.before.is_some()
@@ -243,7 +271,7 @@ async fn no_audit_row_means_no_dispatch_and_a_failed_dispatch_is_recorded() {
     let Err(OpsError::Failed { audit, .. }) = r else {
         panic!("{r:?}");
     };
-    let rows = c.ops.audit_rows().unwrap();
+    let rows = c.ops.audit_rows().await.unwrap();
     let row = rows.iter().find(|r| r.id == audit).unwrap();
     assert_eq!(row.status, "failed");
     assert!(row.undo.as_deref().unwrap().starts_with("none: nothing changed"));
@@ -272,6 +300,7 @@ async fn cells_poll_live_changes_over_rpc_and_only_cells_may() {
             &m::PollLive {
                 cell: m::CellNo(1),
                 since: 0,
+                epoch: 0,
             },
             wait,
         )
@@ -287,7 +316,8 @@ async fn cells_poll_live_changes_over_rpc_and_only_cells_may() {
             .call::<methods::Live>(
                 &m::PollLive {
                     cell: m::CellNo(1),
-                    since: 0
+                    since: 0,
+                    epoch: 0
                 },
                 wait
             )
@@ -437,6 +467,79 @@ fn game_frames() -> Vec<Vec<u8>> {
 /// The architecture guarantee, end to end: the dashboard is HTTPS on its
 /// own listener, so game-protocol bytes, raw or inside TLS, never reach an
 /// Ops handler, and the Ops RPC listener refuses them at the hello.
+#[test]
+fn allowed_peers_match_by_prefix_and_map_ipv4_in_ipv6() {
+    use mantis_services::ops::dashboard::peer_allowed;
+    let ip = |t: &str| t.parse::<std::net::IpAddr>().unwrap();
+    // Empty: any peer.
+    assert!(peer_allowed(&[], ip("203.0.113.9")));
+    assert!(DashboardConfig::loopback().allowed_peers.is_empty());
+    let nets = [
+        (ip("10.20.0.0"), 16),
+        (ip("2001:db8::"), 32),
+        (ip("192.0.2.7"), 32),
+    ];
+    assert!(peer_allowed(&nets, ip("10.20.255.1")));
+    assert!(!peer_allowed(&nets, ip("10.21.0.1")));
+    assert!(peer_allowed(&nets, ip("2001:db8:1::5")));
+    assert!(!peer_allowed(&nets, ip("2001:db9::5")));
+    assert!(peer_allowed(&nets, ip("192.0.2.7")));
+    assert!(!peer_allowed(&nets, ip("192.0.2.8")));
+    // An IPv4 peer arriving on a dual-stack socket matches as IPv4.
+    assert!(peer_allowed(&nets, ip("::ffff:10.20.3.4")));
+    assert!(!peer_allowed(&nets, ip("::ffff:10.21.3.4")));
+    // A mapped network matches IPv4 peers too.
+    assert!(peer_allowed(&[(ip("::ffff:10.20.0.0"), 16)], ip("10.20.9.9")));
+    // Families never cross otherwise; /0 is everything of its family.
+    assert!(!peer_allowed(&[(ip("2001:db8::"), 0)], ip("10.0.0.1")));
+    assert!(peer_allowed(&[(ip("0.0.0.0"), 0)], ip("198.51.100.1")));
+    assert!(peer_allowed(&[(ip("::"), 0)], ip("2001:db8::1")));
+
+    // check refuses a prefix longer than the family.
+    let mut cfg = config();
+    cfg.allowed_peers = vec![(ip("10.0.0.0"), 33)];
+    assert!(cfg.check().unwrap_err().contains("longer than 32"));
+    cfg.allowed_peers = vec![(ip("2001:db8::"), 129)];
+    assert!(cfg.check().unwrap_err().contains("longer than 128"));
+    cfg.allowed_peers = vec![(ip("10.0.0.0"), 32), (ip("2001:db8::"), 128)];
+    assert!(cfg.check().is_ok());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_peer_outside_allowed_peers_is_dropped_before_tls() {
+    let c = cluster(MemoryStore::new()).await;
+    let (server_tls, cert) = dev_tls().unwrap();
+    let mut cfg = config();
+    cfg.allowed_peers = vec![("127.0.0.2".parse().unwrap(), 32)];
+    let dash = Dashboard::start(&cfg, c.ops.clone(), server_tls.clone())
+        .await
+        .unwrap();
+    // This client connects from 127.0.0.1: closed before any TLS byte.
+    let mut tcp = TcpStream::connect(dash.addr()).await.unwrap();
+    let _ = tcp.write_all(b"\x16\x03\x01").await;
+    let mut sink = Vec::new();
+    let read = tokio::time::timeout(Duration::from_secs(5), tcp.read_to_end(&mut sink)).await;
+    assert!(
+        matches!(read, Ok(Ok(0) | Err(_))),
+        "no TLS byte came back: {sink:?}"
+    );
+    let mut waited = 0;
+    while dash.refused_handshakes() < 1 && waited < 100 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        waited += 1;
+    }
+    assert_eq!(dash.refused_handshakes(), 1);
+    assert_eq!(dash.handled(), 0);
+
+    // Allowed, the same client is served.
+    let mut cfg = config();
+    cfg.allowed_peers = vec![("127.0.0.0".parse().unwrap(), 8)];
+    let dash = Dashboard::start(&cfg, c.ops.clone(), server_tls).await.unwrap();
+    let (status, _) = https(dash.addr(), &cert, "GET", "/", Some(TOKEN), "").await;
+    assert_ne!(status, 0, "an allowed peer gets an HTTP answer");
+    assert_eq!(dash.refused_handshakes(), 0);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn no_game_protocol_message_reaches_an_ops_handler() {
     let c = cluster(MemoryStore::new()).await;
@@ -444,7 +547,7 @@ async fn no_game_protocol_message_reaches_an_ops_handler() {
     let dash = Dashboard::start(&config(), c.ops.clone(), server_tls)
         .await
         .unwrap();
-    let rows_before = c.ops.audit_rows().unwrap().len();
+    let rows_before = c.ops.audit_rows().await.unwrap().len();
 
     for frame in game_frames() {
         // Raw, as a game client would send to its game port.
@@ -468,7 +571,7 @@ async fn no_game_protocol_message_reaches_an_ops_handler() {
     assert_eq!(dash.handled(), 0, "a game frame reached an Ops handler");
     assert!(dash.refused_handshakes() >= 2);
     assert!(!c.account.maintenance());
-    assert_eq!(c.ops.audit_rows().unwrap().len(), rows_before);
+    assert_eq!(c.ops.audit_rows().await.unwrap().len(), rows_before);
 
     // The Ops RPC listener (cells poll live changes there) wants a hello
     // proving the cluster key before any frame is dispatched.
@@ -513,7 +616,7 @@ async fn the_dashboard_traces_a_ledger_read_only_and_audited() {
             rows: BoundedArray::from_slice(&[row]).unwrap(),
         })
         .unwrap();
-    let audit = c.ops.audit_rows().unwrap().len();
+    let audit = c.ops.audit_rows().await.unwrap().len();
     let (server_tls, cert) = dev_tls().unwrap();
     let dash = Dashboard::start(&config(), c.ops.clone(), server_tls)
         .await
@@ -524,7 +627,7 @@ async fn the_dashboard_traces_a_ledger_read_only_and_audited() {
         body.contains("\"delta\":25") && body.contains("\"cell\":1"),
         "{body}"
     );
-    let rows = c.ops.audit_rows().unwrap();
+    let rows = c.ops.audit_rows().await.unwrap();
     assert_eq!(rows.len(), audit + 1);
     assert_eq!(rows.last().map(|r| r.command.as_str()), Some("ledger"));
     assert_eq!(
@@ -544,4 +647,56 @@ async fn the_dashboard_traces_a_ledger_read_only_and_audited() {
         status, 502,
         "no host has the character: the failed kick is audited"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ops_in_its_own_process_audits_through_the_writer_over_rpc() {
+    let account = AccountService::new();
+    let account_server = RpcServer::bind("127.0.0.1:0".parse().unwrap(), KEY.to_vec(), account.router())
+        .await
+        .unwrap();
+    let store = MemoryStore::new();
+    let writer = PersistService::new(Box::new(store), NOW).unwrap();
+    let persist_server = RpcServer::bind("127.0.0.1:0".parse().unwrap(), KEY.to_vec(), writer.router())
+        .await
+        .unwrap();
+    let as_ops = |addr| Arc::new(RpcClient::new(addr, Role::Ops, KEY.to_vec()));
+    let (signer, _) = LiveSigner::generate(&SystemRandom::new()).unwrap();
+    let ops = OpsService::remote(
+        as_ops(persist_server.addr()),
+        as_ops(account_server.addr()),
+        signer,
+    );
+
+    // A command: its row is opened and completed in the writer's store.
+    let done = ops
+        .execute("alice", &Command::Maintenance { on: true })
+        .await
+        .unwrap();
+    assert!(account.maintenance());
+    let rows = ops.audit_rows().await.unwrap();
+    assert_eq!(rows, writer.with_store(|s| s.audit_rows()).unwrap());
+    let row = rows.iter().find(|r| r.id == done.audit).unwrap();
+    assert_eq!(
+        (row.actor.as_str(), row.command.as_str(), row.status.as_str()),
+        ("alice", "maintenance", "done")
+    );
+    assert!(row.undo.as_deref().is_some_and(|u| !u.is_empty()));
+
+    // The trail pages: more rows than one page come back whole, in order.
+    for _ in 0..70 {
+        ops.execute("bob", &Command::LedgerTrace { character: 4 })
+            .await
+            .unwrap();
+    }
+    let rows = ops.audit_rows().await.unwrap();
+    assert_eq!(rows.len(), 71);
+    assert!(rows.windows(2).all(|w| w[0].id < w[1].id));
+    assert!(ops.ledger_trace(4).await.unwrap().is_empty());
+
+    // The writer gone: no audit row can be opened, so nothing runs.
+    drop(persist_server);
+    let r = ops.execute("alice", &Command::Maintenance { on: false }).await;
+    assert!(matches!(r, Err(OpsError::Audit(_))), "{r:?}");
+    assert!(account.maintenance(), "the command ran without its audit row");
 }

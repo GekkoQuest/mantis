@@ -2,7 +2,7 @@
 //! chains, linear-light and normal-map filtering, encoder versions, located errors, and
 //! determinism.
 
-#![allow(
+#![expect(
     clippy::indexing_slicing,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss

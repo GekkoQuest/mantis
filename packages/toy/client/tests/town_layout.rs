@@ -2,8 +2,6 @@
 //! selector's reference budgets placing exactly 50 near, 100 mid, and 150 far, frame
 //! after frame while they walk.
 
-#![allow(clippy::cast_precision_loss)]
-
 use mantis_render::crowd::{CrowdAgent, CrowdConfig, CrowdSelector, CrowdTier};
 use mantis_render::math::{Camera, Frustum};
 use toy_client::town::{AVATARS, BRAZIERS, town_300};

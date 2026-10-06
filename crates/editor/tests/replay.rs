@@ -8,7 +8,7 @@
 //! Recording is a dev-build feature, so this suite runs with `debug_assertions` only.
 
 #![cfg(debug_assertions)]
-#![allow(
+#![expect(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     clippy::too_many_lines
@@ -97,9 +97,11 @@ impl Setup {
                 snap_distance: 4.0,
                 remote_capacity: 8,
                 remote_timeout: Duration::from_secs(1),
-                interpolation_delay: Duration::from_millis(100),
+                max_remote_extrapolation: Duration::from_millis(250),
+                delay: mantis_client::jitter::DelayConfig::default(),
                 input_buffer: 32,
                 timeline_rise_shift: 4,
+                timeline_adaptive: true,
             },
         })
     }

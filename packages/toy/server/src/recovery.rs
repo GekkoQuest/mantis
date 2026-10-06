@@ -29,6 +29,10 @@ pub struct Recovered {
     pub tick: Tick,
     /// The log was refused (another build): the snapshot alone was used.
     pub log_refused: bool,
+    /// Bytes at the log's end discarded: a final record a crash tore, and
+    /// the records of the tick it left incomplete. Recovery stops at the
+    /// last complete tick.
+    pub discarded_bytes: usize,
 }
 
 /// Recovers cell `index` from `snapshot` and its old `log`, as build
@@ -54,6 +58,7 @@ pub fn recover_cell(
         replayed: 0,
         tick: header.tick,
         log_refused: false,
+        discarded_bytes: 0,
     };
     match LogReader::<CellLogSchema>::open(log, build, t.content) {
         Ok(mut reader) => {
@@ -61,12 +66,57 @@ pub fn recover_cell(
                 .map_err(|e| format!("cell {index}: {e}"))?;
             recovered.replayed = report.ticks;
             recovered.tick = report.last_tick.unwrap_or(header.tick);
+            if report.trailing_records > 0 || report.truncated_tail {
+                // The tick after the last complete one never ended: none of
+                // it runs, and its bytes are discarded.
+                cell.discard_incomplete_tick();
+                recovered.discarded_bytes = log.len().saturating_sub(complete_end(log, build, t)?);
+            }
         }
         Err(LogError::BuildMismatch { .. }) if header.build != build => recovered.log_refused = true,
         Err(e) => return Err(format!("cell {index}: {e}")),
     }
     cell.set_log(new_log(recovered.tick.next()));
     Ok((cell, recovered))
+}
+
+/// Where the last complete tick of `log` ends (after its `TickEnd`), in
+/// bytes; the header's end when no tick completed.
+fn complete_end(log: &[u8], build: BuildId, t: &Tunables) -> Result<usize, String> {
+    let mut reader = LogReader::<CellLogSchema>::open(log, build, t.content).map_err(|e| e.to_string())?;
+    let mut end = reader.position();
+    loop {
+        match reader.next_entry() {
+            Ok(Some(LogEntry::TickEnd { .. })) => end = reader.position(),
+            Ok(Some(_)) => {}
+            Ok(None) | Err(LogError::TruncatedTail { .. }) => return Ok(end),
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+}
+
+/// Writes `cell-<id>.snapshot` for every cell of `zone` into `dir`, each
+/// beside its old one and then renamed: a crash never leaves half a
+/// snapshot.
+///
+/// # Errors
+/// The directory or a file cannot be written.
+pub fn write_snapshots(
+    dir: &std::path::Path,
+    zone: &mantis_server::zone::Zone,
+    t: &Tunables,
+) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    for cell in zone.cells() {
+        let bytes = cell
+            .snapshot(crate::build_id(), t.content)
+            .map_err(|e| e.to_string())?;
+        let path = dir.join(format!("cell-{}.snapshot", cell.id().0));
+        let partial = path.with_extension("snapshot.partial");
+        std::fs::write(&partial, &bytes).map_err(|e| format!("{}: {e}", partial.display()))?;
+        std::fs::rename(&partial, &path).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    Ok(())
 }
 
 /// Every outcome of every complete tick of a log, in order: what the

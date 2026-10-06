@@ -306,6 +306,8 @@ struct LedgerEntry {
     item: u32;
     /// The change.
     delta: i64;
+    /// Unix milliseconds.
+    at_ms: u64;
 }
 
 /// Ledger rows, oldest first.
@@ -343,13 +345,20 @@ message Match outbound {
 message PollLive inbound {
     /// The cell.
     cell: CellNo;
-    /// The last change sequence it applied.
+    /// The last change sequence it applied, in run `epoch`.
     since: u64;
+    /// The Ops run `since` counts in (0 before any): from another run,
+    /// the poll starts over and receives every current value.
+    epoch: u64;
 }
 
 /// One signed live change. The signature (Ed25519 over the other fields)
 /// is checked by the cell host before it is applied at a tick boundary.
 struct LiveChange {
+    /// The Ops run (its start time in Unix milliseconds): sequence numbers
+    /// count within it, and a cell host accepts only runs newer than the
+    /// one it follows.
+    epoch: u64;
     /// Sequence number.
     seq: u64;
     /// The flag (`<module key>.<flag>`) or tunable name.
@@ -438,8 +447,11 @@ message DrainHost inbound {
 message Relay inbound {
     /// The cell.
     cell: CellNo;
-    /// Per-cell sequence number: a resent operation (same cell and seq)
-    /// is applied once.
+    /// The relaying link's run (drawn when it starts): a restarted cell host
+    /// numbers its relays from 1 again under a new run.
+    run: u64;
+    /// Per-cell sequence number within the run: a resent operation (same
+    /// cell, run, and seq) is applied once.
     seq: u64;
     /// A `Restore` from the host's projection, sent after a restart of the
     /// social role before any other operation of the cell.
@@ -624,3 +636,151 @@ message GuildRows outbound {
     more: bool;
 }
 
+/// One durable friend change (`mantis_core::social::FriendChange`).
+struct FriendRow {
+    /// 1 friends, 2 no longer friends (`a < b` for both), 3 `a` asked `b`,
+    /// 4 the request from `a` to `b` is closed.
+    kind: u8;
+    /// The first character.
+    a: u64;
+    /// The second character.
+    b: u64;
+}
+
+/// Social makes one operation's friend changes durable, in order, before
+/// it tells anyone. A batch at or below the stored sequence is applied once.
+message StoreFriendRows inbound {
+    /// Batch sequence number.
+    seq: u64;
+    /// The changes.
+    rows: list<FriendRow, 8>;
+}
+
+/// Social reads every friend row back after a restart, a page at a time.
+message ReadFriendRows inbound {
+    /// The page (from 0).
+    page: u32;
+}
+
+/// A page of friend rows: friendships, then open requests.
+message FriendRows outbound {
+    /// The stored batch watermark (the next batch numbers past it).
+    seq: u64;
+    /// The rows.
+    rows: list<FriendRow, 256>;
+    /// More pages follow.
+    more: bool;
+}
+
+/// Ops opens an audit row (status `begun`) before it runs a command; the
+/// persistence writer holds the trail, so Ops may run in its own process.
+message AuditBegin inbound {
+    /// Who.
+    actor: string<64>;
+    /// The command.
+    command: string<32>;
+    /// Its arguments.
+    args: string<512>;
+    /// Unix milliseconds.
+    at_ms: u64;
+}
+
+/// The opened row.
+message AuditId outbound {
+    /// Its id.
+    id: u64;
+}
+
+/// Ops completes an audit row after the command ran (or failed).
+message AuditComplete inbound {
+    /// The row.
+    id: u64;
+    /// `done` or `failed`.
+    status: string<16>;
+    /// State before.
+    before: string<1024>;
+    /// State after.
+    after: string<1024>;
+    /// How to undo it, or why there is no undo.
+    undo: string<1024>;
+}
+
+/// Ops reads the audit trail, a page at a time.
+message ReadAudit inbound {
+    /// Rows with an id above this.
+    since: u64;
+    /// At most this many rows (1 to 16).
+    limit: u16;
+}
+
+/// One audit row.
+struct AuditEntry {
+    /// Its id.
+    id: u64;
+    /// Unix milliseconds.
+    at_ms: u64;
+    /// Who.
+    actor: string<64>;
+    /// The command.
+    command: string<32>;
+    /// Its arguments.
+    args: string<512>;
+    /// `begun`, `done`, or `failed`.
+    status: string<16>;
+    /// State before (empty while begun).
+    before: string<1024>;
+    /// State after (empty while begun).
+    after: string<1024>;
+    /// How to undo it (empty while begun).
+    undo: string<1024>;
+}
+
+/// A page of the audit trail, oldest first.
+message AuditRows outbound {
+    /// The rows.
+    rows: list<AuditEntry, 16>;
+    /// More rows follow.
+    more: bool;
+}
+
+/// A cell host asks which run of the realm role is serving: a new run has
+/// an empty cell directory, so the host registers its cells again.
+message PollRealm inbound {
+}
+
+/// The realm role's run.
+message RealmEpoch outbound {
+    /// Drawn at random when the role starts (never 0).
+    epoch: u64;
+}
+
+/// Ops makes a live value durable before it signs and publishes it, so a
+/// restarted Ops publishes the current values again.
+message StoreLive inbound {
+    /// The flag or tunable.
+    name: string<96>;
+    /// 0 flag, 1 tunable.
+    kind: u8;
+    /// The value.
+    value: f32;
+}
+
+/// Ops reads every durable live value at start.
+message ReadLive inbound {
+}
+
+/// One current live value.
+struct LiveValue {
+    /// The flag or tunable.
+    name: string<96>;
+    /// 0 flag, 1 tunable.
+    kind: u8;
+    /// The value.
+    value: f32;
+}
+
+/// Every current live value, in the order they were last set.
+message LiveValues outbound {
+    /// The values.
+    values: list<LiveValue, 256>;
+}

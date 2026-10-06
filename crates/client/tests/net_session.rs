@@ -3,7 +3,7 @@
 //! into the simulation's frames (markers and entered entities included), stale and corrupt
 //! frames counted, and moves sent with a repeat of the previous one.
 
-#![allow(clippy::too_many_lines)] // One scripted session, start to end.
+#![expect(clippy::too_many_lines)] // One scripted session, start to end.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -225,4 +225,91 @@ fn handshake_snapshots_acks_and_moves() -> TestResult {
     assert_eq!(sent_moves(session.transport_mut()), [1, 2, 1, 3, 2]);
     assert_eq!(session.stats().moves_sent, 5);
     Ok(())
+}
+
+/// Per-remote bases for the encoder: one remote's sample in an older acknowledged frame.
+struct OwnBase(Tick, RemoteSample);
+
+impl mantis_adapter_contract::RemoteBases for OwnBase {
+    fn base_for(&self, id: EntityId) -> Option<(Tick, &RemoteSample)> {
+        (id == self.1.id).then_some((self.0, &self.1))
+    }
+}
+
+const ROTATED: EntityId = EntityId::new(9, 0);
+
+fn rotated_sample(tick: u64, x: f32) -> RemoteSample {
+    RemoteSample {
+        id: ROTATED,
+        tick: Tick(tick),
+        position: Vec3::new(x, 0.0, -3.0),
+        velocity: Vec3::new(0.0, 0.0, 2.0),
+        yaw: Angle16(1000),
+    }
+}
+
+#[test]
+fn frames_mixing_frame_and_own_base_deltas_decode_across_the_whole_window() {
+    let clock = Arc::new(ManualClock::new());
+    let (snap_tx, mut inbox) = snapshot_channel::<MotionState>(4, 8);
+    let (_outbox, moves) = move_channel(16);
+    let mut session = NativeSession::new(
+        Scripted::default(),
+        Arc::clone(&clock) as Arc<dyn HostClock>,
+        NetConfig::new(ContentHash::ZERO),
+        snap_tx,
+        moves,
+    );
+    let seen = std::cell::RefCell::new(Vec::<(u64, f32)>::new());
+    let mut step = |session: &mut NativeSession<Scripted>, bytes: Vec<u8>| {
+        session.transport_mut().inbound.push_back(bytes);
+        session.step();
+        let _ = inbox.drain(|f| {
+            for r in &f.remotes {
+                if r.id == ROTATED {
+                    seen.borrow_mut().push((f.server_tick.0, r.position.x));
+                }
+            }
+        });
+    };
+    // Tick 10: full, with the remote the budget later rotates out.
+    let mut first = snapshot(10, 0.0);
+    let _ = first.remotes.push(rotated_sample(10, 4.0));
+    step(&mut session, wire(&first, None));
+    // Ticks 11 to 73 carry only the other remote, each a delta on the previous frame:
+    // the ring now holds 64 applied frames, tick 10 the oldest.
+    let mut previous = first.clone();
+    for t in 11..74 {
+        let f = snapshot(t, f32::from(u16::try_from(t).unwrap_or(0)) * 0.1);
+        step(&mut session, wire(&f, Some(&previous)));
+        previous = f;
+    }
+    // Tick 74 mixes both kinds: the other remote deltas on the frame baseline (73), the
+    // rotated one on its own base at tick 10 (lag 64, the window's edge).
+    let mut mixed = snapshot(74, 7.4);
+    let _ = mixed.remotes.push(rotated_sample(74, 4.5));
+    let base = OwnBase(Tick(10), rotated_sample(10, 4.0));
+    let mut bytes = vec![FRAME_SNAPSHOT];
+    mantis_adapter_contract::native::encode_snapshot_based(&mixed, Some(&previous), &base, &mut bytes);
+    step(&mut session, bytes);
+    assert_eq!(session.stats().undecodable, 0, "{:?}", session.stats());
+    assert_eq!(
+        sent_acks(session.transport_mut()).last(),
+        Some(&74),
+        "acknowledged"
+    );
+    let last = seen.borrow().last().copied();
+    assert_eq!(last, Some((74, 4.5)), "the own-base remote decoded exactly");
+    // Past the window: tick 10 is 65 ticks back from tick 75 (and the ring has evicted
+    // it). The encoder never names a base beyond `BASELINE_WINDOW_TICKS`; it sends that
+    // remote in full, and the frame decodes.
+    let mut late = snapshot(75, 7.5);
+    let _ = late.remotes.push(rotated_sample(75, 4.625));
+    let mut bytes = vec![FRAME_SNAPSHOT];
+    mantis_adapter_contract::native::encode_snapshot_based(&late, Some(&mixed), &base, &mut bytes);
+    step(&mut session, bytes);
+    assert_eq!(session.stats().undecodable, 0, "{:?}", session.stats());
+    assert_eq!(sent_acks(session.transport_mut()).last(), Some(&75));
+    let last = seen.borrow().last().copied();
+    assert_eq!(last, Some((75, 4.625)), "positions travel in 1/64 m steps");
 }

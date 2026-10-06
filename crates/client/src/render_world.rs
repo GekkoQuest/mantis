@@ -94,7 +94,7 @@ impl RemoteEntity {
         for (dst, src) in out.iter_mut().zip(samples) {
             *dst = *src;
         }
-        #[allow(clippy::cast_possible_truncation)] // len <= REMOTE_WINDOW.
+        #[expect(clippy::cast_possible_truncation)] // len <= REMOTE_WINDOW.
         Some(Self {
             id,
             samples: out,
@@ -140,7 +140,7 @@ impl Correction {
 
 /// Weight of a correction `elapsed` into a decay `window`: 1 at the start, 0 at the end,
 /// smooth (zero slope) at both ends. `1 - smoothstep(s)`, arithmetic only.
-#[allow(clippy::cast_possible_truncation)] // s is in [0, 1].
+#[expect(clippy::cast_possible_truncation)] // s is in [0, 1].
 pub fn correction_weight(elapsed: Duration, window: Duration) -> f32 {
     if window.is_zero() || elapsed >= window {
         return 0.0;
@@ -269,6 +269,12 @@ impl RenderWorld {
         self.published_at
     }
 
+    /// Sets the interpolation delay remote entities are shown behind render time (the
+    /// simulation publishes its jitter buffer's delay with every world).
+    pub fn set_interpolation_delay(&mut self, delay: Duration) {
+        self.config.interpolation_delay = delay;
+    }
+
     /// Presentation timing.
     pub fn config(&self) -> &PresentationConfig {
         &self.config
@@ -295,7 +301,7 @@ impl RenderWorld {
     }
 
     /// The local avatar's pose at render instant `now`.
-    #[allow(clippy::cast_possible_truncation)] // Bounded extrapolation seconds fit f32.
+    #[expect(clippy::cast_possible_truncation)] // Bounded extrapolation seconds fit f32.
     pub fn sample_local(&self, now: HostInstant) -> Option<Pose> {
         let l = self.local.as_ref()?;
         let ahead = now
@@ -336,7 +342,7 @@ impl RenderWorld {
 }
 
 /// Samples a remote window at interpolation instant `t`.
-#[allow(clippy::cast_possible_truncation)] // Ratios and bounded seconds fit f32.
+#[expect(clippy::cast_possible_truncation)] // Ratios and bounded seconds fit f32.
 fn sample_window(remote: &RemoteEntity, t: HostInstant, max_extrapolation: Duration) -> Pose {
     let samples = remote.samples();
     let id = remote.id;

@@ -1,5 +1,9 @@
 target
 **/*.rs.bk
+# Working notes kept out of the repository at the owner's request.
+/CLAUDE.md
+/MANTIS-PLAN.md
+/docs/
 artifacts/
 content/cooked/
 **/cooked/

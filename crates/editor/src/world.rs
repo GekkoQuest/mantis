@@ -96,7 +96,7 @@ struct SectorSource {
 fn number(v: Option<&Value>) -> Option<f32> {
     match v? {
         Value::Float(s) => s.parse().ok(),
-        #[allow(clippy::cast_precision_loss)] // Source integers here are small.
+        #[expect(clippy::cast_precision_loss)] // Source integers here are small.
         Value::Int(i) => Some(*i as f32),
         _ => None,
     }
@@ -181,7 +181,7 @@ impl WorldEditor {
     }
 
     /// The sector containing world position `p` (on x and z).
-    #[allow(clippy::cast_possible_truncation)] // Grid coordinates are far inside i32.
+    #[expect(clippy::cast_possible_truncation)] // Grid coordinates are far inside i32.
     pub fn sector_of(&self, p: [f32; 3]) -> Option<(i32, i32)> {
         self.sectors.iter().find_map(|(coord, s)| {
             let x = (p[0] / s.size).floor() as i32;

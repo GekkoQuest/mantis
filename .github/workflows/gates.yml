@@ -34,11 +34,15 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Format
         run: cargo fmt --all -- --check
+      - name: Rustdoc (broken intra-doc links are errors)
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps
       - name: No game names in engine or packages
         shell: bash
         run: |
-          if grep -rniE "\bdbo\b|dragon ?ball|wildstar" crates packages docs/decisions MANTIS-PLAN.md CLAUDE.md; then
-            echo "game-specific names are forbidden in the engine (CLAUDE.md rule 1)"; exit 1; fi
+          if grep -rniE "\bdbo\b|dragon ?ball|wildstar" crates packages; then
+            echo "game-specific names are forbidden in the engine"; exit 1; fi
 
   budgets:
     name: budget rows (release, x86_64)
@@ -54,6 +58,35 @@ jobs:
           cargo test --release -p toy-server --test play --test budget_timing -- --include-ignored --nocapture
       - name: Exhaustive deterministic math sweep
         run: cargo test --release -p mantis-testkit -- --include-ignored --nocapture exhaustive
+
+  postgres:
+    name: persistence writer against PostgreSQL
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: mantis
+          POSTGRES_DB: mantis_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Services tests with the Postgres store
+        env:
+          MANTIS_TEST_POSTGRES: host=127.0.0.1 port=5432 user=postgres password=mantis dbname=mantis_test
+        run: |
+          cargo test -p mantis-services -- --nocapture 2>&1 | tee pg.log
+          if grep -q MANTIS-PG-SKIP pg.log; then echo "a Postgres test skipped although a database was provided"; exit 1; fi
 
   fuzz-long:
     # crates/testkit/ci/fuzz-long.md: nightly long fuzz over every contract and adapter decoder.

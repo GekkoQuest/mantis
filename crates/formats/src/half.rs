@@ -22,7 +22,7 @@ pub fn f16_to_f32(h: u16) -> f32 {
 
 /// Single to half precision, rounding to nearest even; overflow saturates to infinity, NaN
 /// stays NaN.
-#[allow(
+#[expect(
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
     clippy::cast_sign_loss

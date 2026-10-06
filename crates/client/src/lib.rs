@@ -38,6 +38,7 @@ pub mod core_api;
 pub mod host;
 pub mod input;
 pub mod inspect;
+pub mod jitter;
 pub mod media;
 pub mod mods;
 pub mod modules;

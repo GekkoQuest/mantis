@@ -5,8 +5,8 @@ use mantis_anim::skeleton::inverse_bind_matrices;
 use mantis_formats::bundle::{AssetKind, Domain};
 use mantis_formats::skeleton::{BoneDef, MAX_BONES, SkeletonAsset, UNIT_TOLERANCE, bone_name_hash};
 
-use super::fields::{Doc, Fields, has_suffix, output_name};
 use crate::importer::{CookError, Cooked, ImportContext, Importer, Source};
+use crate::source::{Doc, Fields, has_suffix, output_name};
 
 /// `*.skeleton.toml` to a skeleton.
 #[derive(Clone, Copy, Debug, Default)]
@@ -14,7 +14,7 @@ pub struct SkeletonImporter;
 
 /// A unit quaternion from `key` (default identity), normalized when within tolerance.
 pub(crate) fn rotation(f: &Fields<'_>, key: &str) -> Result<[f32; 4], CookError> {
-    let q = f.opt_vec::<4>(key)?.unwrap_or([0.0, 0.0, 0.0, 1.0]);
+    let q = f.array_or::<4>(key, [0.0, 0.0, 0.0, 1.0])?.0;
     unit_quaternion(q).ok_or_else(|| {
         f.err(
             f.line_of(key),
@@ -47,14 +47,14 @@ impl Importer for SkeletonImporter {
     }
 
     fn import(&self, source: &Source<'_>, _ctx: &ImportContext<'_>) -> Result<Vec<Cooked>, CookError> {
-        let doc = Doc::parse(source)?;
-        doc.only_tables(&["bone"], &[])?;
+        let doc = Doc::from_source(source)?;
+        doc.only_tables(&[], &["bone"])?;
         doc.root().only(&[])?;
         let mut names: Vec<&str> = Vec::new();
         let mut bones: Vec<BoneDef> = Vec::new();
-        for (name, f) in doc.tables_under("bone") {
+        for (name, f) in doc.items("bone") {
             f.only(&["parent", "translation", "rotation", "scale"])?;
-            let parent = match f.opt_str("parent")? {
+            let parent = match f.opt_str("parent")?.map(|(s, _)| s) {
                 None => None,
                 Some(p) => {
                     let index = names.iter().position(|n| *n == p).ok_or_else(|| {
@@ -66,7 +66,7 @@ impl Importer for SkeletonImporter {
                     Some(u16::try_from(index).map_err(|_| f.err(f.line(), "too many bones"))?)
                 }
             };
-            let scale = f.opt_vec::<3>("scale")?.unwrap_or([1.0; 3]);
+            let scale = f.array_or::<3>("scale", [1.0; 3])?.0;
             if scale.iter().any(|s| *s <= 0.0) {
                 return Err(f.err(f.line_of("scale"), "every `scale` component must be positive"));
             }
@@ -84,7 +84,7 @@ impl Importer for SkeletonImporter {
             bones.push(BoneDef {
                 parent,
                 name_hash: hash,
-                translation: f.opt_vec::<3>("translation")?.unwrap_or([0.0; 3]),
+                translation: f.array_or::<3>("translation", [0.0; 3])?.0,
                 rotation: rotation(&f, "rotation")?,
                 scale,
                 inverse_bind: [0.0; 16],
@@ -119,7 +119,7 @@ pub(crate) fn resolve_skeleton(
     from: &str,
     key: &str,
 ) -> Result<SkeletonAsset, CookError> {
-    let path = f.str(key)?;
+    let path = f.str(key)?.0;
     let line = f.line_of(key);
     let (_, bytes) = ctx.resolve_bytes(path, AssetKind::Skeleton, from, line)?;
     SkeletonAsset::parse(bytes).map_err(|e| f.err(line, &format!("`{path}`: {e}")))

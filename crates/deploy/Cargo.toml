@@ -1,0 +1,32 @@
+[package]
+name = "mantis-deploy"
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+description = "Process-per-role deployment of the Mantis service roles: mantisd, the signed registry, health, readiness, drain."
+
+[[bin]]
+name = "mantisd"
+path = "src/main.rs"
+
+[dependencies]
+mantis-core = { path = "../core" }
+mantis-services = { path = "../services" }
+# `signal`: SIGTERM and Ctrl-C start a drain. A per-crate feature on the
+# workspace tokio, not a new dependency.
+tokio = { workspace = true, features = ["signal"] }
+ring = { workspace = true }
+# The cluster CA and node certificates for mutual TLS (`mantisd keys`,
+# `mantisd certs`); `x509-parser` lets a stored CA issue again. Both crates
+# are already in the lock through the services.
+rcgen = { workspace = true, features = ["x509-parser"] }
+rustls = { workspace = true }
+
+[dev-dependencies]
+# Reads the cell logs a package cell host writes, to check the recovery
+# invariants across processes.
+mantis-server = { path = "../server" }
+
+[lints]
+workspace = true

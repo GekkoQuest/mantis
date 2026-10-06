@@ -44,7 +44,7 @@ const ATAN_K: [f64; 9] = [
 
 /// 2^n for an integer n with the result a normal `f64` (-1022 <= n <= 1023),
 /// built from bits, so it is exact.
-#[allow(clippy::cast_sign_loss)]
+#[expect(clippy::cast_sign_loss)]
 pub(super) const fn pow2(n: i32) -> f64 {
     f64::from_bits(((n + 1023) as u64) << 52)
 }
@@ -82,7 +82,7 @@ pub(super) fn cos_kernel(r: f64) -> f64 {
 /// e^t for -160 <= t <= 130 (callers clamp). Cody-Waite reduction by ln 2,
 /// then a Taylor series through r^13 on |r| <= 0.347 (truncation below
 /// 4.2e-18 relative), then an exact scaling by 2^k.
-#[allow(clippy::cast_possible_truncation)]
+#[expect(clippy::cast_possible_truncation)]
 pub(super) fn exp_kernel(t: f64) -> f64 {
     const E: [f64; 14] = [
         1.0,
@@ -112,7 +112,7 @@ pub(super) fn exp_kernel(t: f64) -> f64 {
 /// ln(v) for finite positive normal `v`. Reduction to m in [sqrt(2)/2, sqrt(2))
 /// by the exponent bits, then ln(m) = 2 atanh(s) with s = (m-1)/(m+1),
 /// |s| <= 0.1716, series through s^19 (truncation below 2e-17 relative).
-#[allow(clippy::many_single_char_names)]
+#[expect(clippy::many_single_char_names)]
 pub(super) fn ln_kernel(v: f64) -> f64 {
     const L: [f64; 10] = [
         1.0,
@@ -147,7 +147,7 @@ pub(super) fn ln_kernel(v: f64) -> f64 {
 /// atan(t) for 0 <= t <= 1. Table point c = k/8 nearest t, then
 /// atan(t) = atan(c) + atan(u) with u = (t - c)/(1 + t c), |u| <= 1/16,
 /// and a Taylor series for atan(u) through u^15 (truncation below 1e-20).
-#[allow(
+#[expect(
     clippy::many_single_char_names,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss

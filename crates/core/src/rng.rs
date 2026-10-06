@@ -129,20 +129,20 @@ impl Rng {
 
     /// A uniform `f32` in `[0, 1)` with 24 random bits. Exact: every result is
     /// `k / 2^24` for an integer `k`.
-    #[allow(clippy::cast_precision_loss)] // k < 2^24 is exactly representable
+    #[expect(clippy::cast_precision_loss)] // k < 2^24 is exactly representable
     pub fn next_f32(&mut self) -> f32 {
         (self.next_u64() >> 40) as f32 * (1.0 / 16_777_216.0)
     }
 
     /// A uniform `f64` in `[0, 1)` with 53 random bits. Exact.
-    #[allow(clippy::cast_precision_loss)] // k < 2^53 is exactly representable
+    #[expect(clippy::cast_precision_loss)] // k < 2^53 is exactly representable
     pub fn next_f64(&mut self) -> f64 {
         (self.next_u64() >> 11) as f64 * (1.0 / 9_007_199_254_740_992.0)
     }
 
     /// A uniform integer in `[0, bound)`, unbiased (Lemire's method with
     /// rejection). Returns 0 when `bound` is 0.
-    #[allow(clippy::cast_possible_truncation)] // high 32 bits of a 64-bit product
+    #[expect(clippy::cast_possible_truncation)] // high 32 bits of a 64-bit product
     pub fn below(&mut self, bound: u32) -> u32 {
         if bound == 0 {
             return 0;

@@ -2,7 +2,7 @@
 //! visible inside their backgrounds, lists clip their overflow, states change
 //! colors, and the scale factor maps logical to physical pixels.
 
-#![allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#![expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 
 mod common;
 

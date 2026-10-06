@@ -259,7 +259,7 @@ impl<T: StateHash> StateHash for [T] {
 macro_rules! tuple_state_hash {
     ($($name:ident),+) => {
         impl<$($name: StateHash),+> StateHash for ($($name,)+) {
-            #[allow(non_snake_case)]
+            #[expect(non_snake_case)]
             fn state_hash(&self, h: &mut StableHasher) {
                 let ($($name,)+) = self;
                 $($name.state_hash(h);)+

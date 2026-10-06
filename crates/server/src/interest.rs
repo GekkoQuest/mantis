@@ -40,6 +40,14 @@ pub struct TierConfig {
     pub weights: [u32; 3],
     /// Remote samples per snapshot before the payload limit applies.
     pub budget: usize,
+    /// Per-remote snapshot baselines: a remote the frame-level baseline
+    /// lacks deltas against the newest other frame the client acknowledged
+    /// that carries it (`MASK_OWN_BASE`). Fewer bytes when the budget
+    /// rotates remotes, at the cost of encode-time cache misses on old
+    /// frames; off by default.
+    pub snapshot_own_bases: bool,
+    /// The oldest own base used, in ticks (at most the codec's 64).
+    pub own_base_max_age: u64,
 }
 
 impl TierConfig {
@@ -53,6 +61,8 @@ impl TierConfig {
         // Meets the cell-500-100 snapshot-bytes budget row (about 16 bytes
         // per remote on the native wire, every tick).
         budget: 32,
+        snapshot_own_bases: false,
+        own_base_max_age: 64,
     };
 
     /// The tier at distance `d`, or `None` beyond the far radius.
@@ -110,7 +120,7 @@ pub struct RepView {
     pub markers: BoundedVec<TimelineMarker>,
 }
 
-#[allow(clippy::cast_possible_truncation)] // clamped into i32 first
+#[expect(clippy::cast_possible_truncation)] // clamped into i32 first
 fn grid(v: f32, cell: f32) -> i32 {
     let g = (v / cell).floor();
     if g.is_nan() {

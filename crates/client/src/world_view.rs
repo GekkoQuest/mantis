@@ -63,7 +63,7 @@ pub fn third_person_camera(
         yaw: yaw_turns * core::f32::consts::TAU,
         pitch: pitch_turns * core::f32::consts::TAU,
         fov_y: config.fov_y,
-        #[allow(clippy::cast_precision_loss)] // Pixel sizes are far below 2^24.
+        #[expect(clippy::cast_precision_loss)] // Pixel sizes are far below 2^24.
         aspect: config.renderer.width as f32 / config.renderer.height.max(1) as f32,
         near: 0.1,
     };
@@ -542,7 +542,7 @@ impl crate::threads::render_thread::FrameSink for SurfaceSink {
         }
         let _ = self.view.update(frame);
         let t2 = now();
-        #[allow(clippy::cast_precision_loss)] // Pixel sizes are far below 2^24.
+        #[expect(clippy::cast_precision_loss)] // Pixel sizes are far below 2^24.
         let viewport = [
             self.template.renderer.width as f32,
             self.template.renderer.height as f32,

@@ -248,7 +248,7 @@ fn emit_node(tree: &Tree, id: NodeId, e: &mut Emit<'_>, parent_enabled: bool) {
     }
 }
 
-#[allow(clippy::too_many_lines, clippy::many_single_char_names)] // one straight pass of pixel math
+#[expect(clippy::too_many_lines, clippy::many_single_char_names)] // one straight pass of pixel math
 fn emit_text(node: &Node, id: NodeId, color: Color, e: &mut Emit<'_>) {
     let Some(tb) = node.text.as_ref() else { return };
     let layout = tb.layout();
@@ -300,7 +300,7 @@ fn emit_text(node: &Node, id: NodeId, color: Color, e: &mut Emit<'_>) {
 
     // Glyphs.
     let [aw, ah] = e.atlas.size();
-    #[allow(clippy::cast_precision_loss)] // atlas sizes are at most 16384
+    #[expect(clippy::cast_precision_loss)] // atlas sizes are at most 16384
     let (aw, ah) = (aw.max(1) as f32, ah.max(1) as f32);
     let gk = layout.font_size * k / e.atlas.em_px();
     let screen_range = e.atlas.msdf_range() * gk;
@@ -313,7 +313,7 @@ fn emit_text(node: &Node, id: NodeId, color: Color, e: &mut Emit<'_>) {
             let Some(ag) = e.atlas.get(g.font, g.glyph) else {
                 continue;
             };
-            #[allow(clippy::cast_precision_loss)] // texel coordinates are at most 16384
+            #[expect(clippy::cast_precision_loss)] // texel coordinates are at most 16384
             let (rx, ry, rw, rh) = (
                 ag.rect.x as f32,
                 ag.rect.y as f32,
@@ -399,7 +399,7 @@ pub mod reference {
     /// Bilinear sample of an RGBA8 texture with clamp-to-edge addressing;
     /// texel `i` is centered at `(i + 0.5) / size`. Channels in `0..=1`.
     #[must_use]
-    #[allow(
+    #[expect(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss
@@ -436,7 +436,7 @@ pub mod reference {
     /// The fragment function: the premultiplied color of quad `q` at pixel
     /// center `p`, or `None` when the fragment is clipped.
     #[must_use]
-    #[allow(clippy::many_single_char_names)] // the shader's variable names
+    #[expect(clippy::many_single_char_names)] // the shader's variable names
     pub fn shade(q: &UiQuad, p: [f32; 2], atlas: &[u8], atlas_size: [u32; 2]) -> Option<[f32; 4]> {
         let [cx0, cy0, cx1, cy1] = q.clip;
         if p[0] < cx0 || p[1] < cy0 || p[0] >= cx1 || p[1] >= cy1 {
@@ -479,7 +479,7 @@ pub mod reference {
     /// Rasterizes a draw list over a transparent `width` x `height` image.
     /// Each quad covers the pixels whose centers lie inside its `rect`.
     #[must_use]
-    #[allow(
+    #[expect(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,

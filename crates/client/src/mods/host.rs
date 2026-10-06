@@ -220,15 +220,15 @@ fn script_value(v: Option<&Value>) -> ScriptValue {
     match v {
         None => ScriptValue::Nil,
         Some(Value::Text(s)) => ScriptValue::Str(s.clone()),
-        #[allow(clippy::cast_precision_loss)] // Script numbers are doubles.
+        #[expect(clippy::cast_precision_loss)] // Script numbers are doubles.
         Some(Value::Int(i)) => ScriptValue::Number(*i as f64),
         Some(Value::Fixed { value, decimals }) => {
             let scale = 10i64.checked_pow(u32::from(*decimals)).unwrap_or(i64::MAX);
-            #[allow(clippy::cast_precision_loss)] // Script numbers are doubles.
+            #[expect(clippy::cast_precision_loss)] // Script numbers are doubles.
             ScriptValue::Number(*value as f64 / scale as f64)
         }
         Some(Value::Bool(b)) => ScriptValue::Bool(*b),
-        #[allow(clippy::cast_precision_loss)] // Lists are far shorter than 2^53.
+        #[expect(clippy::cast_precision_loss)] // Lists are far shorter than 2^53.
         Some(Value::List(items)) => ScriptValue::Number(items.len() as f64),
     }
 }
@@ -268,10 +268,10 @@ fn set_property(props: &mut Properties, id: mantis_ui::PropertyId, v: &ScriptVal
         ScriptValue::Number(x) => {
             const EXACT: f64 = 9_007_199_254_740_992.0; // 2^53
             if x.fract() == 0.0 && x.abs() < EXACT {
-                #[allow(clippy::cast_possible_truncation)] // Whole and below 2^53: exact.
+                #[expect(clippy::cast_possible_truncation)] // Whole and below 2^53: exact.
                 let _ = props.set_int(id, *x as i64);
             } else if x.is_finite() && x.abs() < EXACT / 1000.0 {
-                #[allow(clippy::cast_possible_truncation)] // Bounded just above.
+                #[expect(clippy::cast_possible_truncation)] // Bounded just above.
                 let _ = props.set_fixed(id, (x * 1000.0).round() as i64, 3);
             } else {
                 let _ = props.set_text(id, "-");
@@ -761,7 +761,7 @@ fn build_api<'h>(
             .and_then(|id| p.get(id))
             .and_then(Value::as_list)
             .map_or(0, <[ListItem]>::len);
-        #[allow(clippy::cast_precision_loss)] // Lists are far shorter than 2^53.
+        #[expect(clippy::cast_precision_loss)] // Lists are far shorter than 2^53.
         Ok(vec![ScriptValue::Number(n as f64)])
     });
     api.function("item", Tiers::PRESENTATION, move |args| {
@@ -773,7 +773,7 @@ fn build_api<'h>(
             .filter(|i| i.fract() == 0.0 && *i >= 0.0)
             .ok_or("host.item: the index must be a whole number from 0")?;
         let p = props.borrow();
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Whole and non-negative.
+        #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Whole and non-negative.
         let item = p
             .id(&name)
             .and_then(|id| p.get(id))

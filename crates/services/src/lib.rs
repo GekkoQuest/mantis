@@ -23,3 +23,4 @@ pub mod ops;
 pub mod persist;
 pub mod realm;
 pub mod social;
+pub mod tls;

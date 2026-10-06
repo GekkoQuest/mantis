@@ -4,7 +4,7 @@
 //! knows which library produced them.
 
 /// Physical keyboard keys, by position (layout-independent).
-#[allow(missing_docs)] // Variant names are the documentation.
+#[expect(missing_docs)] // Variant names are the documentation.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub enum KeyCode {
     A,
@@ -135,7 +135,7 @@ pub enum WheelDirection {
 }
 
 /// Gamepad buttons, by position.
-#[allow(missing_docs)] // Variant names are the documentation.
+#[expect(missing_docs)] // Variant names are the documentation.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub enum GamepadButton {
     South,

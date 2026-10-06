@@ -7,7 +7,7 @@
 //! and every tick's world state hash must match. Divergence, corruption,
 //! truncation, and foreign logs are each shown to be caught.
 
-#![allow(
+#![expect(
     clippy::unwrap_used,
     clippy::too_many_lines,
     clippy::cast_possible_truncation,

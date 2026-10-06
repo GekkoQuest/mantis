@@ -55,7 +55,7 @@ pub fn after_tick(zone: &mut Zone, link: &CellLink, reports: &[TickReport]) -> M
         };
         let id = cell.id().0;
         let mut batch = Vec::new();
-        cell.drain_outcomes(|o| {
+        cell.drain_outcomes(|tick, o| {
             let bytes = o.payload.as_slice();
             let mut payload = [0u8; 512];
             let len = bytes.len().min(payload.len());
@@ -63,7 +63,9 @@ pub fn after_tick(zone: &mut Zone, link: &CellLink, reports: &[TickReport]) -> M
                 *to = *from;
             }
             batch.push(CellOutcome {
-                tick: report.tick.0,
+                // The tick it was made at: one a recovery replay made is
+                // already durable under that tick's batch numbers.
+                tick: tick.0,
                 kind: o.kind.0,
                 session: o.session.map_or(0, |s| s.0),
                 ok: o.result.is_ok(),
@@ -460,6 +462,7 @@ pub fn start_local(opts: &LocalOptions) -> Result<LocalWorld, String> {
             poll: std::time::Duration::from_millis(20),
             instances: Vec::new(),
             inspector: std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+            tls: None,
         },
     )?;
     let inspector = link.inspector().ok_or("no inspector")?;
@@ -516,4 +519,28 @@ fn run_local(
         }
     }
     Ok(())
+}
+
+/// Paces a serving loop: sleeps until the next tick is due. After an
+/// overrun (a slow tick, a stall) it re-anchors to now and never bursts to
+/// catch up (docs/SERVER.md section 2), and tells the host and every cell
+/// how many ticks of wall time passed without them.
+pub fn pace(
+    next: &mut std::time::Instant,
+    period: std::time::Duration,
+    host: &mut mantis_server::host::Host,
+    zone: &mut Zone,
+) {
+    *next += period;
+    let now = std::time::Instant::now();
+    if *next > now {
+        std::thread::sleep(*next - now);
+        return;
+    }
+    let slipped = (now - *next).as_nanos() / period.as_nanos().max(1);
+    if slipped > 0 {
+        host.clock_slipped(u64::try_from(slipped).unwrap_or(u64::MAX));
+        zone.clock_slipped(u32::try_from(slipped).unwrap_or(u32::MAX));
+    }
+    *next = now;
 }

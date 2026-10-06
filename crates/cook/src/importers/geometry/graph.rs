@@ -14,9 +14,9 @@ use mantis_formats::anim_graph::{
 use mantis_formats::bundle::{AssetKind, Domain};
 use mantis_formats::skeleton::{SkeletonAsset, bone_name_hash};
 
-use super::fields::{Doc, Fields, has_suffix, output_name};
 use super::skeleton::{bone_index, resolve_skeleton};
 use crate::importer::{CookError, Cooked, ImportContext, Importer, Source};
+use crate::source::{Doc, Fields, has_suffix, output_name};
 
 /// `*.animgraph.toml` to an animation graph (phase 15: it resolves phase-10 clips).
 #[derive(Clone, Copy, Debug, Default)]
@@ -40,10 +40,10 @@ impl Importer for GraphImporter {
     }
 
     fn import(&self, source: &Source<'_>, ctx: &ImportContext<'_>) -> Result<Vec<Cooked>, CookError> {
-        let doc = Doc::parse(source)?;
+        let doc = Doc::from_source(source)?;
         doc.only_tables(
-            &["clip", "parameter", "node", "transition", "layer", "foot"],
             &["look_at"],
+            &["clip", "parameter", "node", "transition", "layer", "foot"],
         )?;
         let root = doc.root();
         root.only(&["skeleton"])?;
@@ -85,7 +85,7 @@ impl Importer for GraphImporter {
         })?;
         AnimGraph::new(Arc::new(bound), &parsed, |h| b.clips.get(h).cloned()).map_err(|e| match e {
             AnimError::IkChain(i) => {
-                let table = doc.tables_under("foot").nth(i).map(|(_, f)| f);
+                let table = doc.items("foot").nth(i).map(|(_, f)| f);
                 let line = table.map_or(0, |f| f.line());
                 CookError::at(
                     source.path,
@@ -125,9 +125,9 @@ fn u32_of(i: usize) -> u32 {
 impl Builder<'_> {
     fn clips(&mut self, ctx: &ImportContext<'_>) -> Result<(), CookError> {
         let bones = self.skeleton.bones.len();
-        for (name, f) in self.doc.tables_under("clip") {
+        for (name, f) in self.doc.items("clip") {
             f.only(&["path"])?;
-            let path = f.str("path")?;
+            let path = f.str("path")?.0;
             let line = f.line_of("path");
             let (hash, bytes) = ctx.resolve_bytes(path, AssetKind::AnimClip, self.doc.path(), line)?;
             let asset = ClipAsset::parse(bytes).map_err(|e| f.err(line, &format!("`{path}`: {e}")))?;
@@ -154,7 +154,7 @@ impl Builder<'_> {
     }
 
     fn clip(&self, f: &Fields<'_>, key: &str) -> Result<u32, CookError> {
-        let name = f.str(key)?;
+        let name = f.str(key)?.0;
         self.clip_names
             .iter()
             .find(|(n, _)| *n == name)
@@ -163,13 +163,13 @@ impl Builder<'_> {
     }
 
     fn parameters(&mut self) -> Result<(), CookError> {
-        for (name, f) in self.doc.tables_under("parameter") {
+        for (name, f) in self.doc.items("parameter") {
             f.only(&["kind", "default"])?;
             let kind_line = f.line_of("kind");
-            let (kind, default) = match f.opt_str("kind")?.unwrap_or("float") {
-                "float" => (ParameterKind::Float, f.opt_f32("default")?.unwrap_or(0.0)),
+            let (kind, default) = match f.opt_str("kind")?.map_or("float", |(s, _)| s) {
+                "float" => (ParameterKind::Float, f.f32_or("default", 0.0)?.0),
                 "bool" => {
-                    let v = f.opt_bool("default")?.unwrap_or(false);
+                    let v = f.bool_or("default", false)?.0;
                     (ParameterKind::Bool, if v { 1.0 } else { 0.0 })
                 }
                 "trigger" => {
@@ -233,34 +233,29 @@ impl Builder<'_> {
     }
 
     fn nodes(&mut self) -> Result<Vec<NodeDef>, CookError> {
-        self.node_names = self
-            .doc
-            .tables_under("node")
-            .map(|(n, f)| (n, f.line()))
-            .collect();
+        self.node_names = self.doc.items("node").map(|(n, f)| (n, f.line())).collect();
         self.referenced = vec![false; self.node_names.len()];
-        for (machine, f) in self.doc.tables_under("transition") {
+        for (machine, f) in self.doc.items("transition") {
             let Some((machine, _)) = machine.split_once('.') else {
                 return Err(f.err(f.line(), "a transition table is `[transition.<machine>.<name>]`"));
             };
-            let is_machine = self
-                .doc
-                .tables_under("node")
-                .any(|(n, nf)| n == machine && nf.opt_str("kind").ok().flatten() == Some("state_machine"));
+            let is_machine = self.doc.items("node").any(|(n, nf)| {
+                n == machine && nf.opt_str("kind").ok().flatten().map(|(k, _)| k) == Some("state_machine")
+            });
             if !is_machine {
                 return Err(f.err(f.line(), &format!("`{machine}` is not a state machine node")));
             }
         }
         let doc = self.doc;
         let mut nodes = Vec::new();
-        for (name, f) in doc.tables_under("node") {
-            let kind = f.str("kind")?;
+        for (name, f) in doc.items("node") {
+            let kind = f.str("kind")?.0;
             let node = match kind {
                 "clip" => {
                     f.only(&["kind", "clip", "speed"])?;
                     NodeDef::Clip {
                         clip: self.clip(&f, "clip")?,
-                        speed: f.opt_f32("speed")?.unwrap_or(1.0),
+                        speed: f.f32_or("speed", 1.0)?.0,
                     }
                 }
                 "blend1d" => self.blend(&f)?,
@@ -283,12 +278,17 @@ impl Builder<'_> {
     fn blend(&mut self, f: &Fields<'_>) -> Result<NodeDef, CookError> {
         f.only(&["kind", "parameter", "children", "thresholds"])?;
         let line = f.line_of("parameter");
-        let (parameter, kind) = self.parameter(f, line, f.str("parameter")?)?;
+        let (parameter, kind) = self.parameter(f, line, f.str("parameter")?.0)?;
         if kind != ParameterKind::Float {
             return Err(f.err(line, "a blend parameter must be a float"));
         }
-        let children = f.strings("children")?;
-        let thresholds = f.floats("thresholds")?;
+        let children = f
+            .strs("children")?
+            .0
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<String>>();
+        let thresholds = f.f32s("thresholds")?.0;
         let thresholds_line = f.line_of("thresholds");
         if children.is_empty() || thresholds.len() != children.len() {
             return Err(f.err(
@@ -315,7 +315,12 @@ impl Builder<'_> {
 
     fn state_machine(&mut self, name: &str, f: &Fields<'_>) -> Result<StateMachineDef, CookError> {
         f.only(&["kind", "states", "entry"])?;
-        let state_names = f.strings("states")?;
+        let state_names = f
+            .strs("states")?
+            .0
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<String>>();
         let states_line = f.line_of("states");
         if state_names.is_empty() {
             return Err(f.err(states_line, "a state machine needs at least one state"));
@@ -331,32 +336,36 @@ impl Builder<'_> {
                 .map(u32_of)
                 .ok_or_else(|| f.err(f.line_of(key), &format!("`{s}` is not a state of `{name}`")))
         };
-        let entry = match f.opt_str("entry")? {
+        let entry = match f.opt_str("entry")?.map(|(s, _)| s) {
             Some(e) => state_index(f, "entry", e)?,
             None => 0,
         };
         let mut transitions = Vec::new();
-        for (rest, t) in self.doc.tables_under("transition") {
+        for (rest, t) in self.doc.items("transition") {
             if rest.split_once('.').map(|(m, _)| m) != Some(name) {
                 continue;
             }
             t.only(&["from", "to", "crossfade", "exit_time", "conditions"])?;
-            let from = match t.str("from")? {
+            let from = match t.str("from")?.0 {
                 "any" => None,
                 s => Some(state_index(&t, "from", s)?),
             };
-            let to = state_index(&t, "to", t.str("to")?)?;
-            let crossfade = t.opt_f32("crossfade")?.unwrap_or(0.0);
+            let to = state_index(&t, "to", t.str("to")?.0)?;
+            let crossfade = t.f32_or("crossfade", 0.0)?.0;
             if crossfade < 0.0 {
                 return Err(t.err(t.line_of("crossfade"), "`crossfade` must not be negative"));
             }
-            let exit_time = t.opt_f32("exit_time")?;
+            let exit_time = t.opt_f32("exit_time")?.map(|(v, _)| v);
             if exit_time.is_some_and(|e| e < 0.0) {
                 return Err(t.err(t.line_of("exit_time"), "`exit_time` must not be negative"));
             }
             let line = t.line_of("conditions");
             let conditions = t
-                .opt_strings("conditions")?
+                .strs_or_empty("conditions")?
+                .0
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<String>>()
                 .iter()
                 .map(|c| self.condition(&t, line, c))
                 .collect::<Result<Vec<_>, _>>()?;
@@ -431,14 +440,14 @@ impl Builder<'_> {
     fn layers(&mut self) -> Result<Vec<LayerDef>, CookError> {
         let doc = self.doc;
         let mut layers = Vec::new();
-        for (_, f) in doc.tables_under("layer") {
+        for (_, f) in doc.items("layer") {
             f.only(&["node", "weight", "mode", "reference", "mask"])?;
-            let node = self.reference(&f, f.line_of("node"), f.str("node")?)?;
-            let weight = f.opt_f32("weight")?.unwrap_or(1.0);
+            let node = self.reference(&f, f.line_of("node"), f.str("node")?.0)?;
+            let weight = f.f32_or("weight", 1.0)?.0;
             if !(0.0..=1.0).contains(&weight) {
                 return Err(f.err(f.line_of("weight"), "`weight` must be 0 to 1"));
             }
-            let mode = match f.opt_str("mode")?.unwrap_or("override") {
+            let mode = match f.opt_str("mode")?.map_or("override", |(s, _)| s) {
                 "override" => LayerMode::Override,
                 "additive" => LayerMode::Additive,
                 other => {
@@ -461,7 +470,13 @@ impl Builder<'_> {
             };
             let mask_line = f.line_of("mask");
             let mut mask = Vec::new();
-            for bone in f.opt_strings("mask")? {
+            for bone in f
+                .strs_or_empty("mask")?
+                .0
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<String>>()
+            {
                 mask.push(
                     bone_index(self.skeleton, &bone)
                         .ok_or_else(|| f.err(mask_line, &format!("unknown bone `{bone}`")))?,
@@ -503,11 +518,12 @@ impl Builder<'_> {
         }
         let mut reached = vec![false; nodes.len()];
         let mut stack: Vec<u32> = Vec::new();
-        for (_, f) in self.doc.tables_under("layer") {
+        for (_, f) in self.doc.items("layer") {
             if let Some(i) = f
                 .opt_str("node")
                 .ok()
                 .flatten()
+                .map(|(n, _)| n)
                 .and_then(|n| self.node_names.iter().position(|(m, _)| *m == n))
             {
                 stack.push(u32_of(i));
@@ -534,14 +550,14 @@ impl Builder<'_> {
     }
 
     fn bone(&self, f: &Fields<'_>, key: &str) -> Result<u16, CookError> {
-        let name = f.str(key)?;
+        let name = f.str(key)?.0;
         bone_index(self.skeleton, name)
             .ok_or_else(|| f.err(f.line_of(key), &format!("unknown bone `{name}`")))
     }
 
     fn foot_chains(&self) -> Result<Vec<TwoBoneChainDef>, CookError> {
         let mut chains = Vec::new();
-        for (_, f) in self.doc.tables_under("foot") {
+        for (_, f) in self.doc.items("foot") {
             f.only(&["root", "mid", "tip", "pole"])?;
             let (root, mid, tip) = (
                 self.bone(&f, "root")?,
@@ -552,7 +568,8 @@ impl Builder<'_> {
                 return Err(f.err(f.line(), "`root`, `mid`, and `tip` must go down the hierarchy"));
             }
             let pole = f
-                .opt_vec::<3>("pole")?
+                .opt_array::<3>("pole")?
+                .map(|(v, _)| v)
                 .ok_or_else(|| f.err(f.line(), "missing `pole`"))?;
             if pole.iter().map(|v| v * v).sum::<f32>() <= 1e-12 {
                 return Err(f.err(f.line_of("pole"), "`pole` must not be zero"));
@@ -569,13 +586,14 @@ impl Builder<'_> {
         f.only(&["head", "axis", "max_angle"])?;
         let head = self.bone(&f, "head")?;
         let axis = f
-            .opt_vec::<3>("axis")?
+            .opt_array::<3>("axis")?
+            .map(|(v, _)| v)
             .ok_or_else(|| f.err(f.line(), "missing `axis`"))?;
         let len = axis.iter().map(|v| v * v).sum::<f32>().sqrt();
         if len.is_nan() || len <= 1e-6 {
             return Err(f.err(f.line_of("axis"), "`axis` must not be zero"));
         }
-        let max_angle = f.f32("max_angle")?;
+        let max_angle = f.f32("max_angle")?.0;
         if !(max_angle > 0.0 && max_angle <= std::f32::consts::PI) {
             return Err(f.err(f.line_of("max_angle"), "`max_angle` must be in (0, pi] radians"));
         }

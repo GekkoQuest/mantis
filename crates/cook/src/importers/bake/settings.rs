@@ -59,7 +59,7 @@ fn color(f: &Fields<'_>, key: &str, default: V3) -> Result<V3, CookError> {
     if !f.has(key) {
         return Ok(default);
     }
-    let c = f.floats::<3>(key)?;
+    let (c, _) = f.array::<3>(key)?;
     if c.iter().any(|v| *v < 0.0) {
         return Err(f.error(key, &format!("`{key}` must not be negative")));
     }
@@ -67,7 +67,7 @@ fn color(f: &Fields<'_>, key: &str, default: V3) -> Result<V3, CookError> {
 }
 
 fn positive(f: &Fields<'_>, key: &str, default: f32) -> Result<f32, CookError> {
-    let v = f.float_or(key, default)?;
+    let (v, _) = f.f32_or(key, default)?;
     if v <= 0.0 {
         return Err(f.error(key, &format!("`{key}` must be positive")));
     }
@@ -78,7 +78,7 @@ fn int_or(f: &Fields<'_>, key: &str, lo: i64, hi: i64, default: u32) -> Result<u
     if !f.has(key) {
         return Ok(default);
     }
-    let v = f.int(key, lo, hi)?;
+    let (v, _) = f.int_in(key, lo, hi)?;
     u32::try_from(v).map_err(|_| f.error(key, &format!("`{key}` is out of range")))
 }
 
@@ -99,11 +99,11 @@ const BAKE_KEYS: [&str; 12] = [
 
 fn keyframe(name: &str, f: &Fields<'_>, sky: V3, ground: V3) -> Result<Keyframe, CookError> {
     f.only(&["time", "sun_direction", "sun_color", "sky_color", "ground_color"])?;
-    let time = f.float("time")?;
+    let (time, _) = f.f32("time")?;
     if !(0.0..1.0).contains(&time) {
         return Err(f.error("time", "`time` is a day fraction from 0 up to (not including) 1"));
     }
-    let dir = V3::from_array(f.floats::<3>("sun_direction")?);
+    let dir = V3::from_array(f.array::<3>("sun_direction")?.0);
     if dir.length() < 1e-6 {
         return Err(f.error("sun_direction", "`sun_direction` must not be zero"));
     }
@@ -129,7 +129,7 @@ pub fn parse_settings(path: &str, text: &str) -> Result<Option<Settings>, CookEr
     let Ok(doc) = Doc::parse(path, text) else {
         return Ok(None);
     };
-    let items = doc.items("bake");
+    let items: Vec<_> = doc.items("bake").collect();
     let Some(f) = doc.table("bake") else {
         return match items.first() {
             Some((_, k)) => Err(k.error("time", "keyframe tables need a [bake] table")),
@@ -139,7 +139,7 @@ pub fn parse_settings(path: &str, text: &str) -> Result<Option<Settings>, CookEr
     f.only(&BAKE_KEYS)?;
     let probe_spacing = positive(&f, "probe_spacing", 4.0)?;
     let probe_height = positive(&f, "probe_height", 8.0)?;
-    let probe_lift = f.float_or("probe_lift", 0.5)?;
+    let (probe_lift, _) = f.f32_or("probe_lift", 0.5)?;
     if probe_lift < 0.0 || probe_lift >= probe_height {
         return Err(f.error("probe_lift", "`probe_lift` must be from 0 up to `probe_height`"));
     }
@@ -152,7 +152,7 @@ pub fn parse_settings(path: &str, text: &str) -> Result<Option<Settings>, CookEr
     if albedo.x > 1.0 || albedo.y > 1.0 || albedo.z > 1.0 {
         return Err(f.error("albedo", "`albedo` components are from 0 to 1"));
     }
-    let lightmap_sun = f.bool_or("lightmap_sun", true)?;
+    let (lightmap_sun, _) = f.bool_or("lightmap_sun", true)?;
     let sky = color(&f, "sky_color", V3::new(1.0, 1.0, 1.0))?;
     let ground = color(&f, "ground_color", V3::ZERO)?;
     let mut keyframes = Vec::new();
@@ -178,7 +178,7 @@ pub fn parse_settings(path: &str, text: &str) -> Result<Option<Settings>, CookEr
     keyframes.sort_by(|a, b| a.time.total_cmp(&b.time));
     Ok(Some(Settings {
         probe_spacing,
-        probe_spacing_line: f.line("probe_spacing"),
+        probe_spacing_line: f.line_of("probe_spacing"),
         probe_height,
         probe_lift,
         texels_per_meter,

@@ -108,8 +108,8 @@ use mantis_formats::material::{
 };
 use mantis_formats::texture::TextureAsset;
 
-use super::fields::{Doc, Fields, output_name, within};
 use crate::importer::{CookError, Cooked, ImportContext, Importer, Source};
+use crate::source::{Doc, Fields, output_name, within};
 
 const SUFFIX: &str = ".material.toml";
 
@@ -230,7 +230,7 @@ fn read_spec<'d>(name: &'d str, f: Fields<'d>) -> Result<Spec<'d>, CookError> {
     let (inputs, inputs_line) = if *count.end() > 0 {
         f.strs("inputs")?
     } else {
-        (Vec::new(), f.line)
+        (Vec::new(), f.line())
     };
     if !count.contains(&inputs.len()) {
         let want = if count.start() == count.end() {
@@ -373,7 +373,7 @@ fn read_params<'d>(doc: &'d Doc<'_>) -> Result<Params<'d>, CookError> {
         colors: Vec::new(),
         by_name: BTreeMap::new(),
     };
-    for (name, f) in doc.prefixed("param.") {
+    for (name, f) in doc.items("param") {
         f.only(&["kind", "default"])?;
         let ok = (1..=MAX_PARAM_NAME).contains(&name.len())
             && name
@@ -381,7 +381,7 @@ fn read_params<'d>(doc: &'d Doc<'_>) -> Result<Params<'d>, CookError> {
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
         if !ok {
             return Err(f.err(
-                f.line,
+                f.line(),
                 &format!("parameter name `{name}` must be 1 to {MAX_PARAM_NAME} bytes of a-z, 0-9, _"),
             ));
         }
@@ -394,7 +394,7 @@ fn read_params<'d>(doc: &'d Doc<'_>) -> Result<Params<'d>, CookError> {
                 _ => return Err(f.err(line, "a color `default` has 3 or 4 numbers")),
             };
             if out.colors.len() >= usize::from(COLOR_PARAMS) {
-                return Err(f.err(f.line, &format!("more than {COLOR_PARAMS} color parameters")));
+                return Err(f.err(f.line(), &format!("more than {COLOR_PARAMS} color parameters")));
             }
             out.colors.push(ColorDefault {
                 name: name.to_owned(),
@@ -406,7 +406,7 @@ fn read_params<'d>(doc: &'d Doc<'_>) -> Result<Params<'d>, CookError> {
                 return Err(f.err(line, "a scalar `default` is one number"));
             };
             if out.scalars.len() >= usize::from(SCALAR_PARAMS) {
-                return Err(f.err(f.line, &format!("more than {SCALAR_PARAMS} scalar parameters")));
+                return Err(f.err(f.line(), &format!("more than {SCALAR_PARAMS} scalar parameters")));
             }
             out.scalars.push(ScalarDefault {
                 name: name.to_owned(),
@@ -414,8 +414,8 @@ fn read_params<'d>(doc: &'d Doc<'_>) -> Result<Params<'d>, CookError> {
             });
             out.scalars.len() - 1
         };
-        let index = u8::try_from(index).map_err(|_| f.err(f.line, "too many parameters"))?;
-        out.by_name.insert(name, (color, index, f.line));
+        let index = u8::try_from(index).map_err(|_| f.err(f.line(), "too many parameters"))?;
+        out.by_name.insert(name, (color, index, f.line()));
     }
     Ok(out)
 }
@@ -585,7 +585,7 @@ fn read_outline(doc: &Doc<'_>) -> Result<Option<Outline>, CookError> {
 }
 
 fn read_deformations(root: &Fields<'_>) -> Result<Deformations, CookError> {
-    let (names, line) = root.opt_strs("deformations")?;
+    let (names, line) = root.strs_or_empty("deformations")?;
     let mut d = Deformations::NONE;
     for n in names {
         match n {
@@ -622,7 +622,7 @@ impl Located<'_, '_> {
             .and_then(|i| self.specs.get(*i))
         {
             Some(s) => self.doc.err(
-                s.fields.line,
+                s.fields.line(),
                 &format!("node `{}` (`{}`): {message}", s.name, s.op.name()),
             ),
             None => self.doc.err(0, message),
@@ -673,7 +673,7 @@ impl Located<'_, '_> {
                 let line = match which {
                     "rim" => self.rim_line,
                     "outline" => self.outline_line,
-                    _ => self.lighting.line,
+                    _ => self.lighting.line(),
                 };
                 self.doc
                     .err(line, &format!("`{which}` settings are out of range"))
@@ -716,7 +716,7 @@ fn read_textures(
     ctx: &ImportContext<'_>,
     from: &str,
 ) -> Result<(Vec<TextureRef>, usize), CookError> {
-    let (paths, line) = root.opt_strs("textures")?;
+    let (paths, line) = root.strs_or_empty("textures")?;
     if paths.len() > usize::from(TEXTURE_SLOTS) {
         return Err(root.err(
             line,
@@ -741,7 +741,7 @@ fn read_textures(
 
 fn read_specs<'d>(doc: &'d Doc<'_>) -> Result<Vec<Spec<'d>>, CookError> {
     let mut specs = Vec::new();
-    for (name, f) in doc.prefixed("node.") {
+    for (name, f) in doc.items("node") {
         specs.push(read_spec(name, f)?);
     }
     if specs.is_empty() || specs.len() > MAX_NODES {
@@ -833,11 +833,11 @@ impl Importer for Materials {
     }
 
     fn import(&self, source: &Source<'_>, ctx: &ImportContext<'_>) -> Result<Vec<Cooked>, CookError> {
-        let doc = Doc::parse(source)?;
-        doc.only_tables(&["lighting", "rim", "outline", "output"], &["node.", "param."])?;
-        let root = doc.root().ok_or_else(|| doc.err(0, "empty document"))?;
+        let doc = Doc::from_source(source)?;
+        doc.only_tables(&["lighting", "rim", "outline", "output"], &["node", "param"])?;
+        let root = doc.root();
         root.only(&["casts_shadows", "deformations", "alpha_cutoff", "textures"])?;
-        let (casts_shadows, _) = root.opt_bool("casts_shadows", true)?;
+        let (casts_shadows, _) = root.bool_or("casts_shadows", true)?;
         let deformations = read_deformations(&root)?;
         let alpha_cutoff = read_cutoff(&root)?;
         let (textures, textures_line) = read_textures(&root, ctx, source.path)?;
@@ -857,7 +857,7 @@ impl Importer for Materials {
             .ok_or_else(|| doc.err(0, "missing `[output]` (with `base_color`)"))?;
         output.only(&["base_color", "alpha", "emissive"])?;
         let base_color = output_node(&output, "base_color", &ids)?
-            .ok_or_else(|| output.err(output.line, "`[output]` is missing `base_color`"))?;
+            .ok_or_else(|| output.err(output.line(), "`[output]` is missing `base_color`"))?;
         let outputs = SurfaceOutputs {
             base_color,
             alpha: output_node(&output, "alpha", &ids)?,
@@ -877,8 +877,8 @@ impl Importer for Materials {
             placed: &placed,
             output,
             lighting: lighting_fields,
-            rim_line: doc.table("rim").map_or(0, |f| f.line),
-            outline_line: doc.table("outline").map_or(0, |f| f.line),
+            rim_line: doc.table("rim").map_or(0, |f| f.line()),
+            outline_line: doc.table("outline").map_or(0, |f| f.line()),
         };
         let typed = graph.validate().map_err(|e| located.map(e))?;
         let asset = MaterialAsset {

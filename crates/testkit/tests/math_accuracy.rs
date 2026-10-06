@@ -10,7 +10,7 @@
 //! The exhaustive sweep over all 2^32 inputs is ignored by default:
 //! `cargo test -p mantis-testkit --release --test math_accuracy -- --ignored`.
 
-#![allow(clippy::cast_possible_truncation)]
+#![expect(clippy::cast_possible_truncation)]
 
 use mantis_core::math::{CANONICAL_NAN, atan, atan2, cos, exp, ln, pow, sin, tan};
 

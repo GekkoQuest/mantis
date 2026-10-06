@@ -64,6 +64,21 @@ fn every_motion_parameter_is_a_tunable_with_a_unit() {
     // `cell-500-100` snapshot bytes).
     assert_eq!(t.interest.budget, 32);
     assert_eq!(t.interest, mantis_server::interest::TierConfig::DEFAULT);
+    // Per-remote baselines ship off (the encode row's headroom).
+    assert!(!t.interest.snapshot_own_bases);
+    assert_eq!(t.interest.own_base_max_age, 64);
+    let on = PACKAGE_TOML.replace("snapshot_own_bases = 0 ", "snapshot_own_bases = 1 ");
+    assert!(Tunables::parse(&on).unwrap().interest.snapshot_own_bases);
+    let neither = PACKAGE_TOML.replace("snapshot_own_bases = 0 ", "snapshot_own_bases = 2 ");
+    assert_eq!(
+        Tunables::parse(&neither),
+        Err(TunableError::BadValue("interest.snapshot_own_bases".into()))
+    );
+    let too_old = PACKAGE_TOML.replace("own_base_max_age = 64 ", "own_base_max_age = 65 ");
+    assert_eq!(
+        Tunables::parse(&too_old),
+        Err(TunableError::BadValue("interest.own_base_max_age".into()))
+    );
 }
 
 #[test]
@@ -96,5 +111,21 @@ fn malformed_manifests_are_refused() {
     assert_eq!(
         Tunables::parse(&zero_rate),
         Err(TunableError::BadValue("server.tick_rate".into()))
+    );
+}
+
+#[test]
+fn the_client_tunables_table_is_the_clients_and_skipped_whole() {
+    let with_client =
+        format!("{PACKAGE_TOML}\n[tunables.client]\ninterp_delay_floor = 100   # ms\nanything_new = fast\n");
+    assert_eq!(
+        Tunables::parse(&with_client).map(|t| t.motion),
+        Tunables::parse(PACKAGE_TOML).map(|t| t.motion)
+    );
+    // A server table after it is read again.
+    let after = format!("{with_client}\n[tunables.motion]\nswim_speed = 1.0 # m/s\n");
+    assert_eq!(
+        Tunables::parse(&after),
+        Err(TunableError::Unknown("motion.swim_speed".into()))
     );
 }

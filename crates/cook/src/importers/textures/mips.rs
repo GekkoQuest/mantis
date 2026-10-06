@@ -186,7 +186,7 @@ impl SrgbCurve {
     }
 }
 
-#[allow(clippy::cast_possible_truncation)] // a value in 0 to 1 narrowed to single precision
+#[expect(clippy::cast_possible_truncation)] // a value in 0 to 1 narrowed to single precision
 fn narrow(v: f64) -> f32 {
     v as f32
 }

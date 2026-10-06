@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use mantis_testkit::arch::{CRATE_RULES, SIM_CRATES, check, check_file_allows, parse_metadata};
+use mantis_testkit::arch::{CRATE_RULES, SIM_CRATES, check, check_lint_attrs, parse_metadata};
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
@@ -98,11 +98,13 @@ fn rust_files_under(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
     Ok(())
 }
 
-/// File-level allows (lead ruling): none under any `src/` tree; under
-/// `tests/**`, only the lints in `TEST_FILE_ALLOWS`. Covers every crate and
-/// every package, at any depth.
+/// Lint attributes (lead rulings): lints are silenced with `expect`, so a
+/// stale one fails the build; file-level only under `tests/**`, naming only
+/// `TEST_FILE_EXPECTS`; item-level `allow` of a clippy lint only at
+/// `ITEM_ALLOWS`; file-level `allow` only for `dead_code` in a shared test
+/// module. Covers every crate and every package, at any depth.
 #[test]
-fn file_level_allows_follow_the_rule() -> Result<(), String> {
+fn lint_attributes_follow_the_rule() -> Result<(), String> {
     let root = workspace_root();
     let mut files = Vec::new();
     for group in ["crates", "packages"] {
@@ -122,13 +124,13 @@ fn file_level_allows_follow_the_rule() -> Result<(), String> {
             .unwrap_or(file)
             .to_string_lossy()
             .replace('\\', "/");
-        violations.extend(check_file_allows(&rel, &text));
+        violations.extend(check_lint_attrs(&rel, &text));
     }
     if violations.is_empty() {
         Ok(())
     } else {
         Err(format!(
-            "file-level allow violations:\n  {}",
+            "lint attribute violations (allow instead of expect, or not permitted):\n  {}",
             violations.join("\n  ")
         ))
     }

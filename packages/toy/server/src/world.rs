@@ -263,6 +263,7 @@ pub fn cell_config(t: &Tunables, index: usize, seed: u64) -> CellConfig {
     cfg.rate = t.tick_rate;
     cfg.motion = t.motion;
     cfg.envelope = t.envelope;
+    cfg.inputs = t.inputs();
     cfg.tiers = t.interest;
     cfg.region = Some((lo, hi));
     cfg.ghost_margin = GHOST_MARGIN;
@@ -345,8 +346,18 @@ pub fn zone_with_instances(
     let cells = (0..all)
         .map(|i| cell(t, i, seed, adapters(t.content), log(i)))
         .collect::<Result<Vec<_>, _>>()?;
+    zone_of(t, cells, instances)
+}
+
+/// A zone of `cells`, built or recovered: the world cells in order, then
+/// `instances` instance cells.
+///
+/// # Errors
+/// [`CellError`].
+pub fn zone_of(t: &Tunables, cells: Vec<Cell>, instances: usize) -> Result<Zone, CellError> {
+    let all = cells.len();
     let mut zone = Zone::new(cells, (0..all).map(region_of).collect())?;
-    let instance_cells: Vec<usize> = (regions().len()..all).collect();
+    let instance_cells: Vec<usize> = (all.saturating_sub(instances)..all).collect();
     let grace = u64::from(t.instance_release_grace) * u64::from(t.tick_rate.hz());
     zone.set_instances(&instance_cells, grace);
     Ok(zone)

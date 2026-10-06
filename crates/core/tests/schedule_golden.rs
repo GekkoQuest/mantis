@@ -5,7 +5,7 @@
 
 // Test code: helper functions may unwrap and cast freely; the library rules
 // (no unwrap, checked casts) apply to library code.
-#![allow(clippy::unwrap_used, clippy::too_many_lines)]
+#![expect(clippy::unwrap_used, clippy::too_many_lines)]
 
 use std::path::PathBuf;
 

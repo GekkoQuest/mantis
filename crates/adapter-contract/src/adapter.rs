@@ -51,6 +51,39 @@ impl fmt::Display for AdapterError {
 
 impl std::error::Error for AdapterError {}
 
+/// The entity ids a protocol can carry: every id whose bits
+/// ([`crate::core_types::EntityId::to_bits`]) are at most `max_bits`. The
+/// server allocates replicated ids only inside the range of every adapter
+/// it listens with, so no adapter is ever handed an id it must refuse.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct EntityIdRange {
+    /// The largest id bits the protocol carries.
+    pub max_bits: u64,
+}
+
+impl EntityIdRange {
+    /// Every id.
+    pub const ALL: Self = Self { max_bits: u64::MAX };
+
+    /// True when the protocol can carry `id`.
+    #[must_use]
+    pub const fn contains(self, id: crate::core_types::EntityId) -> bool {
+        id.to_bits() <= self.max_bits
+    }
+
+    /// The ids both ranges carry.
+    #[must_use]
+    pub const fn intersect(self, other: Self) -> Self {
+        Self {
+            max_bits: if self.max_bits < other.max_bits {
+                self.max_bits
+            } else {
+                other.max_bits
+            },
+        }
+    }
+}
+
 /// A wire adapter: translates one client protocol to and from the
 /// Mantis-native models. Implemented by packages; depends only on this crate.
 ///
@@ -67,6 +100,10 @@ pub trait WireAdapter: Send + Sync + 'static {
 
     /// The transport this adapter's clients speak.
     fn transport(&self) -> TransportKind;
+
+    /// The entity ids the protocol can carry. Required: there is no
+    /// default, so a protocol with narrower ids says so.
+    fn entity_ids(&self) -> EntityIdRange;
 
     /// Translates one received frame into zero or more inbound messages.
     ///
@@ -91,4 +128,22 @@ pub trait WireAdapter: Send + Sync + 'static {
         baseline: Option<&SnapshotFrame>,
         out: &mut Vec<u8>,
     ) -> Result<(), AdapterError>;
+
+    /// [`WireAdapter::encode_snapshot`], with per-remote baselines: `older`
+    /// finds, for a remote the frame-level baseline lacks, an acknowledged
+    /// frame that carries it. Adapters without per-remote deltas ignore it
+    /// (the default).
+    ///
+    /// # Errors
+    /// [`AdapterError`].
+    fn encode_snapshot_based(
+        &self,
+        frame: &SnapshotFrame,
+        baseline: Option<&SnapshotFrame>,
+        older: &dyn crate::RemoteBases,
+        out: &mut Vec<u8>,
+    ) -> Result<(), AdapterError> {
+        let _ = older;
+        self.encode_snapshot(frame, baseline, out)
+    }
 }

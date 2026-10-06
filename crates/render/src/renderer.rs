@@ -221,7 +221,7 @@ struct OcclusionGpu {
 }
 
 /// The scene group's bind group over one visible list.
-#[allow(clippy::too_many_arguments)] // The scene group's resources, one per binding.
+#[expect(clippy::too_many_arguments)] // The scene group's resources, one per binding.
 fn scene_bind_group(
     device: &wgpu::Device,
     layouts: &Layouts,
@@ -345,7 +345,7 @@ struct SsaoParams {
 }
 
 impl SsaoParams {
-    #[allow(clippy::cast_precision_loss)] // The sample count is tiny.
+    #[expect(clippy::cast_precision_loss)] // The sample count is tiny.
     fn new(proj: glam::Mat4, [w, h]: [f32; 2], strength: f32) -> Self {
         Self {
             proj: proj.to_cols_array_2d(),
@@ -359,7 +359,7 @@ impl SsaoParams {
 
 /// Deterministic SSAO hemisphere kernel: points inside the unit hemisphere (+z), denser
 /// near the center.
-#[allow(clippy::cast_precision_loss)] // Sample indices are tiny.
+#[expect(clippy::cast_precision_loss)] // Sample indices are tiny.
 fn ssao_kernel() -> [[f32; 4]; SSAO_SAMPLES] {
     let mut out = [[0.0; 4]; SSAO_SAMPLES];
     let golden = core::f32::consts::PI * (3.0 - 5.0f32.sqrt());
@@ -495,7 +495,7 @@ impl Renderer {
     ///
     /// # Errors
     /// [`RendererError::Graph`] if the frame graph fails to compile or bind.
-    #[allow(clippy::too_many_lines)] // One-time construction of every GPU object, in order.
+    #[expect(clippy::too_many_lines)] // One-time construction of every GPU object, in order.
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -776,7 +776,7 @@ impl Renderer {
         };
         let (graph, handles) = build_graph(device, &config)?;
         bind_graph_resources(device, &mut shared, &graph, &handles)?;
-        #[allow(clippy::cast_precision_loss)] // Pixel sizes are far below 2^24.
+        #[expect(clippy::cast_precision_loss)] // Pixel sizes are far below 2^24.
         let aspect = config.width as f32 / config.height.max(1) as f32;
         Ok(Self {
             config,
@@ -1180,7 +1180,7 @@ impl Renderer {
     }
 
     /// CPU frame preparation. Allocation-free after the first frame.
-    #[allow(clippy::cast_precision_loss)] // Pixel sizes are far below 2^24.
+    #[expect(clippy::cast_precision_loss)] // Pixel sizes are far below 2^24.
     pub fn prepare(&mut self, inputs: &FrameInputs) -> FrameStats {
         let c = &self.config;
         let (w, h) = (c.width as f32, c.height.max(1) as f32);
@@ -1492,7 +1492,7 @@ impl Renderer {
 }
 
 /// Writes the cascade matrices, splits, and parameters into the frame uniform.
-#[allow(clippy::cast_precision_loss)] // At most four cascades.
+#[expect(clippy::cast_precision_loss)] // At most four cascades.
 fn fill_cascades(f: &mut GpuFrame, cascades: &[crate::lighting::csm::Cascade], count: usize) {
     for (slot, cascade) in f.cascade_view_proj.iter_mut().zip(cascades) {
         *slot = cascade.view_proj.to_cols_array_2d();
@@ -1505,7 +1505,7 @@ fn fill_cascades(f: &mut GpuFrame, cascades: &[crate::lighting::csm::Cascade], c
 }
 
 /// Builds and compiles the frame graph.
-#[allow(clippy::too_many_lines, clippy::many_single_char_names)] // One block per pass, in frame order; `p` is each pass builder.
+#[expect(clippy::too_many_lines, clippy::many_single_char_names)] // One block per pass, in frame order; `p` is each pass builder.
 fn build_graph(
     device: &wgpu::Device,
     config: &RendererConfig,
@@ -1711,7 +1711,7 @@ fn build_graph(
 }
 
 /// Builds the bind groups that reference graph textures (once per compiled graph).
-#[allow(clippy::too_many_lines)] // Declarative bind group tables, one entry per binding.
+#[expect(clippy::too_many_lines)] // Declarative bind group tables, one entry per binding.
 fn bind_graph_resources(
     device: &wgpu::Device,
     s: &mut Shared,

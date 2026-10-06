@@ -65,8 +65,8 @@ use mantis_core::graph::{GraphCatalog, GraphError, MarkerSpec, NodeKey, PackageM
 use mantis_formats::bundle::{AssetKind, Domain};
 use mantis_formats::gameplay_graph::{GraphAsset, GraphNode, GraphNodeKind};
 
-use super::fields::{Doc, Fields, output_name};
 use crate::importer::{CookError, Cooked, ImportContext, Importer, Source};
+use crate::source::{Doc, Fields, output_name};
 
 const SUFFIX: &str = ".graph.toml";
 
@@ -123,7 +123,7 @@ fn marker(f: &Fields<'_>) -> Result<(MarkerSpec, Vec<&'static str>), CookError> 
         1 => (MarkerSpec::Impact, vec![]),
         2 => (
             MarkerSpec::Tick {
-                counter: counter(f, f.opt_int::<u8>("counter", 0)?)?,
+                counter: counter(f, f.int_or::<u8>("counter", 0)?)?,
             },
             vec!["counter"],
         ),
@@ -159,7 +159,7 @@ impl Graphs {
                 allowed.extend(extra);
                 GraphNodeKind::Marker {
                     marker,
-                    offset: f.opt_int::<u16>("offset", 0)?.0,
+                    offset: f.int_or::<u16>("offset", 0)?.0,
                     next: link(f, "next", keys)?,
                 }
             }
@@ -300,9 +300,9 @@ impl Importer for Graphs {
     }
 
     fn import(&self, source: &Source<'_>, _ctx: &ImportContext<'_>) -> Result<Vec<Cooked>, CookError> {
-        let doc = Doc::parse(source)?;
-        doc.only_tables(&[], &["node."])?;
-        let root = doc.root().ok_or_else(|| doc.err(0, "the graph is empty"))?;
+        let doc = Doc::from_source(source)?;
+        doc.only_tables(&[], &["node"])?;
+        let root = doc.root();
         root.only(&["name", "entry"])?;
         let (name, name_line) = root.str("name")?;
         if name.is_empty() || name.len() > mantis_formats::gameplay_graph::MAX_NAME {
@@ -310,7 +310,7 @@ impl Importer for Graphs {
         }
         let mut read = Vec::new();
         let mut keys = BTreeMap::new();
-        for (node, fields) in doc.prefixed("node.") {
+        for (node, fields) in doc.items("node") {
             let (key, line) = fields.int::<u16>("key")?;
             if key == mantis_formats::gameplay_graph::NO_NODE {
                 return Err(fields.err(line, "key 65535 is reserved"));
@@ -322,7 +322,7 @@ impl Importer for Graphs {
             read.push(Read {
                 name: node,
                 key,
-                line: fields.line,
+                line: fields.line(),
                 fields,
             });
         }

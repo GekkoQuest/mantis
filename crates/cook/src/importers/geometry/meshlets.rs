@@ -49,7 +49,7 @@ fn morton_key(c: [f32; 3], lo: [f32; 3], hi: [f32; 3]) -> u32 {
     let mut key = 0u32;
     let q = c.iter().zip(lo).zip(hi).map(|((v, l), h)| {
         let t = if h > l { (v - l) / (h - l) } else { 0.0 };
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Clamped to 0..=1023.
+        #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Clamped to 0..=1023.
         let q = (t.clamp(0.0, 1.0) * 1023.0) as u32;
         q
     });
@@ -189,7 +189,7 @@ impl Grow<'_> {
 
     fn pick(&mut self, used: &[bool]) -> Option<usize> {
         self.candidates.retain(|c| !used.get(*c).copied().unwrap_or(true));
-        #[allow(clippy::cast_precision_loss)] // A meshlet holds at most 124 triangles.
+        #[expect(clippy::cast_precision_loss)] // A meshlet holds at most 124 triangles.
         let k = self.triangles.len().max(1) as f32;
         let center = self.sum.map(|s| s / k);
         self.candidates
@@ -242,7 +242,7 @@ pub(crate) fn bounding_sphere(points: &[[f32; 3]]) -> ([f32; 3], f32) {
             ];
         }
     }
-    #[allow(clippy::cast_possible_truncation)] // Model-space coordinates, within f32.
+    #[expect(clippy::cast_possible_truncation)] // Model-space coordinates, within f32.
     let center32 = center.map(|c| c as f32);
     let c64 = to64(center32);
     let exact = points
@@ -250,7 +250,7 @@ pub(crate) fn bounding_sphere(points: &[[f32; 3]]) -> ([f32; 3], f32) {
         .map(|p| d2(to64(*p), c64))
         .fold(0.0f64, f64::max)
         .sqrt();
-    #[allow(clippy::cast_possible_truncation)] // Rounded up below.
+    #[expect(clippy::cast_possible_truncation)] // Rounded up below.
     let r = (exact * (1.0 + 1e-6)) as f32;
     (center32, r.next_up())
 }
@@ -273,7 +273,7 @@ pub(crate) fn normal_cone(normals: &[[f32; 3]]) -> ([f32; 3], f32) {
     if normals.is_empty() || len < 1e-6 {
         return OPEN;
     }
-    #[allow(clippy::cast_possible_truncation)] // A unit vector.
+    #[expect(clippy::cast_possible_truncation)] // A unit vector.
     let axis = sum.map(|c| (c / len) as f32);
     let Some(axis) = normalize(axis) else {
         return OPEN;
@@ -293,7 +293,7 @@ pub(crate) fn normal_cone(normals: &[[f32; 3]]) -> ([f32; 3], f32) {
     if cutoff >= 1.0 {
         return OPEN;
     }
-    #[allow(clippy::cast_possible_truncation)] // In (0, 1).
+    #[expect(clippy::cast_possible_truncation)] // In (0, 1).
     let cutoff = cutoff as f32;
     (axis, cutoff)
 }

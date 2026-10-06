@@ -3,22 +3,22 @@
 use mantis_formats::bundle::{AssetKind, Domain};
 use mantis_formats::mesh::{MeshAsset, SkinInfluence};
 
-use super::fields::{Doc, Fields, has_suffix, output_name};
 use super::mesh::{MeshOptions, build, quantize_weights};
 use super::obj::Obj;
 use crate::importer::{CookError, Cooked, ImportContext, Importer, Source};
+use crate::source::{Doc, Fields, has_suffix, output_name};
 
 /// Tolerance on the sum of a vertex's authored weights.
 const WEIGHT_SUM_TOLERANCE: f32 = 1e-3;
 
 fn options(f: &Fields<'_>) -> Result<MeshOptions, CookError> {
-    let scale = f.opt_f32("scale")?.unwrap_or(1.0);
+    let scale = f.f32_or("scale", 1.0)?.0;
     if scale <= 0.0 {
         return Err(f.err(f.line_of("scale"), "`scale` must be positive"));
     }
     Ok(MeshOptions {
         scale,
-        lightmap_uv: f.opt_bool("lightmap_uv")?.unwrap_or(false),
+        lightmap_uv: f.bool_or("lightmap_uv", false)?.0,
     })
 }
 
@@ -61,7 +61,7 @@ impl Importer for ObjImporter {
         let sidecar_path = format!("{}.toml", source.path);
         let opts = match ctx.source(&sidecar_path) {
             Some(sidecar) => {
-                let doc = Doc::parse(&sidecar)?;
+                let doc = Doc::from_source(&sidecar)?;
                 doc.only_tables(&[], &[])?;
                 let root = doc.root();
                 root.only(&["scale", "lightmap_uv"])?;
@@ -100,19 +100,19 @@ impl Importer for SkinnedMeshImporter {
     }
 
     fn import(&self, source: &Source<'_>, ctx: &ImportContext<'_>) -> Result<Vec<Cooked>, CookError> {
-        let doc = Doc::parse(source)?;
-        doc.only_tables(&["weights"], &[])?;
+        let doc = Doc::from_source(source)?;
+        doc.only_tables(&[], &["weights"])?;
         let root = doc.root();
         root.only(&["mesh", "scale", "lightmap_uv"])?;
         let opts = options(&root)?;
-        let obj_path = root.str("mesh")?;
+        let obj_path = root.str("mesh")?.0;
         let mesh_line = root.line_of("mesh");
         let obj_source = ctx
             .source(obj_path)
             .ok_or_else(|| root.err(mesh_line, &format!("`{obj_path}` is not in the content tree")))?;
         let obj = Obj::parse(&obj_source)?;
         let mut skin: Vec<Option<SkinInfluence>> = vec![None; obj.positions.len()];
-        for (rest, table) in doc.tables_under("weights") {
+        for (rest, table) in doc.items("weights") {
             let (index, influence) = weights_table(rest, &table, obj.positions.len())?;
             if let Some(slot) = skin.get_mut(index) {
                 *slot = Some(influence);
@@ -156,8 +156,8 @@ fn weights_table(
                 &format!("`{rest}` is not an OBJ vertex number (1 to {positions})"),
             )
         })?;
-    let joints = table.ints("joints")?;
-    let weights = table.floats("weights")?;
+    let joints = table.ints::<i64>("joints")?.0;
+    let weights = table.f32s("weights")?.0;
     let joints_line = table.line_of("joints");
     let weights_line = table.line_of("weights");
     if joints.is_empty() || joints.len() > 4 {

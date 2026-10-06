@@ -140,7 +140,7 @@ impl GlyphAtlas {
     /// An empty atlas. Sizes are clamped to `1..=16384` and the initial size
     /// to the maximum.
     #[must_use]
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // range is small and positive
+    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // range is small and positive
     pub fn new(config: AtlasConfig) -> Self {
         let max = config.max_size.clamp(1, 16384);
         let initial = config.initial_size.clamp(1, max);

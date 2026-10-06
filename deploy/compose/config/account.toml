@@ -1,0 +1,15 @@
+# Owner: deploy-engine
+# The account node of the local compose cluster (deploy/compose/compose.yaml). Read strictly
+# by mantisd: an unknown key is refused. Paths are container paths; secrets are files.
+[node]
+role = "account"
+instance = "account-1"
+registry = "/etc/mantis/registry.toml"
+deploy_key = "/etc/mantis/deploy.pub"
+cluster_key = "/run/secrets/cluster_key"
+tls_cert = "/run/secrets/tls_cert"
+tls_key = "/run/secrets/tls_key"
+listen_rpc = "0.0.0.0:7501"
+listen_health = "0.0.0.0:7601"
+ready_timeout_s = 300
+drain_grace_ms = 20000

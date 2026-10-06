@@ -245,15 +245,15 @@ fn ground(
         "height_offset",
         "material",
     ])?;
-    let cell = f.float("cell")?;
+    let cell = f.f32("cell")?.0;
     let steps = info.sector_size / cell;
     if cell <= 0.0 || (steps - steps.round()).abs() > 1e-4 || steps < 1.0 || steps > 4096.0 {
         return Err(f.error("cell", "`size / cell` must be a whole number from 1 to 4096"));
     }
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Checked: whole, 1 to 4096.
+    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Checked: whole, 1 to 4096.
     let n = steps.round() as u32 + 1;
-    let heights = match (f.has("flat"), f.str_opt("heightmap")?) {
-        (true, None) => vec![f.float("flat")?; (n * n) as usize],
+    let heights = match (f.has("flat"), f.opt_str("heightmap")?.map(|(s, _)| s)) {
+        (true, None) => vec![f.f32("flat")?.0; (n * n) as usize],
         (false, Some(map)) => {
             let ctx = ctx.ok_or_else(|| f.error("heightmap", "heightmaps need the cook context"))?;
             let src = ctx
@@ -272,15 +272,15 @@ fn ground(
                 ));
             }
             let (scale, offset) = (
-                f.float_or("height_scale", 1.0)?,
-                f.float_or("height_offset", 0.0)?,
+                f.f32_or("height_scale", 1.0)?.0,
+                f.f32_or("height_offset", 0.0)?.0,
             );
             data.iter().map(|g| f32::from(*g) * scale + offset).collect()
         }
         _ => return Err(f.error("cell", "give exactly one of `flat` or `heightmap`")),
     };
     let _ = path;
-    #[allow(clippy::cast_precision_loss)] // Grid coordinates are small.
+    #[expect(clippy::cast_precision_loss)] // Grid coordinates are small.
     Ok(GroundGrid {
         origin_x: info.sector_x as f32 * info.sector_size,
         origin_z: info.sector_z as f32 * info.sector_size,
@@ -305,15 +305,15 @@ fn placement(name: &str, f: &Fields<'_>) -> Result<PlacementSource, CookError> {
         "casts_shadows",
         "lightmapped",
     ])?;
-    let position = f.floats::<3>("position")?;
-    let scale = f.float_or("scale", 1.0)?;
+    let position = f.array::<3>("position")?.0;
+    let scale = f.f32_or("scale", 1.0)?.0;
     if scale <= 0.0 {
         return Err(f.error("scale", "`scale` must be positive"));
     }
     let r = rotation(
-        f.float_or("yaw", 0.0)?,
-        f.float_or("pitch", 0.0)?,
-        f.float_or("roll", 0.0)?,
+        f.f32_or("yaw", 0.0)?.0,
+        f.f32_or("pitch", 0.0)?.0,
+        f.f32_or("roll", 0.0)?.0,
     );
     let mut transform = [0.0f32; 12];
     for (slot, v) in transform
@@ -323,7 +323,7 @@ fn placement(name: &str, f: &Fields<'_>) -> Result<PlacementSource, CookError> {
         *slot = v;
     }
     let lods = if f.has("lods") {
-        f.floats_any("lods")?
+        f.f32s("lods")?.0
     } else {
         vec![200.0]
     };
@@ -339,6 +339,7 @@ fn placement(name: &str, f: &Fields<'_>) -> Result<PlacementSource, CookError> {
     }
     let lod_meshes: Vec<String> = f
         .strs_or_empty("lod_meshes")?
+        .0
         .into_iter()
         .map(str::to_owned)
         .collect();
@@ -355,19 +356,19 @@ fn placement(name: &str, f: &Fields<'_>) -> Result<PlacementSource, CookError> {
     }
     Ok(PlacementSource {
         name: name.to_owned(),
-        mesh: f.str("mesh")?.to_owned(),
+        mesh: f.str("mesh")?.0.to_owned(),
         lod_meshes,
-        material: f.str("material")?.to_owned(),
+        material: f.str("material")?.0.to_owned(),
         transform,
         lods,
-        casts_shadows: f.bool_or("casts_shadows", true)?,
-        lightmapped: f.bool_or("lightmapped", false)?,
-        line: f.line("mesh"),
+        casts_shadows: f.bool_or("casts_shadows", true)?.0,
+        lightmapped: f.bool_or("lightmapped", false)?.0,
+        line: f.line_of("mesh"),
     })
 }
 
 fn aabb(f: &Fields<'_>) -> Result<([f32; 3], [f32; 3]), CookError> {
-    let (min, max) = (f.floats::<3>("min")?, f.floats::<3>("max")?);
+    let (min, max) = (f.array::<3>("min")?.0, f.array::<3>("max")?.0);
     if min.iter().zip(&max).any(|(a, b)| a > b) {
         return Err(f.error("max", "`max` must not be below `min`"));
     }
@@ -383,7 +384,7 @@ fn hull(f: &Fields<'_>) -> Result<ConvexHull, CookError> {
         ("blocks_movement", HULL_BLOCKS_MOVEMENT, true),
         ("blocks_sight", HULL_BLOCKS_SIGHT, true),
     ] {
-        if f.bool_or(key, default)? {
+        if f.bool_or(key, default)?.0 {
             flags |= bit;
         }
     }
@@ -404,13 +405,13 @@ fn trigger(f: &Fields<'_>) -> Result<Trigger, CookError> {
         ("on_enter", TRIGGER_ON_ENTER),
         ("on_exit", TRIGGER_ON_EXIT),
     ] {
-        if f.bool_or(key, false)? {
+        if f.bool_or(key, false)?.0 {
             flags |= bit;
         }
     }
     Ok(Trigger {
-        id: u32::try_from(f.int("id", 0, i64::from(u32::MAX))?).unwrap_or(0),
-        kind: u16::try_from(f.int("kind", 0, i64::from(u16::MAX))?).unwrap_or(0),
+        id: u32::try_from(f.int_in("id", 0, i64::from(u32::MAX))?.0).unwrap_or(0),
+        kind: u16::try_from(f.int_in("kind", 0, i64::from(u16::MAX))?.0).unwrap_or(0),
         flags,
         aabb_min: min,
         aabb_max: max,
@@ -505,16 +506,17 @@ pub fn parse_sector(source: &Source<'_>, ctx: Option<&ImportContext<'_>>) -> Res
         &["sector", "ground", "streaming", "bake"],
         &["placement", "hull", "trigger", "bake"],
     )?;
+    doc.no_root_keys()?;
     let s = doc.require("sector")?;
     s.only(&["x", "z", "size"])?;
     let (x, z) = (
-        s.int("x", -1_000_000, 1_000_000)?,
-        s.int("z", -1_000_000, 1_000_000)?,
+        s.int_in("x", -1_000_000, 1_000_000)?.0,
+        s.int_in("z", -1_000_000, 1_000_000)?.0,
     );
     let info = SectorInfo {
         sector_x: i32::try_from(x).unwrap_or(0),
         sector_z: i32::try_from(z).unwrap_or(0),
-        sector_size: s.float("size")?,
+        sector_size: s.f32("size")?.0,
         content_version: 0,
     };
     if info.sector_size <= 0.0 {
@@ -528,7 +530,10 @@ pub fn parse_sector(source: &Source<'_>, ctx: Option<&ImportContext<'_>>) -> Res
         .map(|g| ground(&g, &info, ctx, path))
         .transpose()?;
     let ground_material = match doc.table("ground") {
-        Some(g) => g.str_opt("material")?.map(|m| (m.to_owned(), g.line("material"))),
+        Some(g) => g
+            .opt_str("material")?
+            .map(|(s, _)| s)
+            .map(|m| (m.to_owned(), g.line_of("material"))),
         None => None,
     };
     let streaming = doc
@@ -536,9 +541,9 @@ pub fn parse_sector(source: &Source<'_>, ctx: Option<&ImportContext<'_>>) -> Res
         .map(|f| {
             f.only(&["priority_bias", "preload_radius", "lod_distance_scale"])?;
             let hints = StreamingHints {
-                priority_bias: f.float_or("priority_bias", 0.0)?,
-                preload_radius: f.float_or("preload_radius", 0.0)?,
-                lod_distance_scale: f.float_or("lod_distance_scale", 1.0)?,
+                priority_bias: f.f32_or("priority_bias", 0.0)?.0,
+                preload_radius: f.f32_or("preload_radius", 0.0)?.0,
+                lod_distance_scale: f.f32_or("lod_distance_scale", 1.0)?.0,
             };
             if hints.preload_radius < 0.0 || hints.lod_distance_scale <= 0.0 {
                 return Err(f.error(
@@ -551,18 +556,15 @@ pub fn parse_sector(source: &Source<'_>, ctx: Option<&ImportContext<'_>>) -> Res
         .transpose()?;
     let placements = doc
         .items("placement")
-        .into_iter()
         .map(|(name, f)| placement(name, &f))
         .collect::<Result<Vec<_>, _>>()?;
     let hulls = doc
         .items("hull")
-        .iter()
-        .map(|(_, f)| hull(f))
+        .map(|(_, f)| hull(&f))
         .collect::<Result<Vec<_>, _>>()?;
     let triggers = doc
         .items("trigger")
-        .iter()
-        .map(|(_, f)| trigger(f))
+        .map(|(_, f)| trigger(&f))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(SectorSource {
         info,

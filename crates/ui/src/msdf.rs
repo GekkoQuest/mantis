@@ -111,7 +111,7 @@ enum Segment {
     Quad([V2; 3]),
 }
 
-#[allow(clippy::many_single_char_names)] // geometry uses the conventional point names
+#[expect(clippy::many_single_char_names)] // geometry uses the conventional point names
 impl Segment {
     fn start(self) -> V2 {
         match self {
@@ -250,7 +250,7 @@ impl Segment {
     }
 }
 
-#[allow(clippy::many_single_char_names)] // geometry uses the conventional point names
+#[expect(clippy::many_single_char_names)] // geometry uses the conventional point names
 fn quad_signed_distance(p0: V2, p1: V2, p2: V2, origin: V2) -> (SignedDistance, f64) {
     let qa = p0.sub(origin);
     let ab = p1.sub(p0);
@@ -304,7 +304,7 @@ fn quad_signed_distance(p0: V2, p1: V2, p2: V2, origin: V2) -> (SignedDistance, 
     )
 }
 
-#[allow(clippy::many_single_char_names)] // geometry uses the conventional point names
+#[expect(clippy::many_single_char_names)] // geometry uses the conventional point names
 fn solve_quadratic(x: &mut [f64; 3], a: f64, b: f64, c: f64) -> usize {
     if a == 0.0 || b.abs() > 1e12 * a.abs() {
         if b == 0.0 {
@@ -327,7 +327,7 @@ fn solve_quadratic(x: &mut [f64; 3], a: f64, b: f64, c: f64) -> usize {
     }
 }
 
-#[allow(clippy::many_single_char_names)] // geometry uses the conventional point names
+#[expect(clippy::many_single_char_names)] // geometry uses the conventional point names
 fn solve_cubic_normed(x: &mut [f64; 3], a: f64, b: f64, c: f64) -> usize {
     let a2 = a * a;
     let mut q = (a2 - 3.0 * b) / 9.0;
@@ -356,7 +356,7 @@ fn solve_cubic_normed(x: &mut [f64; 3], a: f64, b: f64, c: f64) -> usize {
     }
 }
 
-#[allow(clippy::many_single_char_names)] // geometry uses the conventional point names
+#[expect(clippy::many_single_char_names)] // geometry uses the conventional point names
 fn solve_cubic(x: &mut [f64; 3], a: f64, b: f64, c: f64, d: f64) -> usize {
     if a != 0.0 {
         let bn = b / a;
@@ -459,9 +459,9 @@ fn is_corner(a: V2, b: V2, cross_threshold: f64) -> bool {
     a.dot(b) <= 0.0 || a.cross(b).abs() > cross_threshold
 }
 
-#[allow(clippy::cast_possible_truncation)] // the trichotomy result is in -1..=1
+#[expect(clippy::cast_possible_truncation)] // the trichotomy result is in -1..=1
 fn symmetrical_trichotomy(position: usize, n: usize) -> i64 {
-    #[allow(clippy::cast_precision_loss)] // edge counts are tiny
+    #[expect(clippy::cast_precision_loss)] // edge counts are tiny
     let (p, n) = (position as f64, n as f64);
     (3.0 + 2.875 * p / (n - 1.0) - 1.4375 + 0.5).floor() as i64 - 3
 }
@@ -570,7 +570,7 @@ impl ShapeBuilder {
     }
 }
 
-#[allow(clippy::many_single_char_names)] // geometry uses the conventional point names
+#[expect(clippy::many_single_char_names)] // geometry uses the conventional point names
 impl ttf_parser::OutlineBuilder for ShapeBuilder {
     fn move_to(&mut self, x: f32, y: f32) {
         self.finish_contour();
@@ -656,7 +656,7 @@ impl MsdfGlyph {
     /// top-left corner (y down). Texel `(c, r)` has its center at
     /// `(c + 0.5, r + 0.5)`.
     #[must_use]
-    #[allow(clippy::cast_precision_loss)] // bitmap sizes are tiny
+    #[expect(clippy::cast_precision_loss)] // bitmap sizes are tiny
     pub fn texel_to_font(&self, tx: f32, ty: f32) -> [f32; 2] {
         let h = self.height as f32;
         [
@@ -685,7 +685,7 @@ pub fn glyph_shape(face: &ttf_parser::Face<'_>, glyph: u16) -> Option<(Shape, tt
 /// range of `range` texels and `padding` texels of border. Returns `None`
 /// for glyphs without an outline (spaces) or absurd sizes.
 #[must_use]
-#[allow(
+#[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::cast_precision_loss
@@ -737,7 +737,7 @@ pub fn median(a: f32, b: f32, c: f32) -> f32 {
 fn encode(d: f64, range: f64) -> u8 {
     let v = (d / range + 0.5).clamp(0.0, 1.0) * 255.0;
     // In 0..=255 after the clamp.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let byte = v.round() as u8;
     byte
 }

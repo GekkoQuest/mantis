@@ -4,7 +4,7 @@
 //! edits recook and stream back in, a material tint replaces the live material, graphs
 //! list their markers, and a layout edit hot-reloads into the preview.
 
-#![allow(clippy::too_many_lines)]
+#![expect(clippy::too_many_lines)]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

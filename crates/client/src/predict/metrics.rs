@@ -36,7 +36,7 @@ impl CorrectionHistogram {
 
     /// Records one correction magnitude. Every reconciliation should record, including
     /// zero corrections, so the quantile reflects all snapshots.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Range-checked.
+    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Range-checked.
     pub fn record(&mut self, magnitude: f32) {
         let m = if magnitude.is_finite() {
             magnitude.max(0.0)
@@ -67,7 +67,7 @@ impl CorrectionHistogram {
     /// Upper bound of the bucket holding quantile `q` in [0, 1]; `None` if empty, and
     /// `f32::INFINITY` if the quantile falls in overflow. The quantile is the sample of
     /// rank `ceil(q * total)` (nearest-rank method).
-    #[allow(
+    #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         clippy::cast_precision_loss

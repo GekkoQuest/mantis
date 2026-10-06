@@ -111,7 +111,7 @@ fn checked_weights(skeleton: &Skeleton, mesh: &SkinnedMesh<'_>) -> Result<Vec<[f
     Ok(out)
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Finite, clamped to [1, 2^26] first.
+#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Finite, clamped to [1, 2^26] first.
 fn frame_intervals(duration: f32, fps: f32) -> u32 {
     let n = (duration * fps).round();
     if n.is_finite() {
@@ -168,7 +168,7 @@ pub fn bake_vat(
     let mut hi = Vec3::splat(f32::NEG_INFINITY);
     for frame in 0..frame_count {
         let time = (f64::from(frame) * spf).min(f64::from(clip.duration()));
-        #[allow(clippy::cast_possible_truncation)] // A clip time, well within f32.
+        #[expect(clippy::cast_possible_truncation)] // A clip time, well within f32.
         clip.sample(skeleton.bind_pose(), time as f32, pose.as_mut_slice());
         if clip.has_root_motion()
             && let Some(root) = pose.as_mut_slice().first_mut()
@@ -200,7 +200,7 @@ pub fn bake_vat(
     Ok(VatData {
         frame_count,
         vertex_count,
-        #[allow(clippy::cast_possible_truncation)] // A frame spacing, well within f32.
+        #[expect(clippy::cast_possible_truncation)] // A frame spacing, well within f32.
         seconds_per_frame: spf as f32,
         looping: clip.is_looping(),
         positions,

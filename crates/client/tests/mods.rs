@@ -4,7 +4,7 @@
 //! tier inside the VM, and a presentation mod unable to reach an intent sink even through
 //! the widgets it draws.
 
-#![allow(clippy::too_many_lines)] // Scenario tests read top to bottom.
+#![expect(clippy::too_many_lines)] // Scenario tests read top to bottom.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;

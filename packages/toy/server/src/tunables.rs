@@ -33,6 +33,12 @@ pub struct Tunables {
     /// How long an instance cell stays empty before it is released to the
     /// realm, in seconds (plan 7.1; the engine applies the rule).
     pub instance_release_grace: u32,
+    /// The worst round trip the package supports, in ms.
+    pub max_rtt_ms: u32,
+    /// The most input lead a cell builds back after latency rises, in ms.
+    pub input_lead_max_ms: u32,
+    /// Ticks between realigning pauses, at least.
+    pub input_pause_every: u32,
     /// The content hash clients must match: the hash of the cooked, signed
     /// gameplay bundle ([`crate::world::cooked_content`]). Until a cook is
     /// read it is the hash of the manifest text, which tests and tools that
@@ -93,6 +99,18 @@ const KEYS: &[(&str, &str, Setter)] = &[
     }),
     ("server", "instance_release_grace", |t, v| {
         t.instance_release_grace = v.parse().ok().filter(|x| *x > 0)?;
+        Some(())
+    }),
+    ("server", "max_rtt", |t, v| {
+        t.max_rtt_ms = v.parse().ok().filter(|x| (1..=2000).contains(x))?;
+        Some(())
+    }),
+    ("server", "input_lead_max", |t, v| {
+        t.input_lead_max_ms = v.parse().ok().filter(|x| (1..=1000).contains(x))?;
+        Some(())
+    }),
+    ("server", "input_pause_every", |t, v| {
+        t.input_pause_every = v.parse().ok().filter(|x| *x > 0)?;
         Some(())
     }),
     ("motion", "run_speed", |t, v| {
@@ -191,6 +209,21 @@ const KEYS: &[(&str, &str, Setter)] = &[
         t.interest.budget = v.parse().ok().filter(|x| *x > 0)?;
         Some(())
     }),
+    ("interest", "snapshot_own_bases", |t, v| {
+        t.interest.snapshot_own_bases = match v {
+            "0" => false,
+            "1" => true,
+            _ => return None,
+        };
+        Some(())
+    }),
+    ("interest", "own_base_max_age", |t, v| {
+        t.interest.own_base_max_age = v
+            .parse()
+            .ok()
+            .filter(|x| (1..=mantis_adapter_contract::native::BASELINE_WINDOW_TICKS).contains(x))?;
+        Some(())
+    }),
     ("limits", "input_rate", |t, v| {
         t.limits.inputs.per_second = positive(v)?;
         Some(())
@@ -233,6 +266,10 @@ const KEYS: &[(&str, &str, Setter)] = &[
     }),
 ];
 
+/// The `[tunables.client]` table: the client's own tunables, skipped here
+/// whole as the client skips the server's.
+pub const CLIENT_TABLE: &str = "client";
+
 impl Tunables {
     /// The keys every manifest must give, as `table.key`.
     pub fn keys() -> impl Iterator<Item = (&'static str, &'static str)> {
@@ -247,7 +284,20 @@ impl Tunables {
         Self::parse(PACKAGE_TOML)
     }
 
-    /// Reads the `[tunables.*]` tables of a manifest.
+    /// The cells' Predictive input configuration, from the package's
+    /// round trip, lead, and pause tunables at its tick rate.
+    #[must_use]
+    pub fn inputs(&self) -> mantis_server::movement::InputConfig {
+        mantis_server::movement::InputConfig::for_rate(
+            self.max_rtt_ms,
+            self.input_lead_max_ms,
+            self.tick_rate.hz(),
+            self.input_pause_every,
+        )
+    }
+
+    /// Reads the `[tunables.*]` tables of a manifest, except
+    /// `[tunables.client]` ([`CLIENT_TABLE`]), which the client reads.
     ///
     /// # Errors
     /// [`TunableError`].
@@ -258,6 +308,9 @@ impl Tunables {
             envelope: EnvelopeConfig::DEFAULT,
             interest: TierConfig::DEFAULT,
             instance_release_grace: 30,
+            max_rtt_ms: 400,
+            input_lead_max_ms: 200,
+            input_pause_every: 4,
             limits: RateLimits::DEFAULT,
             content: ContentHash::of(text.as_bytes()),
         };
@@ -273,7 +326,8 @@ impl Tunables {
                     .strip_suffix(']')
                     .ok_or(TunableError::Syntax(n + 1))?
                     .trim();
-                table = name.strip_prefix("tunables.");
+                // `[tunables.client]` belongs to the client's parser.
+                table = name.strip_prefix("tunables.").filter(|t| *t != CLIENT_TABLE);
                 continue;
             }
             let Some(table) = table else { continue };

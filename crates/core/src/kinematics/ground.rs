@@ -121,7 +121,7 @@ impl Heightfield {
     }
 
     /// Splits a coordinate into a cell index and a fraction in `[0, 1]`.
-    #[allow(
+    #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         clippy::cast_precision_loss

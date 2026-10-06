@@ -1,0 +1,206 @@
+# Owner: deploy-engine
+# A full local cluster, one container per role (plan 10), with PostgreSQL as the system of
+# record. Started and stopped by scripts/deploy-local.ps1 and scripts/deploy-down.ps1, which
+# also generate what this file mounts from deploy/local/ (keys, secrets, the signed
+# registry) and build the images (deploy/containers/).
+#
+# Networks:
+#   services  internal (no route out): RPC and health between roles, and PostgreSQL. Fixed
+#             addresses, because the signed registry lists ip:port, never names.
+#   game      the cell host's game ports only, published to 127.0.0.1; no masquerade (below).
+#   ops       the Ops dashboard only, published to 127.0.0.1. The dashboard listens on
+#             this network's address alone: it is never on the game network, and never
+#             on the services network either.
+# Every published port binds 127.0.0.1.
+#
+# Secrets (cluster key, each node's TLS certificate and key, live-data key, operator token,
+# database password and connection string) are files mounted under /run/secrets, never
+# environment variables. Every RPC between roles is mutual TLS: the signed registry carries
+# the cluster CA, and each node's certificate names its cluster, role and instance.
+
+name: mantis
+
+x-node: &node
+  restart: unless-stopped
+  stop_grace_period: 30s
+  read_only: true
+  security_opt: ["no-new-privileges:true"]
+  tmpfs: ["/tmp"]
+
+services:
+  postgres:
+    image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mantis
+      POSTGRES_DB: mantis
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg_password
+    secrets: [pg_password]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    networks:
+      services: { ipv4_address: 10.77.0.4 }
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "mantis", "-d", "mantis"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  persist:
+    <<: *node
+    image: mantis/persist:dev
+    build: { context: ../containers, dockerfile: persist.Containerfile }
+    depends_on: { postgres: { condition: service_healthy } }
+    secrets:
+      - cluster_key
+      - pg_conn
+      - { source: persist-1_crt, target: tls_cert }
+      - { source: persist-1_key, target: tls_key }
+    volumes:
+      - ./config/persist.toml:/etc/mantis/node.toml:ro
+      - ../local/registry.toml:/etc/mantis/registry.toml:ro
+      - ../local/keys/deploy.pub:/etc/mantis/deploy.pub:ro
+    networks:
+      services: { ipv4_address: 10.77.0.5 }
+
+  account:
+    <<: *node
+    image: mantis/account:dev
+    build: { context: ../containers, dockerfile: account.Containerfile }
+    secrets:
+      - cluster_key
+      - { source: account-1_crt, target: tls_cert }
+      - { source: account-1_key, target: tls_key }
+    volumes:
+      - ./config/account.toml:/etc/mantis/node.toml:ro
+      - ../local/registry.toml:/etc/mantis/registry.toml:ro
+      - ../local/keys/deploy.pub:/etc/mantis/deploy.pub:ro
+    networks:
+      services: { ipv4_address: 10.77.0.11 }
+
+  realm:
+    <<: *node
+    image: mantis/realm:dev
+    build: { context: ../containers, dockerfile: realm.Containerfile }
+    secrets:
+      - cluster_key
+      - { source: realm-1_crt, target: tls_cert }
+      - { source: realm-1_key, target: tls_key }
+    volumes:
+      - ./config/realm.toml:/etc/mantis/node.toml:ro
+      - ../local/registry.toml:/etc/mantis/registry.toml:ro
+      - ../local/keys/deploy.pub:/etc/mantis/deploy.pub:ro
+    networks:
+      services: { ipv4_address: 10.77.0.12 }
+
+  social:
+    <<: *node
+    image: mantis/social:dev
+    build: { context: ../containers, dockerfile: social.Containerfile }
+    secrets:
+      - cluster_key
+      - { source: social-1_crt, target: tls_cert }
+      - { source: social-1_key, target: tls_key }
+    volumes:
+      - ./config/social.toml:/etc/mantis/node.toml:ro
+      - ../local/registry.toml:/etc/mantis/registry.toml:ro
+      - ../local/keys/deploy.pub:/etc/mantis/deploy.pub:ro
+    networks:
+      services: { ipv4_address: 10.77.0.13 }
+
+  matchmaking:
+    <<: *node
+    image: mantis/matchmaking:dev
+    build: { context: ../containers, dockerfile: matchmaking.Containerfile }
+    secrets:
+      - cluster_key
+      - { source: matchmaking-1_crt, target: tls_cert }
+      - { source: matchmaking-1_key, target: tls_key }
+    volumes:
+      - ./config/matchmaking.toml:/etc/mantis/node.toml:ro
+      - ../local/registry.toml:/etc/mantis/registry.toml:ro
+      - ../local/keys/deploy.pub:/etc/mantis/deploy.pub:ro
+    networks:
+      services: { ipv4_address: 10.77.0.14 }
+
+  ops:
+    <<: *node
+    image: mantis/ops:dev
+    build: { context: ../containers, dockerfile: ops.Containerfile }
+    secrets:
+      - cluster_key
+      - live_key
+      - operator_token
+      - { source: ops-1_crt, target: tls_cert }
+      - { source: ops-1_key, target: tls_key }
+    volumes:
+      - ./config/ops.toml:/etc/mantis/node.toml:ro
+      - ../local/registry.toml:/etc/mantis/registry.toml:ro
+      - ../local/keys/deploy.pub:/etc/mantis/deploy.pub:ro
+      - ../local/out:/var/lib/mantis/out
+    networks:
+      services: { ipv4_address: 10.77.0.15 }
+      ops: { ipv4_address: 10.79.0.10, gw_priority: 1 }
+    ports:
+      - "127.0.0.1:7480:7480/tcp"
+
+  cell-host:
+    <<: *node
+    image: mantis/cell-host:dev
+    build: { context: ../containers, dockerfile: cell-host.Containerfile }
+    secrets:
+      - cluster_key
+      - { source: cells-1_crt, target: tls_cert }
+      - { source: cells-1_key, target: tls_key }
+    volumes:
+      - ./config/cell-host.toml:/etc/mantis/node.toml:ro
+      - ../local/registry.toml:/etc/mantis/registry.toml:ro
+      - ../local/keys/deploy.pub:/etc/mantis/deploy.pub:ro
+      - ../../packages/toy/cooked:/content/toy:ro
+      - cells:/var/lib/mantis/state
+      - ../local/out:/var/lib/mantis/out
+    networks:
+      services: { ipv4_address: 10.77.0.20 }
+      game: { ipv4_address: 10.78.0.20, gw_priority: 1 }
+    ports:
+      - "127.0.0.1:7400:7400/udp"
+      - "127.0.0.1:7401:7401/tcp"
+
+networks:
+  services:
+    internal: true
+    ipam: { config: [{ subnet: 10.77.0.0/24 }] }
+  game:
+    # No masquerade: a connection the cell host opens to another network on this host keeps
+    # its own address, so the dashboard (which admits only the ops network's gateway, where
+    # its published port arrives from) can refuse it. Docker forwards a published port's
+    # container address from every bridge network on the host; unpublished ports are not.
+    driver_opts: { com.docker.network.bridge.enable_ip_masquerade: "false" }
+    ipam: { config: [{ subnet: 10.78.0.0/24 }] }
+  ops:
+    ipam: { config: [{ subnet: 10.79.0.0/24 }] }
+
+volumes:
+  pgdata:
+  cells:
+
+secrets:
+  cluster_key: { file: ../local/keys/cluster.key }
+  live_key: { file: ../local/keys/live.pk8 }
+  operator_token: { file: ../local/keys/operator.token }
+  pg_password: { file: ../local/secrets/pg_password }
+  pg_conn: { file: ../local/secrets/pg.conn }
+  # Each node's mutual-TLS certificate and key (mantisd certs), mounted as tls_cert and tls_key.
+  persist-1_crt: { file: ../local/certs/persist-1.crt }
+  persist-1_key: { file: ../local/certs/persist-1.key }
+  account-1_crt: { file: ../local/certs/account-1.crt }
+  account-1_key: { file: ../local/certs/account-1.key }
+  realm-1_crt: { file: ../local/certs/realm-1.crt }
+  realm-1_key: { file: ../local/certs/realm-1.key }
+  social-1_crt: { file: ../local/certs/social-1.crt }
+  social-1_key: { file: ../local/certs/social-1.key }
+  matchmaking-1_crt: { file: ../local/certs/matchmaking-1.crt }
+  matchmaking-1_key: { file: ../local/certs/matchmaking-1.key }
+  ops-1_crt: { file: ../local/certs/ops-1.crt }
+  ops-1_key: { file: ../local/certs/ops-1.key }
+  cells-1_crt: { file: ../local/certs/cells-1.crt }
+  cells-1_key: { file: ../local/certs/cells-1.key }

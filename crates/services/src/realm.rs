@@ -12,8 +12,9 @@ use mantis_core::wire::{BoundedArray, WireString};
 use ring::rand::SecureRandom;
 
 use crate::generated::services as m;
+use crate::host::clock::ServiceClock;
+use crate::host::refused;
 use crate::host::rpc::{Router, RpcError};
-use crate::host::{now_ms, refused};
 use crate::methods;
 
 /// How long a token stays valid, in milliseconds.
@@ -34,6 +35,8 @@ pub struct CellEntry {
 
 #[derive(Default)]
 struct State {
+    /// This run: hosts register their cells again when it changes.
+    epoch: u64,
     cells: BTreeMap<u64, CellEntry>,
     next_character: u64,
     characters: BTreeMap<u64, Vec<(u64, String)>>,
@@ -45,13 +48,34 @@ struct State {
 pub struct RealmService {
     state: Arc<Mutex<State>>,
     rng: Arc<crate::host::Random>,
+    clock: ServiceClock,
 }
 
 impl RealmService {
-    /// An empty realm.
+    /// An empty realm, a new run: its epoch is drawn at random, so a cell
+    /// host polling [`methods::RealmRun`] sees a restart and registers its
+    /// cells again.
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        let s = Self::default();
+        let mut b = [0u8; 8];
+        let epoch = ring::rand::SecureRandom::fill(&s.rng.0, &mut b)
+            .map_or_else(|_| s.clock.now_ms(), |()| u64::from_le_bytes(b));
+        s.lock().epoch = epoch.max(1);
+        s
+    }
+
+    /// The same role on `clock` (token lifetimes).
+    #[must_use]
+    pub fn clocked(mut self, clock: ServiceClock) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// This run's epoch.
+    #[must_use]
+    pub fn epoch(&self) -> u64 {
+        self.lock().epoch
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -69,7 +93,7 @@ impl RealmService {
         self.rng.0.fill(&mut t).map_err(|_| refused("no randomness"))?;
         self.lock()
             .tokens
-            .insert(t, (character, cell, epoch, now_ms() + TOKEN_MS));
+            .insert(t, (character, cell, epoch, self.clock.now_ms() + TOKEN_MS));
         Ok(BoundedArray::from_slice(&t).unwrap_or_default())
     }
 
@@ -127,7 +151,7 @@ impl RealmService {
             return Err(refused("token for another cell"));
         }
         s.tokens.remove(&token);
-        if expires < now_ms() {
+        if expires < self.clock.now_ms() {
             return Err(refused("expired token"));
         }
         Ok(m::Redeemed {
@@ -140,6 +164,8 @@ impl RealmService {
     #[must_use]
     pub fn router(&self) -> Router {
         let mut r = Router::validated(methods::validate);
+        let me = self.clone();
+        r.serve::<methods::RealmRun>(move |_, _| Ok(m::RealmEpoch { epoch: me.epoch() }));
         let me = self.clone();
         r.serve::<methods::RegisterCellHost>(move |_, req| {
             me.lock().cells.insert(

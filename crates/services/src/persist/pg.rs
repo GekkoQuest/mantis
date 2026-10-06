@@ -5,7 +5,7 @@
 use tokio_postgres::{Client, NoTls};
 
 use super::migrate::{MIGRATIONS, Migration, MigrationTarget, migrate};
-use mantis_core::social::GuildChange;
+use mantis_core::social::{FriendChange, GuildChange};
 
 use super::{AuditRow, LedgerStore, StoreError, StoredLedger, StoredOutcome};
 
@@ -399,6 +399,116 @@ impl LedgerStore for PgStore {
             }
         }
         Ok(out)
+    }
+
+    fn friend_seq(&mut self) -> Result<u64, StoreError> {
+        let rows = self
+            .block(
+                self.client
+                    .query("SELECT seq FROM friend_watermark WHERE id = 1", &[]),
+            )
+            .map_err(|e| pg(&e))?;
+        Ok(rows.first().map_or(0, |r| u64_of(r.get::<_, i64>(0))))
+    }
+
+    fn write_friends(&mut self, seq: u64, changes: &[FriendChange]) -> Result<(), StoreError> {
+        let client = &mut self.client;
+        let rt = self.runtime.clone();
+        tokio::task::block_in_place(|| {
+            rt.block_on(async {
+                let tx = client.transaction().await?;
+                for c in changes {
+                    let (sql, x, y) = match *c {
+                        FriendChange::Friends { a, b } => (
+                            "INSERT INTO friendships (a, b) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                            a,
+                            b,
+                        ),
+                        FriendChange::NoFriends { a, b } => ("DELETE FROM friendships WHERE a = $1 AND b = $2", a, b),
+                        FriendChange::Asked { asker, asked } => (
+                            "INSERT INTO friend_requests (asker, asked) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                            asker,
+                            asked,
+                        ),
+                        FriendChange::NoAsk { asker, asked } => (
+                            "DELETE FROM friend_requests WHERE asker = $1 AND asked = $2",
+                            asker,
+                            asked,
+                        ),
+                    };
+                    tx.execute(sql, &[&i64_of(x), &i64_of(y)]).await?;
+                }
+                tx.execute(
+                    "INSERT INTO friend_watermark (id, seq) VALUES (1, $1) \
+                     ON CONFLICT (id) DO UPDATE SET seq = EXCLUDED.seq",
+                    &[&i64_of(seq)],
+                )
+                .await?;
+                tx.commit().await
+            })
+        })
+        .map_err(|e| pg(&e))
+    }
+
+    fn friend_rows(&mut self) -> Result<Vec<FriendChange>, StoreError> {
+        let friends = self
+            .block(
+                self.client
+                    .query("SELECT a, b FROM friendships ORDER BY a, b", &[]),
+            )
+            .map_err(|e| pg(&e))?;
+        let asks = self
+            .block(self.client.query(
+                "SELECT asker, asked FROM friend_requests ORDER BY asked, asker",
+                &[],
+            ))
+            .map_err(|e| pg(&e))?;
+        let pair = |r: &tokio_postgres::Row| (u64_of(r.get::<_, i64>(0)), u64_of(r.get::<_, i64>(1)));
+        let mut out: Vec<FriendChange> = friends
+            .iter()
+            .map(|r| {
+                let (a, b) = pair(r);
+                FriendChange::Friends { a, b }
+            })
+            .collect();
+        out.extend(asks.iter().map(|r| {
+            let (from, to) = pair(r);
+            FriendChange::Asked {
+                asker: from,
+                asked: to,
+            }
+        }));
+        Ok(out)
+    }
+
+    fn set_live(&mut self, name: &str, kind: u8, value: f32) -> Result<(), StoreError> {
+        self.block(self.client.execute(
+            "INSERT INTO live_values (name, kind, value, seq) \
+             VALUES ($1, $2, $3, (SELECT COALESCE(MAX(seq), 0) + 1 FROM live_values)) \
+             ON CONFLICT (name) DO UPDATE SET kind = EXCLUDED.kind, value = EXCLUDED.value, seq = EXCLUDED.seq",
+            &[&name, &i16::from(kind), &value],
+        ))
+        .map_err(|e| pg(&e))?;
+        Ok(())
+    }
+
+    fn live_values(&mut self) -> Result<Vec<(String, u8, f32)>, StoreError> {
+        let rows = self
+            .block(
+                self.client
+                    .query("SELECT name, kind, value FROM live_values ORDER BY seq", &[]),
+            )
+            .map_err(|e| pg(&e))?;
+        Ok(rows
+            .iter()
+            .map(|r| {
+                (
+                    r.get::<_, String>(0),
+                    u8::try_from(r.get::<_, i16>(1)).unwrap_or(u8::MAX),
+                    r.get::<_, f32>(2),
+                )
+            })
+            .collect())
     }
 }
 

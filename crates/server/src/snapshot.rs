@@ -175,6 +175,12 @@ pub(crate) fn session(e: &mut Encoder<'_>, s: &CellSession) {
     envelope(e, &s.envelope);
     e.u32(s.cheats);
     e.u32(s.synthesized);
+    e.u64(s.synth_mask);
+    e.u8(s.credits);
+    e.u32(s.cooldown);
+    e.u32(s.late);
+    e.u32(s.pauses);
+    e.u32(s.skipped);
 }
 
 /// Reads one session written by [`session`].
@@ -209,6 +215,12 @@ pub(crate) fn session_of(d: &mut Decoder<'_>) -> Result<CellSession, DecodeError
     s.envelope = envelope_of(d)?;
     s.cheats = d.u32()?;
     s.synthesized = d.u32()?;
+    s.synth_mask = d.u64()?;
+    s.credits = d.u8()?;
+    s.cooldown = d.u32()?;
+    s.late = d.u32()?;
+    s.pauses = d.u32()?;
+    s.skipped = d.u32()?;
     Ok(s)
 }
 

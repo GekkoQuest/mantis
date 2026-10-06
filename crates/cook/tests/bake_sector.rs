@@ -3,7 +3,7 @@
 //! picking the bakes up, and determinism. Meshes come from a test importer of synthetic
 //! `*.test_mesh` sources.
 
-#![allow(
+#![expect(
     clippy::indexing_slicing,
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,

@@ -2,7 +2,7 @@
 //! reaching sounds, effects, camera shakes, and animation triggers, and characters moving
 //! between crowd tiers on a headless (no-op) renderer.
 
-#![allow(clippy::cast_precision_loss)] // Small test counts.
+#![expect(clippy::cast_precision_loss)] // Small test counts.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

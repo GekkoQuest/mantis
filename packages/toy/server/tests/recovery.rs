@@ -4,7 +4,7 @@
 //! and a social role restart during party changes (timing-sensitive, see
 //! its comment).
 
-#![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::too_many_lines)]
+#![expect(clippy::unwrap_used, clippy::indexing_slicing, clippy::too_many_lines)]
 
 use std::time::{Duration, Instant};
 
@@ -64,9 +64,12 @@ fn writer(log: &MemoryLog, h: &LogHeader) -> LogWriter<CellLogSchema, BoxedSink>
 }
 
 fn link(cluster: &LocalCluster) -> CellLink {
-    CellLink::start(
-        &cluster.handle(),
-        &CellLinkConfig {
+    CellLink::start(&cluster.handle(), &link_config(cluster)).unwrap()
+}
+
+fn link_config(cluster: &LocalCluster) -> CellLinkConfig {
+    {
+        CellLinkConfig {
             key: cluster.key.clone(),
             persist: cluster.addr(Role::Persist).unwrap(),
             ops: cluster.addr(Role::Ops).unwrap(),
@@ -82,9 +85,9 @@ fn link(cluster: &LocalCluster) -> CellLink {
             instances: Vec::new(),
             poll: Duration::from_millis(10),
             inspector: "127.0.0.1:0".parse().unwrap(),
-        },
-    )
-    .unwrap()
+            tls: None,
+        }
+    }
 }
 
 /// Grants to every character in the world, through the cell hosting it.
@@ -328,40 +331,109 @@ fn invited(sim: &Sim, bot: usize) -> bool {
         .any(|(k, _)| *k == ExtensionKind(INVITED))
 }
 
-/// Timing-sensitive: the social role runs over real loopback RPC on the
-/// wall clock (the cells and their clients run on the simulated network).
-/// The test asserts only the invariants (no member lost, no duplicated or
-/// missing projected update, one restart seen) and waits for convergence
-/// with a generous wall-clock timeout; the tick counts are reported as a
-/// `MANTIS-METRIC` line.
-#[test]
-fn a_social_restart_during_party_changes_converges_with_no_member_lost() {
+/// A crashed role's address, dropping every connection. A closed port would
+/// do the same, but a refused loopback connect takes two seconds on
+/// Windows, and every step waits for every call the link makes.
+struct Outage {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Outage {
+    fn at(addr: std::net::SocketAddr) -> Self {
+        // The stopped server's listener closes as its accept task ends.
+        let mut bound = std::net::TcpListener::bind(addr);
+        for _ in 0..200 {
+            if bound.is_ok() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+            bound = std::net::TcpListener::bind(addr);
+        }
+        let listener = bound.unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let done = std::sync::Arc::clone(&stop);
+        let thread = std::thread::spawn(move || {
+            while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((conn, _)) => drop(conn),
+                    Err(_) => std::thread::sleep(Duration::from_millis(1)),
+                }
+            }
+        });
+        Self {
+            stop,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for Outage {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+/// Ticks after the restart until the invitation lands: the budget.
+const RESTART_ANSWER_LIMIT: u64 = 16;
+/// Ticks after that until all three rosters agree: the budget.
+const ROSTER_CONVERGED_LIMIT: u64 = 12;
+
+/// The cells and their clients run on the simulated network; the roles and
+/// the cell host's link run on one manual clock that advances one tick per
+/// step, and every step waits for the link to settle (everything the step
+/// queued and every poll and retry the advance made due has run). So the
+/// tick counts are the same on every machine: a budget, not a metric. RPC
+/// still crosses loopback; only its timeouts are wall time.
+///
+/// With `tls`, every role and the link run mutual TLS: the link's clients
+/// handshake again with the restarted role.
+fn social_restart_ticks(tls: bool) -> (u64, u64) {
     use mantis_core::wire::Wire;
-    let mut cluster = LocalCluster::start(&ClusterConfig::local()).unwrap();
+    use mantis_services::host::clock::{ManualClock, ServiceClock};
+    let clock = ManualClock::new(1_700_000_000_000);
+    let mut config = ClusterConfig::local();
+    config.clock = ServiceClock::manual(&clock);
+    let ids = tls.then(|| {
+        mantis_services::tls::dev::DevCa::new("recovery")
+            .unwrap()
+            .every_role(&["127.0.0.1".parse().unwrap()])
+            .unwrap()
+    });
+    config.tls.clone_from(&ids);
+    let mut cluster = LocalCluster::start(&config).unwrap();
     let t = Tunables::defaults().unwrap();
-    let link = link(&cluster);
+    let mut link_config = link_config(&cluster);
+    link_config.tls = ids.map(|ids| ids[&Role::Cell].clone());
+    let link = CellLink::start_on(&cluster.handle(), &link_config, cluster.clock()).unwrap();
     let mut sim = Sim::new(t, SEED, |_| None).unwrap();
     // Three characters in the first cell, on lossy links.
     for _ in 0..3 {
         sim.add_bot(Side::Native, Profile::Idle, LinkConfig::RTT100_LOSS2)
             .unwrap();
     }
+    let tick = Duration::from_millis(u64::from(1000 / t.tick_rate.hz()));
     let step = |sim: &mut Sim| {
         let reports = sim.step().unwrap();
         after_tick(&mut sim.zone, &link, &reports);
-        std::thread::sleep(Duration::from_millis(1));
+        clock.advance(tick);
+        let settled = link.settle(Duration::from_secs(30));
+        assert!(settled.is_ok(), "tick {}: {settled:?}", sim.ticks());
     };
-    let until = |sim: &mut Sim, what: &str, done: &dyn Fn(&Sim) -> bool| -> u64 {
-        let start = Instant::now();
+    let until = |sim: &mut Sim, what: &str, limit: u64, done: &dyn Fn(&Sim) -> bool| -> u64 {
         let mut ticks = 0;
         while !done(sim) {
-            assert!(start.elapsed() < Duration::from_secs(30), "timed out: {what}");
+            assert!(ticks < limit * 4, "{what}: not within {} ticks", limit * 4);
             step(sim);
             ticks += 1;
         }
         ticks
     };
-    until(&mut sim, "everyone in", &|s| {
+    until(&mut sim, "everyone in", 60, &|s| {
         s.bots.iter().all(|b| b.bot.avatar().is_some()) && s.ticks() >= 31
     });
     let invite = |sim: &mut Sim, from: usize, to: usize| {
@@ -377,9 +449,9 @@ fn a_social_restart_during_party_changes_converges_with_no_member_lost() {
     };
     // A party of two forms.
     invite(&mut sim, 0, 1);
-    until(&mut sim, "the first invitation", &|s| invited(s, 1));
+    until(&mut sim, "the first invitation", 60, &|s| invited(s, 1));
     accept(&mut sim, 1, 1);
-    until(&mut sim, "the first roster", &|s| {
+    until(&mut sim, "the first roster", 60, &|s| {
         (0..2).all(|b| last_roster(s, b).is_some_and(|r| r.2 == vec![1, 2]))
     });
     let party = last_roster(&sim, 0).unwrap().0;
@@ -387,19 +459,26 @@ fn a_social_restart_during_party_changes_converges_with_no_member_lost() {
     // The social role crashes. While it is down, the leader invites a third
     // member: the operation is retried until a role answers.
     let addr = cluster.stop_social().unwrap();
+    let outage = Outage::at(addr);
     invite(&mut sim, 0, 2);
     for _ in 0..30 {
         step(&mut sim);
     }
     assert!(!invited(&sim, 2), "nothing answers while the role is down");
+    drop(outage);
     cluster.start_social(addr).unwrap();
     assert_eq!(cluster.social.party_of(1), None, "the new run starts empty");
 
     // The new run gets this host's projection before the invitation, so the
     // invitation lands on the existing party; the third member accepts.
-    let restart_ticks = until(&mut sim, "the invitation after the restart", &|s| invited(s, 2));
+    let restart_ticks = until(
+        &mut sim,
+        "the invitation after the restart",
+        RESTART_ANSWER_LIMIT,
+        &|s| invited(s, 2),
+    );
     accept(&mut sim, 2, 1);
-    let converge_ticks = until(&mut sim, "the roster converged", &|s| {
+    let converge_ticks = until(&mut sim, "the roster converged", ROSTER_CONVERGED_LIMIT, &|s| {
         (0..3).all(|b| last_roster(s, b).is_some_and(|r| r == (party, 1, vec![1, 2, 3])))
     });
     for c in 1..=3 {
@@ -411,10 +490,220 @@ fn a_social_restart_during_party_changes_converges_with_no_member_lost() {
     assert_eq!(get(&stats.projected_gaps), 0);
     assert!(get(&stats.restores) >= 1);
     assert_eq!(get(&stats.social_restarts), 1);
-    // The cells are deterministic; the roles answer over loopback RPC on
-    // the wall clock, so these counts vary between machines: a metric, not
-    // a budget.
-    println!(
-        "MANTIS-METRIC social_restart_ticks_to_first_answer={restart_ticks} roster_converged_ticks_later={converge_ticks}"
+    (restart_ticks, converge_ticks)
+}
+
+#[test]
+fn a_social_restart_during_party_changes_converges_with_no_member_lost() {
+    let first = social_restart_ticks(false);
+    assert_eq!(
+        social_restart_ticks(false),
+        first,
+        "a second run counts the same ticks"
     );
+    // Over mutual TLS: the link's clients handshake with the restarted role
+    // (and fail fast against the outage); the same ticks.
+    assert_eq!(
+        social_restart_ticks(true),
+        first,
+        "the same ticks over mutual TLS"
+    );
+    let (restart_ticks, converge_ticks) = first;
+    println!(
+        "budget: social restart: first answer {restart_ticks} ticks after the restart (limit {RESTART_ANSWER_LIMIT}), roster converged {converge_ticks} ticks later (limit {ROSTER_CONVERGED_LIMIT}); deterministic: the same on a second run and over mutual TLS"
+    );
+    assert!(restart_ticks <= RESTART_ANSWER_LIMIT);
+    assert!(converge_ticks <= ROSTER_CONVERGED_LIMIT);
+}
+
+/// A crash and recovery leaves the writer's ledger exactly as the logs say:
+/// the outcomes a recovery replay makes again keep their original ticks and
+/// batch numbers, so the writer knows them as already durable (principle 7:
+/// every durable change exactly once).
+fn ledger_rows_survive_a_crash_recover_cycle_unchanged(store: mantis_services::cluster::StoreChoice) {
+    const BOTS: u64 = 8;
+    const CRASH: u64 = 330;
+    let mut config = ClusterConfig::local();
+    config.store = store;
+    let cluster = LocalCluster::start(&config).unwrap();
+    let t = Tunables::defaults().unwrap();
+    let logs: Vec<MemoryLog> = (0..2).map(|_| MemoryLog::default()).collect();
+    let mut sim = Sim::new(t, SEED, |i| {
+        Some(writer(&logs[i], &header(&t, i, Tick(1), BUILD)))
+    })
+    .unwrap();
+    let first = link(&cluster);
+    for _ in 0..BOTS {
+        sim.add_bot(Side::Native, Profile::Idle, LinkConfig::PERFECT)
+            .unwrap();
+    }
+    let mut snapshots: Vec<Vec<u8>> = vec![Vec::new(); 2];
+    for tick in 1..=CRASH {
+        if tick % 25 == 0 {
+            grant_all(&sim, BOTS);
+        }
+        let reports = sim.step().unwrap();
+        after_tick(&mut sim.zone, &first, &reports);
+        if tick % SNAPSHOT_EVERY == 0 {
+            for (i, cell) in sim.zone.cells().iter().enumerate() {
+                snapshots[i] = cell.snapshot(BUILD, t.content).unwrap();
+            }
+        }
+    }
+    assert_eq!(first.flush(Duration::from_secs(10)), Ok(()));
+    let rows = |c: &LocalCluster| -> Vec<(u64, u64, i64)> {
+        let mut all: Vec<(u64, u64, i64)> = (1..=BOTS)
+            .flat_map(|ch| {
+                c.persist
+                    .with_store(|s| s.ledger_of(ch))
+                    .unwrap()
+                    .into_iter()
+                    .map(move |r| (ch, r.tick, r.delta))
+            })
+            .collect();
+        all.sort_unstable();
+        all
+    };
+    let before = rows(&cluster);
+    assert!(!before.is_empty(), "grants made ledger rows");
+
+    // The host crashes and recovers: replay remakes ticks 301..=330 and
+    // their outcomes; the link pushes the log backlog again; the recovered
+    // cells tick on and drain what the replay queued.
+    drop(sim);
+    drop(first);
+    let link = link(&cluster);
+    let mut cells = Vec::new();
+    for i in 0..2 {
+        let (cell, rec) =
+            recover_cell(&t, i, SEED, &snapshots[i], &logs[i].bytes(), BUILD, |_| None).unwrap();
+        assert_eq!((rec.snapshot_tick.0, rec.tick.0), (300, CRASH));
+        let outcomes = logged_outcomes(&logs[i].bytes(), BUILD, t.content).unwrap();
+        link.push(i as u64 + 1, outcomes);
+        cells.push(cell);
+    }
+    let mut zone = mantis_server::zone::Zone::new(cells, world::regions()).unwrap();
+    let mut sink = mantis_server::cell::NullSink;
+    for _ in 0..5 {
+        let reports = zone.step(&mut sink, None).unwrap();
+        after_tick(&mut zone, &link, &reports);
+    }
+    assert_eq!(link.flush(Duration::from_secs(10)), Ok(()));
+    let after = rows(&cluster);
+    assert_eq!(after.len(), before.len(), "no row doubled, none lost");
+    assert_eq!(after, before);
+    assert!(
+        after.iter().all(|(_, tick, _)| *tick <= CRASH),
+        "nothing stamped with a new tick"
+    );
+}
+
+#[test]
+fn ledger_rows_survive_a_crash_recover_cycle_unchanged_in_memory() {
+    ledger_rows_survive_a_crash_recover_cycle_unchanged(mantis_services::cluster::StoreChoice::Memory);
+}
+
+#[test]
+fn ledger_rows_survive_a_crash_recover_cycle_unchanged_on_postgres() {
+    let Some(conn) = mantis_services::persist::pg::postgres_or_skip(
+        "ledger_rows_survive_a_crash_recover_cycle_unchanged_on_postgres",
+    ) else {
+        return;
+    };
+    let schema = format!("mantis_recovery_{}", std::process::id());
+    ledger_rows_survive_a_crash_recover_cycle_unchanged(
+        mantis_services::cluster::StoreChoice::PostgresSchema(conn.clone(), schema.clone()),
+    );
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let probe = mantis_services::persist::pg::PgStore::connect(&conn, &schema)
+            .await
+            .unwrap();
+        probe.drop_schema(&schema).await.unwrap();
+    });
+}
+
+/// A crash can tear the end of a cell's log at any byte of its last tick.
+/// Through the deployed node's recovery path, every such cut recovers to
+/// the last complete tick with exactly its state, discards the rest (and
+/// says how much), and offers the writer only outcomes of complete ticks.
+#[test]
+fn a_log_torn_at_any_byte_of_its_last_tick_recovers_to_the_last_complete_tick() {
+    use mantis_core::log::LogEntry;
+    use toy_server::node::start_cell;
+    use toy_server::recovery::write_snapshots;
+    const TICKS: u64 = 170;
+    let t = Tunables::defaults().unwrap();
+    let dir = std::env::temp_dir().join(format!("mantis-torn-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // A fresh node: the world cells and one instance cell, its own logs.
+    let cells: Vec<_> = (0..3).map(|i| start_cell(&t, i, SEED, &dir).unwrap().0).collect();
+    let mut zone = world::zone_of(&t, cells, 1).unwrap();
+    write_snapshots(&dir, &zone, &t).unwrap();
+    let mut sink = mantis_server::cell::NullSink;
+    let mut hashes = Vec::new();
+    for tick in 1..=TICKS {
+        if tick % 10 == 0 {
+            // An economy command each time: outcomes in the log.
+            assert!(zone.cells()[0].commands().push(grant(9)));
+        }
+        let reports = zone.step(&mut sink, None).unwrap();
+        hashes.push(reports[0].state_hash);
+        if tick == 150 {
+            write_snapshots(&dir, &zone, &t).unwrap();
+        }
+    }
+    drop(zone);
+    let log_path = dir.join("cell-1-1.log");
+    let log = std::fs::read(&log_path).unwrap();
+    // Where tick 169 ends: everything after it is the last tick's records.
+    let mut reader = LogReader::<CellLogSchema>::open(&log, toy_server::build_id(), t.content).unwrap();
+    let mut end_169 = 0;
+    while let Ok(Some(e)) = reader.next_entry() {
+        if matches!(e, LogEntry::TickEnd { tick, .. } if tick.0 == TICKS - 1) {
+            end_169 = reader.position();
+        }
+    }
+    assert!(end_169 > 0 && end_169 < log.len());
+    let snapshot = std::fs::read(dir.join("cell-1.snapshot")).unwrap();
+    let mut cuts = 0;
+    for cut in end_169..log.len() {
+        let case = dir.join(format!("cut-{cut}"));
+        std::fs::create_dir_all(&case).unwrap();
+        std::fs::write(case.join("cell-1.snapshot"), &snapshot).unwrap();
+        std::fs::write(case.join("cell-1-1.log"), &log[..cut]).unwrap();
+        let (mut cell, outcomes, rec) = start_cell(&t, 0, SEED, &case).unwrap();
+        let rec = rec.unwrap();
+        assert_eq!(
+            (rec.snapshot_tick.0, rec.tick.0),
+            (150, TICKS - 1),
+            "cut at {cut}"
+        );
+        assert_eq!(rec.discarded_bytes, cut - end_169, "cut at {cut}");
+        assert_eq!(
+            cell.world().state_hash(),
+            hashes[usize::try_from(TICKS - 2).unwrap()],
+            "cut at {cut}: exactly the state after the last complete tick"
+        );
+        assert!(outcomes.iter().all(|o| o.tick < TICKS), "cut at {cut}");
+        // Nothing of the torn tick runs: the next tick executes no command
+        // the torn records held.
+        cell.drain_outcomes(|_, _| {});
+        cell.tick(&mut mantis_server::cell::NullSink, None).unwrap();
+        let mut ran = 0;
+        cell.drain_outcomes(|_, _| ran += 1);
+        assert_eq!(ran, 0, "cut at {cut}: a torn tick's command ran");
+        let _ = std::fs::remove_dir_all(&case);
+        cuts += 1;
+    }
+    println!(
+        "torn log: {cuts} cuts across the last tick's {} bytes all recovered to tick {}",
+        log.len() - end_169,
+        TICKS - 1
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

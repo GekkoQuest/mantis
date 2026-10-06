@@ -26,10 +26,6 @@ use std_friends_contract::{
     Respond, ShowFriends,
 };
 
-/// How often, in seconds, the projection is offered back to the social
-/// role so an authority that restarted rebuilds it.
-pub const RESTORE_SECONDS: u64 = 10;
-
 /// The friend lists of characters in this cell, as the social role last
 /// told them. Simulation state (fed only by logged updates).
 #[derive(Debug, Default)]
@@ -253,9 +249,9 @@ fn updated(world: &mut World, _: &TickContext, payload: &[u8]) -> Result<(), &'s
     Ok(())
 }
 
-/// Drops projected lists of characters no longer in this cell, and from
-/// time to time offers the rest back to the social role (outputs only).
-fn upkeep(world: &mut World, ctx: &TickContext) -> Result<(), SystemError> {
+/// Drops projected lists of characters no longer in this cell. (Lists need
+/// no restoring: the social role keeps them durable through the writer.)
+fn upkeep(world: &mut World, _: &TickContext) -> Result<(), SystemError> {
     let gone: Vec<u64> = world
         .resource::<Friends>()
         .ok_or(SystemError::Invariant("friends"))?
@@ -267,25 +263,6 @@ fn upkeep(world: &mut World, ctx: &TickContext) -> Result<(), SystemError> {
     if let Some(f) = world.resource_mut::<Friends>() {
         for c in gone {
             f.lists.remove(&c);
-        }
-    }
-    let every = RESTORE_SECONDS * u64::from(ctx.rate.hz());
-    if ctx.tick.0.is_multiple_of(every.max(1)) {
-        let restore: Vec<FriendOp> = world
-            .resource::<Friends>()
-            .map(|f| {
-                f.lists
-                    .iter()
-                    .filter(|(_, l)| !l.is_empty())
-                    .map(|(me, l)| FriendOp::Restore {
-                        me: *me,
-                        friends: l.iter().copied().collect(),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        for op in &restore {
-            relay(world, op);
         }
     }
     Ok(())

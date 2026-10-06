@@ -54,7 +54,7 @@ pub const EMITTER_STRIDE: u64 = 256;
 pub const MAX_POOL: u32 = 1 << 22;
 
 /// Definition table entries reserved per registered effect.
-#[allow(clippy::cast_possible_truncation)] // Eight.
+#[expect(clippy::cast_possible_truncation)] // Eight.
 const PER_EFFECT: u32 = MAX_EMITTERS as u32;
 
 /// `GpuEmitter::flags` bit: clear every non-spawning slot of the range this frame.
@@ -334,7 +334,7 @@ impl Emission {
 
     /// Advances by `dt`. `None` when the instance is finished: it stopped emitting and
     /// every particle it emitted is dead after this frame.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Floor of a non-negative carry; ring indices below capacity.
+    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Floor of a non-negative carry; ring indices below capacity.
     fn advance(&mut self, s: &Schedule, dt: f32) -> Option<SpawnWindow> {
         if !self.emitting {
             self.since_spawn += dt;
@@ -553,7 +553,7 @@ impl ParticleSystem {
     /// Creates the pool, tables, and pipelines. Capacities are clamped to at least 1 and
     /// the pool to [`MAX_POOL`]. `hdr_format` and `depth_format` are the formats of the
     /// color and depth attachments [`ParticleSystem::record_draw`] will be called with.
-    #[allow(clippy::too_many_lines)] // Buffers, layouts, and three pipelines, declared once.
+    #[expect(clippy::too_many_lines)] // Buffers, layouts, and three pipelines, declared once.
     pub fn new(
         device: &wgpu::Device,
         config: ParticleConfig,
@@ -1027,7 +1027,7 @@ impl ParticleSystem {
     /// `camera_right` and `camera_up` are the camera's world-space axes. Allocation-free
     /// after warm-up. Run [`ParticleSystem::upload`], [`ParticleSystem::record_simulate`],
     /// and [`ParticleSystem::record_draw`] once after each call.
-    #[allow(clippy::cast_possible_truncation)] // Slot indices are below `max_emitters` (u32).
+    #[expect(clippy::cast_possible_truncation)] // Slot indices are below `max_emitters` (u32).
     pub fn prepare(
         &mut self,
         dt: f32,
@@ -1171,7 +1171,7 @@ impl ParticleSystem {
         }
     }
 
-    #[allow(clippy::cast_possible_truncation)] // Uniform buffers are far below 4 GiB.
+    #[expect(clippy::cast_possible_truncation)] // Uniform buffers are far below 4 GiB.
     fn offset(index: u32) -> u32 {
         index.saturating_mul(EMITTER_STRIDE as u32)
     }

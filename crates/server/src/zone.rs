@@ -183,6 +183,18 @@ impl Zone {
         Ok(reports)
     }
 
+    /// Tells every cell its clock slipped `ticks` behind wall time (a stall
+    /// or an overrun the host re-anchored after): a logged intent each cell
+    /// applies at its next tick ([`CellIntent::ClockSlip`]).
+    pub fn clock_slipped(&self, ticks: u32) {
+        if ticks == 0 {
+            return;
+        }
+        for c in &self.cells {
+            c.inbox().push(SessionId(0), CellIntent::ClockSlip { ticks });
+        }
+    }
+
     fn exchange(&mut self) {
         self.transfers.clear();
         // Transfers.
@@ -222,6 +234,16 @@ impl Zone {
             if let Some(dst) = self.cells.get(to) {
                 dst.inbox()
                     .push(session.unwrap_or(SessionId(0)), CellIntent::TransferIn(t));
+                // Inputs the source buffered ahead follow the avatar, after
+                // it arrives, as intents the destination logs: a crossing
+                // never drops the lead a session built.
+                if let Some((s, src)) = session.zip(self.cells.get(from))
+                    && let Some(cs) = src.session(s)
+                {
+                    for input in cs.inputs.iter() {
+                        dst.inbox().push(s, CellIntent::Move(*input));
+                    }
+                }
             }
             if let Some(src) = self.cells.get(from) {
                 src.inbox()

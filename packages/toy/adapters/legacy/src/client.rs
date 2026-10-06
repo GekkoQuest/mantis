@@ -8,7 +8,7 @@ use crate::{entity_bits, entity_from, object_id, op, packet, packets, put_vec3, 
 
 /// One packet from the server.
 #[derive(Clone, Copy, PartialEq, Debug)]
-#[allow(clippy::large_enum_variant)] // decoded one at a time and handed to a callback
+#[expect(clippy::large_enum_variant)] // decoded one at a time and handed to a callback
 pub enum ServerPacket {
     /// The session was accepted.
     LoginOk {

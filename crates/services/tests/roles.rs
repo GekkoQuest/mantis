@@ -1,11 +1,13 @@
 //! The typed internal RPC (caller matrix, validation, timeouts, reconnect,
 //! cluster key) and the account, realm, social, and matchmaking roles,
-//! each served over it.
+//! each served over it. Every server and client here runs mutual TLS with
+//! a per-role identity from one in-memory CA, as production does.
 
-#![allow(clippy::unwrap_used, clippy::too_many_lines)]
+#![expect(clippy::unwrap_used, clippy::too_many_lines)]
 
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use mantis_core::wire::{BoundedArray, WireString};
@@ -17,18 +19,42 @@ use mantis_services::matchmaking::MatchmakingService;
 use mantis_services::methods;
 use mantis_services::realm::RealmService;
 use mantis_services::social::{GUILD, SocialService, WHISPER, WORLD};
+use mantis_services::tls::TlsIdentity;
+use mantis_services::tls::dev::DevCa;
 
 const KEY: &[u8] = b"cluster-key-for-tests";
 const WAIT: Duration = Duration::from_secs(5);
 
-async fn serve(router: Router) -> RpcServer {
-    RpcServer::bind("127.0.0.1:0".parse().unwrap(), KEY.to_vec(), router)
+/// One identity per role, from one CA, valid for 127.0.0.1.
+fn id(role: Role) -> Arc<TlsIdentity> {
+    static IDS: OnceLock<BTreeMap<Role, Arc<TlsIdentity>>> = OnceLock::new();
+    let ids = IDS.get_or_init(|| {
+        DevCa::new("roles-test")
+            .unwrap()
+            .every_role(&["127.0.0.1".parse().unwrap()])
+            .unwrap()
+    });
+    Arc::clone(&ids[&role])
+}
+
+/// `router` served as `role`, over mutual TLS.
+async fn serve_at(addr: SocketAddr, role: Role, key: &[u8], router: Router) -> RpcServer {
+    RpcServer::bind_tls(addr, key.to_vec(), router, Some(id(role)))
         .await
         .unwrap()
 }
 
-fn client(addr: SocketAddr, role: Role) -> RpcClient {
-    RpcClient::new(addr, role, KEY.to_vec())
+async fn serve(role: Role, router: Router) -> RpcServer {
+    serve_at("127.0.0.1:0".parse().unwrap(), role, KEY, router).await
+}
+
+/// A client calling the `server` role at `addr` as `role`, over mutual TLS.
+fn client_with(addr: SocketAddr, role: Role, key: &[u8], server: Role) -> RpcClient {
+    RpcClient::with_tls(addr, role, key.to_vec(), Some(id(role)), server).unwrap()
+}
+
+fn client(addr: SocketAddr, role: Role, server: Role) -> RpcClient {
+    client_with(addr, role, KEY, server)
 }
 
 async fn call<M: Method>(c: &RpcClient, req: &M::Request) -> Result<M::Response, RpcError> {
@@ -69,9 +95,9 @@ fn every_method_has_callers_and_a_unique_id() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_rpc_layer_enforces_callers_validation_and_the_cluster_key() {
     let account = AccountService::new();
-    let server = serve(account.router()).await;
-    let gateway = client(server.addr(), Role::Gateway);
-    let cell = client(server.addr(), Role::Cell);
+    let server = serve(Role::Account, account.router()).await;
+    let gateway = client(server.addr(), Role::Gateway, Role::Account);
+    let cell = client(server.addr(), Role::Cell, Role::Account);
     let short = m::Register {
         name: s("someone"),
         password: s("short"),
@@ -102,7 +128,7 @@ async fn the_rpc_layer_enforces_callers_validation_and_the_cluster_key() {
         Err(RpcError::NoSuchMethod)
     );
     // A caller without the cluster key is cut off at the hello.
-    let stranger = RpcClient::new(server.addr(), Role::Gateway, b"another key".to_vec());
+    let stranger = client_with(server.addr(), Role::Gateway, b"another key", Role::Account);
     assert_eq!(
         call::<methods::RegisterAccount>(&stranger, &ok).await,
         Err(RpcError::Disconnected)
@@ -112,15 +138,17 @@ async fn the_rpc_layer_enforces_callers_validation_and_the_cluster_key() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn calls_time_out_and_clients_reconnect() {
     let mut slow = Router::new();
-    slow.serve::<methods::Maintenance>(|_, req| {
+    // Slow without blocking a worker: a blocked worker could hold the
+    // client's own timer, so the answer would win the race under load.
+    slow.serve_later::<methods::Maintenance, _, _>(|_, req| async move {
         if req.on {
-            std::thread::sleep(Duration::from_millis(300));
+            tokio::time::sleep(Duration::from_millis(300)).await;
         }
         Ok(m::MaintenanceWas { was: false })
     });
-    let server = serve(slow).await;
+    let server = serve(Role::Account, slow).await;
     let addr = server.addr();
-    let ops = client(addr, Role::Ops);
+    let ops = client(addr, Role::Ops, Role::Account);
     assert_eq!(
         ops.call::<methods::Maintenance>(&m::SetMaintenance { on: true }, Duration::from_millis(50))
             .await,
@@ -142,7 +170,7 @@ async fn calls_time_out_and_clients_reconnect() {
     );
     let mut back = Router::new();
     back.serve::<methods::Maintenance>(|_, _| Ok(m::MaintenanceWas { was: true }));
-    let _again = RpcServer::bind(addr, KEY.to_vec(), back).await.unwrap();
+    let _again = serve_at(addr, Role::Account, KEY, back).await;
     let r = call::<methods::Maintenance>(&ops, &m::SetMaintenance { on: false })
         .await
         .unwrap();
@@ -154,11 +182,11 @@ async fn calls_time_out_and_clients_reconnect() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn accounts_log_in_with_single_use_tokens_and_honour_bans_and_maintenance() {
     let account = AccountService::new();
-    let server = serve(account.router()).await;
+    let server = serve(Role::Account, account.router()).await;
     let (gateway, cell, ops) = (
-        client(server.addr(), Role::Gateway),
-        client(server.addr(), Role::Cell),
-        client(server.addr(), Role::Ops),
+        client(server.addr(), Role::Gateway, Role::Account),
+        client(server.addr(), Role::Cell, Role::Account),
+        client(server.addr(), Role::Ops, Role::Account),
     );
     let reg = m::Register {
         name: s("player_one"),
@@ -235,10 +263,10 @@ async fn accounts_log_in_with_single_use_tokens_and_honour_bans_and_maintenance(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_realm_places_characters_and_issues_single_use_tokens() {
     let realm = RealmService::new();
-    let server = serve(realm.router()).await;
+    let server = serve(Role::Realm, realm.router()).await;
     let (gateway, cell) = (
-        client(server.addr(), Role::Gateway),
-        client(server.addr(), Role::Cell),
+        client(server.addr(), Role::Gateway, Role::Realm),
+        client(server.addr(), Role::Cell, Role::Realm),
     );
     let world = |n: u64, lo: f32, hi: f32| m::RegisterCell {
         cell: m::CellNo(n),
@@ -401,8 +429,8 @@ async fn poll(cell: &RpcClient, n: u64, since: u64) -> Vec<m::SocialUpdate> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn social_projects_cross_cell_chat_and_guilds_onto_the_cells_hosting_them() {
     let social = SocialService::new();
-    let server = serve(social.router()).await;
-    let cell = client(server.addr(), Role::Cell);
+    let server = serve(Role::Social, social.router()).await;
+    let cell = client(server.addr(), Role::Cell, Role::Social);
     present(&cell, 1, &[11, 12]).await;
     present(&cell, 2, &[21]).await;
 
@@ -494,8 +522,8 @@ async fn matchmaking_places_full_groups_and_keeps_places_when_no_instance_is_fre
             }
         }),
     );
-    let server = serve(mm.router()).await;
-    let gateway = client(server.addr(), Role::Gateway);
+    let server = serve(Role::Matchmaking, mm.router()).await;
+    let gateway = client(server.addr(), Role::Gateway, Role::Matchmaking);
     let enqueue = |c: u64| m::Enqueue {
         character: m::CharacterId(c),
         queue: 1,
@@ -529,4 +557,76 @@ async fn matchmaking_places_full_groups_and_keeps_places_when_no_instance_is_fre
         m::CellNo(0),
         "3 waits for a second player"
     );
+}
+
+// ---- graceful stop -----------------------------------------------------------
+
+/// A router whose one method answers after `wait`.
+fn slow(wait: Duration) -> Router {
+    let mut r = Router::new();
+    r.serve_later::<methods::RealmRun, _, _>(move |_, _| async move {
+        tokio::time::sleep(wait).await;
+        Ok(m::RealmEpoch { epoch: 7 })
+    });
+    r
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_graceful_stop_answers_what_is_in_flight_then_closes() {
+    let key = b"k".to_vec();
+    let server = serve_at(
+        "127.0.0.1:0".parse().unwrap(),
+        Role::Realm,
+        &key,
+        slow(Duration::from_millis(150)),
+    )
+    .await;
+    let addr = server.addr();
+    let client = Arc::new(client_with(addr, Role::Cell, &key, Role::Realm));
+    let call = {
+        let client = Arc::clone(&client);
+        tokio::spawn(async move {
+            client
+                .call::<methods::RealmRun>(&m::PollRealm {}, Duration::from_secs(5))
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(server.in_flight(), 1);
+    server.shutdown(Duration::from_secs(2)).await;
+    assert_eq!(
+        call.await.unwrap().map(|e| e.epoch),
+        Ok(7),
+        "the call in flight is answered"
+    );
+    // Nothing listens any more: the next call fails.
+    assert!(
+        client
+            .call::<methods::RealmRun>(&m::PollRealm {}, Duration::from_millis(300))
+            .await
+            .is_err()
+    );
+
+    // A call slower than the grace is cut off with its connection.
+    let server = serve_at(
+        "127.0.0.1:0".parse().unwrap(),
+        Role::Realm,
+        &key,
+        slow(Duration::from_secs(5)),
+    )
+    .await;
+    let client = Arc::new(client_with(server.addr(), Role::Cell, &key, Role::Realm));
+    let call = {
+        let client = Arc::clone(&client);
+        tokio::spawn(async move {
+            client
+                .call::<methods::RealmRun>(&m::PollRealm {}, Duration::from_secs(10))
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let start = std::time::Instant::now();
+    server.shutdown(Duration::from_millis(50)).await;
+    assert!(start.elapsed() < Duration::from_secs(1));
+    assert!(call.await.unwrap().is_err());
 }

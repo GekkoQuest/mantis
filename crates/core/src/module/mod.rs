@@ -31,7 +31,7 @@ pub use bus::{Event, Events, Queries, Query, QueryError, ask};
 pub use manifest::{
     Dependency, Manifest, ManifestError, PackageModules, Version, is_valid_key, parse_manifest, parse_package,
 };
-pub use resolve::{Discovered, ModuleGraph, ResolveError, Resolved, resolve};
+pub use resolve::{Discovered, ModuleGraph, OptionalProvider, ResolveError, Resolved, resolve};
 
 #[cfg(test)]
 mod tests;

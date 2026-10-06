@@ -103,7 +103,7 @@ impl FrameTimer {
         if end <= start {
             return Ok(None);
         }
-        #[allow(clippy::cast_precision_loss)] // A frame's tick count is far below 2^52.
+        #[expect(clippy::cast_precision_loss)] // A frame's tick count is far below 2^52.
         let ms = (end - start) as f64 * self.period_ns / 1.0e6;
         Ok(Some(ms))
     }

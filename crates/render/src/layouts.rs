@@ -93,7 +93,7 @@ pub struct Layouts {
 
 impl Layouts {
     /// Creates the layouts; bindless ones only when `bindless` is supported.
-    #[allow(clippy::too_many_lines)] // Declarative layout tables, one entry per binding.
+    #[expect(clippy::too_many_lines)] // Declarative layout tables, one entry per binding.
     pub fn new(device: &wgpu::Device, bindless: bool) -> Self {
         let frame_size = core::mem::size_of::<GpuFrame>() as u64;
         let mk = |label: &str, entries: &[wgpu::BindGroupLayoutEntry]| {

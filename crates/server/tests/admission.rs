@@ -4,7 +4,7 @@
 //! verdict that never arrives refuses the session at the timeout, while the
 //! cell keeps ticking unaffected.
 
-#![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+#![expect(clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};

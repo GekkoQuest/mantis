@@ -15,8 +15,8 @@ pub mod pg;
 use std::sync::{Arc, Mutex};
 
 use mantis_core::ledger::ledger_of;
-use mantis_core::social::GuildChange;
-use mantis_core::wire::BoundedArray;
+use mantis_core::social::{FriendChange, GuildChange};
+use mantis_core::wire::{BoundedArray, WireString};
 
 use crate::generated::services as m;
 use crate::host::rpc::{Router, RpcError};
@@ -177,6 +177,35 @@ pub trait LedgerStore: Send {
     /// # Errors
     /// [`StoreError`].
     fn guild_rows(&mut self) -> Result<Vec<GuildChange>, StoreError>;
+    /// The last applied batch of friend changes (0 before the first).
+    ///
+    /// # Errors
+    /// [`StoreError`].
+    fn friend_seq(&mut self) -> Result<u64, StoreError>;
+    /// Applies one batch of friend changes atomically, with its sequence
+    /// number as the new watermark. The caller skips a batch at or below
+    /// the watermark.
+    ///
+    /// # Errors
+    /// [`StoreError`]; nothing is written.
+    fn write_friends(&mut self, seq: u64, changes: &[FriendChange]) -> Result<(), StoreError>;
+    /// Every friend row: each friendship once (lower id first), then each
+    /// open request.
+    ///
+    /// # Errors
+    /// [`StoreError`].
+    fn friend_rows(&mut self) -> Result<Vec<FriendChange>, StoreError>;
+    /// Sets live value `name` (a flag or tunable), replacing any earlier
+    /// value of it.
+    ///
+    /// # Errors
+    /// [`StoreError`]; nothing is written.
+    fn set_live(&mut self, name: &str, kind: u8, value: f32) -> Result<(), StoreError>;
+    /// Every live value: (name, kind, value), in the order last set.
+    ///
+    /// # Errors
+    /// [`StoreError`].
+    fn live_values(&mut self) -> Result<Vec<(String, u8, f32)>, StoreError>;
 }
 
 /// The month (YYYYMM, UTC) of a Unix time in milliseconds.
@@ -256,6 +285,82 @@ pub fn guild_change(r: &m::GuildRow) -> Option<GuildChange> {
     })
 }
 
+/// `text` cut to at most `N` bytes at a character boundary (audit text
+/// longer than its wire field keeps its head).
+#[must_use]
+pub fn clip<const N: usize>(text: &str) -> WireString<N> {
+    let mut end = text.len().min(N);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    WireString::new(text.get(..end).unwrap_or("")).unwrap_or_default()
+}
+
+/// An audit row as the wire carries it.
+#[must_use]
+pub fn audit_entry(r: &AuditRow) -> m::AuditEntry {
+    let text = |v: &Option<String>| clip(v.as_deref().unwrap_or(""));
+    m::AuditEntry {
+        id: r.id,
+        at_ms: r.at_ms,
+        actor: clip(&r.actor),
+        command: clip(&r.command),
+        args: clip(&r.args),
+        status: clip(&r.status),
+        before: text(&r.before),
+        after: text(&r.after),
+        undo: text(&r.undo),
+    }
+}
+
+/// An audit row back from the wire: before, after, and undo are absent
+/// while the row is `begun`.
+#[must_use]
+pub fn audit_row(e: &m::AuditEntry) -> AuditRow {
+    let open = e.status.as_str() == "begun";
+    let text = |w: &str| (!open).then(|| w.to_owned());
+    AuditRow {
+        id: e.id,
+        at_ms: e.at_ms,
+        actor: e.actor.as_str().to_owned(),
+        command: e.command.as_str().to_owned(),
+        args: e.args.as_str().to_owned(),
+        status: e.status.as_str().to_owned(),
+        before: text(e.before.as_str()),
+        after: text(e.after.as_str()),
+        undo: text(e.undo.as_str()),
+    }
+}
+
+/// Friend rows per page of [`PersistService::load_friends`].
+pub const FRIEND_PAGE: usize = 256;
+
+/// A friend change as the wire carries it.
+#[must_use]
+pub fn friend_row(c: &FriendChange) -> m::FriendRow {
+    let (kind, a, b) = match *c {
+        FriendChange::Friends { a, b } => (1, a, b),
+        FriendChange::NoFriends { a, b } => (2, a, b),
+        FriendChange::Asked { asker, asked } => (3, asker, asked),
+        FriendChange::NoAsk { asker, asked } => (4, asker, asked),
+    };
+    m::FriendRow { kind, a, b }
+}
+
+/// A friend change back from the wire (`None` for an unknown kind, or a
+/// friendship not stored lower id first).
+#[must_use]
+pub fn friend_change(r: &m::FriendRow) -> Option<FriendChange> {
+    let (a, b) = (r.a, r.b);
+    Some(match r.kind {
+        1 if a < b => FriendChange::Friends { a, b },
+        2 if a < b => FriendChange::NoFriends { a, b },
+        3 => FriendChange::Asked { asker: a, asked: b },
+        4 => FriendChange::NoAsk { asker: a, asked: b },
+        _ => return None,
+    })
+}
+
 /// The persistence writer role.
 #[derive(Clone)]
 pub struct PersistService {
@@ -283,9 +388,23 @@ impl PersistService {
     }
 
     /// Runs `f` with the store (Ops and tests).
+    ///
+    /// On a multi-thread runtime the wait for the store and the work under
+    /// it run in `block_in_place`: a handler waiting for another's query
+    /// never pins a worker, so the database connection's task always has a
+    /// worker to run on (otherwise concurrent pushes to a PostgreSQL store
+    /// deadlock once every worker waits on the lock).
     pub fn with_store<R>(&self, f: impl FnOnce(&mut dyn LedgerStore) -> R) -> R {
-        let mut s = crate::host::lock(&self.store);
-        f(s.as_mut())
+        let run = || {
+            let mut s = crate::host::lock(&self.store);
+            f(s.as_mut())
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(h) if h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+                tokio::task::block_in_place(run)
+            }
+            _ => run(),
+        }
     }
 
     /// Makes one batch of guild changes durable (once per sequence number).
@@ -307,6 +426,55 @@ impl PersistService {
             }
             store.write_guilds(req.seq, &changes).map_err(|e| store_err(&e))?;
             Ok(m::Durable { seq: req.seq })
+        })
+    }
+
+    /// Makes one batch of friend changes durable (once per sequence number).
+    ///
+    /// # Errors
+    /// [`RpcError::Refused`] for a malformed row or a store failure (social
+    /// retries the same batch).
+    pub fn write_friends(&self, req: &m::StoreFriendRows) -> Result<m::Durable, RpcError> {
+        let changes = req
+            .rows
+            .iter()
+            .map(friend_change)
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| RpcError::Refused("malformed friend row".to_owned()))?;
+        self.with_store(|store| {
+            let last = store.friend_seq().map_err(|e| store_err(&e))?;
+            if req.seq <= last {
+                return Ok(m::Durable { seq: last });
+            }
+            store
+                .write_friends(req.seq, &changes)
+                .map_err(|e| store_err(&e))?;
+            Ok(m::Durable { seq: req.seq })
+        })
+    }
+
+    /// One page of the friend rows, with the stored watermark.
+    ///
+    /// # Errors
+    /// [`RpcError::Refused`] when the store fails.
+    pub fn load_friends(&self, page: u32) -> Result<m::FriendRows, RpcError> {
+        let (seq, rows) = self
+            .with_store(|store| Ok::<_, StoreError>((store.friend_seq()?, store.friend_rows()?)))
+            .map_err(|e| store_err(&e))?;
+        let start = usize::try_from(page)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(FRIEND_PAGE);
+        let rows: Vec<m::FriendRow> = rows
+            .iter()
+            .skip(start)
+            .take(FRIEND_PAGE)
+            .map(friend_row)
+            .collect();
+        let more = rows.len() == FRIEND_PAGE;
+        Ok(m::FriendRows {
+            seq,
+            rows: BoundedArray::from_slice(&rows).unwrap_or_default(),
+            more,
         })
     }
 
@@ -396,6 +564,75 @@ impl PersistService {
         let me = self.clone();
         r.serve::<methods::LoadGuilds>(move |_, req| me.load_guilds(req.page));
         let me = self.clone();
+        r.serve::<methods::WriteFriends>(move |_, req| me.write_friends(&req));
+        let me = self.clone();
+        r.serve::<methods::LoadFriends>(move |_, req| me.load_friends(req.page));
+        let me = self.clone();
+        r.serve::<methods::StoreLiveValue>(move |_, req| {
+            me.with_store(|s| s.set_live(req.name.as_str(), req.kind, req.value))
+                .map_err(|e| store_err(&e))?;
+            Ok(m::Empty {})
+        });
+        let me = self.clone();
+        r.serve::<methods::ReadLiveValues>(move |_, _| {
+            let values = me.with_store(|s| s.live_values()).map_err(|e| store_err(&e))?;
+            let values: Vec<m::LiveValue> = values
+                .iter()
+                .map(|(name, kind, value)| m::LiveValue {
+                    name: clip(name),
+                    kind: *kind,
+                    value: *value,
+                })
+                .collect();
+            Ok(m::LiveValues {
+                values: BoundedArray::from_slice(&values).unwrap_or_default(),
+            })
+        });
+        let me = self.clone();
+        r.serve::<methods::AuditOpen>(move |_, req| {
+            let id = me
+                .with_store(|s| {
+                    s.audit_begin(
+                        req.actor.as_str(),
+                        req.command.as_str(),
+                        req.args.as_str(),
+                        req.at_ms,
+                    )
+                })
+                .map_err(|e| store_err(&e))?;
+            Ok(m::AuditId { id })
+        });
+        let me = self.clone();
+        r.serve::<methods::AuditClose>(move |_, req| {
+            me.with_store(|s| {
+                s.audit_complete(
+                    req.id,
+                    req.status.as_str(),
+                    req.before.as_str(),
+                    req.after.as_str(),
+                    req.undo.as_str(),
+                )
+            })
+            .map_err(|e| store_err(&e))?;
+            Ok(m::Empty {})
+        });
+        let me = self.clone();
+        r.serve::<methods::AuditTrail>(move |_, req| {
+            let rows = me.with_store(|s| s.audit_rows()).map_err(|e| store_err(&e))?;
+            let mut page: Vec<m::AuditEntry> = rows
+                .iter()
+                .filter(|r| r.id > req.since)
+                .take(usize::from(req.limit) + 1)
+                .map(audit_entry)
+                .collect();
+            let more = page.len() > usize::from(req.limit);
+            page.truncate(usize::from(req.limit));
+            Ok(m::AuditRows {
+                rows: BoundedArray::from_slice(&page).unwrap_or_default(),
+                more,
+            })
+        });
+        let me = self.clone();
         r.serve::<methods::Ledger>(move |_, req| {
             let rows = me
                 .with_store(|s| s.ledger_of(req.character.0))
@@ -411,6 +648,7 @@ impl PersistService {
                     tick: l.tick,
                     item: l.item,
                     delta: l.delta,
+                    at_ms: l.at_ms,
                 })
                 .collect();
             Ok(m::LedgerRows {

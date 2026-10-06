@@ -207,7 +207,7 @@ impl SectorStreamer {
     }
 
     /// Plans this frame's loads and unloads. Allocation-free.
-    #[allow(clippy::too_many_lines)] // One pass over the index: score, then act in priority order.
+    #[expect(clippy::too_many_lines)] // One pass over the index: score, then act in priority order.
     pub fn update(
         &mut self,
         camera: Vec3,

@@ -43,6 +43,8 @@ pub struct Transfer {
     pub cheats: u32,
     /// The session's character identity.
     pub character: u64,
+    /// The session's Predictive input state.
+    pub input: crate::movement::InputCarry,
 }
 
 /// Optional fields on the wire (logs and snapshots): a presence flag, then
@@ -50,6 +52,12 @@ pub struct Transfer {
 pub(crate) fn put_opt_u32(e: &mut Encoder<'_>, v: Option<u32>) {
     e.bool(v.is_some());
     e.u32(v.unwrap_or(0));
+}
+
+/// A tag and one `u32`: the encoding of the one-number intents.
+fn tag_u32(e: &mut Encoder<'_>, tag: u8, v: u32) {
+    e.u8(tag);
+    e.u32(v);
 }
 
 pub(crate) fn put_opt_i64(e: &mut Encoder<'_>, v: Option<i64>) {
@@ -68,6 +76,13 @@ pub(crate) fn get_opt_i64(d: &mut Decoder<'_>) -> Result<Option<i64>, DecodeErro
     let v = d.i64()?;
     Ok(some.then_some(v))
 }
+
+/// The version of the cell log's record encodings (intents, commands,
+/// outcomes, transfers). A package folds it into its build id, so a log
+/// written by a binary with other encodings is refused by its header, never
+/// misread. Bump it with any encoding change; the fingerprint test fails
+/// until you do.
+pub const LOG_SCHEMA_VERSION: u32 = 2;
 
 /// One inbox item.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -165,6 +180,15 @@ pub enum CellIntent {
         /// The tier.
         tier: mantis_adapter_contract::ModTier,
     },
+    /// The cell's clock slipped behind wall time: its host stalled or
+    /// overran by `ticks` ticks and re-anchored without catching up
+    /// (docs/SERVER.md section 2). Validated clocks are judged against tick
+    /// time, so each session's clock baseline moves by the slip; nothing
+    /// else changes. System-only, logged.
+    ClockSlip {
+        /// Ticks of wall time the cell did not tick.
+        ticks: u32,
+    },
     /// The host refused `count` of this session's messages for its rate
     /// limits: added to the session's cheat counter. Only the host creates
     /// it; no client message maps to it.
@@ -212,6 +236,7 @@ impl Wire for Transfer {
         e.i64(env.corrected_ms);
         e.u32(self.cheats);
         e.u64(self.character);
+        self.input.encode(e);
     }
     fn decode(d: &mut Decoder<'_>) -> Result<Self, DecodeError> {
         Ok(Self {
@@ -242,6 +267,7 @@ impl Wire for Transfer {
             },
             cheats: d.u32()?,
             character: d.u64()?,
+            input: crate::movement::InputCarry::decode(d)?,
         })
     }
 }
@@ -332,14 +358,12 @@ impl Wire for CellIntent {
                 e.u16(*topic);
                 payload.encode(e);
             }
-            Self::Throttled { count } => {
-                e.u8(16);
-                e.u32(*count);
-            }
+            Self::Throttled { count } => tag_u32(e, 16, *count),
             Self::SetModTier { tier } => {
                 e.u8(17);
                 tier.encode(e);
             }
+            Self::ClockSlip { ticks } => tag_u32(e, 18, *ticks),
             Self::Relocate { character, position } => {
                 e.u8(15);
                 e.u64(*character);
@@ -398,6 +422,7 @@ impl Wire for CellIntent {
             17 => Self::SetModTier {
                 tier: mantis_adapter_contract::ModTier::decode(d)?,
             },
+            18 => Self::ClockSlip { ticks: d.u32()? },
             15 => Self::Relocate {
                 character: d.u64()?,
                 position: Vec3::decode(d)?,
@@ -444,8 +469,18 @@ mod tests {
             },
             cheats: 2,
             character: 77,
+            input: crate::movement::InputCarry {
+                synthesized: 5,
+                synth_mask: 0b1011,
+                credits: 2,
+                cooldown: 3,
+                late: 4,
+                pauses: 1,
+                ..crate::movement::InputCarry::default()
+            },
         };
         let all = [
+            CellIntent::ClockSlip { ticks: 15 },
             CellIntent::Join {
                 repl: ReplicationId(EntityId::new(1, 0)),
                 spawn: Vec3::X,
@@ -470,11 +505,27 @@ mod tests {
             CellIntent::TransferIn(t),
             CellIntent::TransferAck(ReplicationId(EntityId::new(4, 0))),
         ];
+        let mut every = Vec::new();
         for i in all {
             let mut b = Vec::new();
             encode_into(&i, &mut b);
             assert_eq!(decode_exact::<CellIntent>(&b), Ok(i));
+            every.extend_from_slice(&b);
         }
         assert!(decode_exact::<CellIntent>(&[0]).is_err());
+        // The encodings' fingerprint: an encoding change moves it, and must
+        // bump LOG_SCHEMA_VERSION (folded into a package's build id, so old
+        // logs are refused by their header instead of misread).
+        let fingerprint = mantis_core::hash::StableHasher::hash_bytes(&every);
+        assert_eq!(
+            (LOG_SCHEMA_VERSION, fingerprint),
+            (LOG_SCHEMA_VERSION_OF_FINGERPRINT, LOG_FINGERPRINT),
+            "the cell log encodings changed: bump LOG_SCHEMA_VERSION, then record              LOG_SCHEMA_VERSION_OF_FINGERPRINT = it and LOG_FINGERPRINT = {fingerprint:#018x}"
+        );
     }
+
+    /// The schema version the fingerprint below was recorded at.
+    const LOG_SCHEMA_VERSION_OF_FINGERPRINT: u32 = 2;
+    /// The intents' encodings at that version.
+    const LOG_FINGERPRINT: u64 = 0x71d8_7258_30a2_d188;
 }

@@ -5,7 +5,7 @@
 //! of all of it from the cell's own log, and zero allocation on the hot path
 //! with module traffic.
 
-#![allow(
+#![expect(
     clippy::unwrap_used,
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss
@@ -402,7 +402,7 @@ fn modules_register_dispatch_disable_and_replay() {
     );
     assert_eq!(heard.last_answer, Some(8));
     let mut outcomes = Vec::new();
-    c.drain_outcomes(|o| outcomes.push(*o));
+    c.drain_outcomes(|_, o| outcomes.push(*o));
     assert_eq!(outcomes.len(), 3);
     assert_eq!(outcomes[0].result, Ok(()));
     assert_eq!(outcomes[0].payload.as_slice(), 50u32.to_le_bytes());
@@ -473,7 +473,7 @@ fn module_traffic_allocates_nothing_on_the_hot_path() {
         }
         c.commands().push(command(DEPOSIT, 1, 1));
         c.tick(&mut sink, None).unwrap();
-        c.drain_outcomes(|_| {});
+        c.drain_outcomes(|_, _| {});
     }
     for _ in 0..30 {
         for s in 1..=8u64 {
@@ -482,7 +482,7 @@ fn module_traffic_allocates_nothing_on_the_hot_path() {
         }
         c.commands().push(command(DEPOSIT, 1, 1));
         assert_no_alloc("cell tick with module traffic", || c.tick(&mut sink, None)).unwrap();
-        c.drain_outcomes(|_| {});
+        c.drain_outcomes(|_, _| {});
     }
     assert_eq!(c.world().resource::<Counter>().unwrap().balance, 60);
 }

@@ -1,7 +1,7 @@
 //! std.titles end to end: grants from services and from other modules'
 //! events, showing a title, the query, refusals, and replay.
 
-#![allow(clippy::unwrap_used)]
+#![expect(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

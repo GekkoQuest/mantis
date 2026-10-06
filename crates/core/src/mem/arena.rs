@@ -139,7 +139,7 @@ impl<T> TickArena<T> {
         self.epoch = self.epoch.wrapping_add(1);
     }
 
-    #[allow(clippy::cast_possible_truncation)] // len <= cap <= u32::MAX
+    #[expect(clippy::cast_possible_truncation)] // len <= cap <= u32::MAX
     fn next_index(&self) -> u32 {
         self.items.len() as u32
     }
@@ -195,7 +195,7 @@ impl<T> TickArena<T> {
         self.items.get_mut(start..start + s.len as usize)
     }
 
-    #[allow(clippy::cast_possible_truncation)] // n <= remaining <= u32::MAX
+    #[expect(clippy::cast_possible_truncation)] // n <= remaining <= u32::MAX
     fn slice_handle(&self, start: u32, n: usize) -> ArenaSlice<T> {
         ArenaSlice {
             arena: self.id,

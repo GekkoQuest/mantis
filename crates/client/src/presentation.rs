@@ -439,7 +439,7 @@ impl CameraShakes {
         if !(amplitude > 0.0 && duration > 0.0 && frequency.is_finite()) {
             return;
         }
-        #[allow(clippy::cast_precision_loss)] // Only decorrelates phases.
+        #[expect(clippy::cast_precision_loss)] // Only decorrelates phases.
         let phase = (now.as_nanos() % 1_000_003) as f32 * 1e-3;
         let shake = Shake {
             start: now,
@@ -461,7 +461,7 @@ impl CameraShakes {
     }
 
     /// The summed (yaw, pitch) offset in degrees at `now`; expired shakes are removed.
-    #[allow(clippy::cast_possible_truncation)] // Seconds since a recent start fit f32.
+    #[expect(clippy::cast_possible_truncation)] // Seconds since a recent start fit f32.
     pub fn sample(&mut self, now: HostInstant) -> (f32, f32) {
         self.active
             .retain(|s| now.seconds_since(s.start) < f64::from(s.duration));

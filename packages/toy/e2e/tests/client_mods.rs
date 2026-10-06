@@ -10,7 +10,7 @@
 //!   neither its script nor its widgets reach the network; raised again, it is promoted
 //!   with its script state.
 
-#![allow(clippy::too_many_lines)] // The scenario reads top to bottom.
+#![expect(clippy::too_many_lines)] // The scenario reads top to bottom.
 
 use std::sync::Arc;
 

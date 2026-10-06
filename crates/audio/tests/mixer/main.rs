@@ -4,7 +4,7 @@
 //! One test binary so the counting allocator covers the zero-allocation test and the
 //! support module is shared.
 
-#![allow(
+#![expect(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     clippy::indexing_slicing
