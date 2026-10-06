@@ -1,0 +1,29 @@
+mantis schedule v1
+phase Inbound
+       0 inbound.apply_intents  reads[] writes[core.velocity] res_reads[] res_writes[core.inbox]
+phase Timers
+       0 timers.cooldowns  reads[] writes[core.cooldown] res_reads[] res_writes[]
+phase Movement
+       0 movement.integrate  reads[core.velocity] writes[core.position] res_reads[] res_writes[]
+      10 movement.ground_snap  reads[] writes[core.position] res_reads[] res_writes[]
+phase Combat
+       0 combat.resolve_hits  reads[core.position,core.cooldown] writes[core.health] res_reads[] res_writes[]
+phase Effects
+       0 effects.expire  reads[] writes[core.effect] res_reads[] res_writes[]
+       0 effects.tick  reads[] writes[core.health,core.effect] res_reads[] res_writes[]
+phase AI
+       0 ai.think  reads[core.position,core.health] writes[core.brain] res_reads[] res_writes[]
+phase Scripts
+       0 scripts.step  reads[] writes[] res_reads[] res_writes[]
+phase Interest
+       0 interest.spatial_hash  reads[core.position] writes[] res_reads[] res_writes[]
+phase Outbound
+       0 outbound.encode  reads[core.position,core.velocity,core.health] writes[] res_reads[] res_writes[]
+phase Persist
+       0 persist.flush_segment  reads[] writes[] res_reads[] res_writes[core.log_writer]
+     100 persist.checkpoint  reads[] writes[] res_reads[core.log_writer] res_writes[]
+lints
+  conflict Movement: movement.integrate -> movement.ground_snap on components[core.position] resources[]
+  conflict Effects: effects.expire -> effects.tick on components[core.effect] resources[]
+  ambiguous-order Effects: effects.expire = effects.tick (equal priority)
+  conflict Persist: persist.flush_segment -> persist.checkpoint on components[] resources[core.log_writer]

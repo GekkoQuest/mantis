@@ -1,0 +1,54 @@
+/// std.party extension messages. Ids are extension kinds (1000 to 1009).
+package std_party;
+
+/// Invite a character into the sender's party (or a new one).
+message Invite inbound {
+    /// The invitee's avatar, as replicated.
+    target: entity;
+}
+
+/// Accept a pending invitation.
+message Accept inbound {
+    /// The inviting character.
+    from: u64;
+}
+
+/// Leave the party.
+message Leave inbound {
+}
+
+/// Remove a member (leader only).
+message Kick inbound {
+    /// The member's character.
+    character: u64;
+}
+
+/// You were invited.
+message Invited outbound {
+    /// The inviting character.
+    from: u64;
+}
+
+/// The party as it is now.
+message Roster outbound {
+    /// Party id.
+    party: u32;
+    /// The leader's character.
+    leader: u64;
+    /// Every member's character, the leader first.
+    members: list<u64, 5>;
+}
+
+/// You are no longer in a party.
+message Disbanded outbound {
+    /// The former party id.
+    party: u32;
+}
+
+/// The social role refused your party request (an invitation to someone in
+/// a party, an accept with no open invitation, a full party, a kick by a
+/// non-leader). `op` is one of the `OP_*` codes in the contract crate.
+message PartyRefused outbound {
+    /// The refused operation.
+    op: u8;
+}

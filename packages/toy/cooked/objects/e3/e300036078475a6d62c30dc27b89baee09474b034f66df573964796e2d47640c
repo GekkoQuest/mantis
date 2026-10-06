@@ -1,0 +1,29 @@
+// The town reference scene's heads-up display: a status bar, a party roster, and a
+// chat log, as a session's screen would show them.
+panel id=town_root style=town_screen direction=column {
+  row id=town_status style=town_bar gap=12 {
+    text id=town_zone bind="town.zone" style=town_title
+    spacer
+    text id=town_count template="{town.avatars} avatars"
+    text id=town_frame template="frame {town.frame}"
+  }
+  row id=town_body gap=8 height=grow {
+    panel id=town_party style=town_panel width=220 {
+      text id=town_party_title text="Party" style=town_title
+      list id=town_party_list bind="town.party" height=fit {
+        row gap=6 {
+          text bind="item.name"
+          spacer
+          text template="{item.health} / {item.health_max}"
+        }
+      }
+    }
+    spacer
+    panel id=town_chat style=town_panel width=420 height=220 {
+      list id=town_chat_list bind="town.chat" height=grow {
+        text template="{item.speaker}: {item.line}"
+      }
+      input id=town_chat_input placeholder="Say something" submit="town.say"
+    }
+  }
+}

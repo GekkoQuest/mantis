@@ -1,0 +1,88 @@
+# Decision 0013: cross-architecture determinism.
+# Budget row (plan 17): replay state-hash divergences over soak-10m, same build, x86_64 vs aarch64: 0.
+# Source description: crates/testkit/ci/soak-cross-arch.md
+
+name: soak-cross-arch
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  push:
+    paths:
+      - "crates/core/**"
+      - "crates/server/**"
+      - "packages/toy/**"
+      - ".github/workflows/soak-cross-arch.yml"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  soak:
+    name: soak (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Build toy-server (release)
+        run: cargo build --release -p toy-server
+      - name: Run soak-10m
+        run: target/release/toy-server soak --out soak-out --ticks 18000 --bots 64 --seed 1
+      - name: Self-replay this architecture's logs
+        run: target/release/toy-server replay soak-out/cell-1.log soak-out/cell-2.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: soak-${{ matrix.arch }}
+          path: soak-out/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: toy-server-${{ matrix.arch }}
+          path: target/release/toy-server
+          if-no-files-found: error
+
+  compare:
+    name: compare (replay on ${{ matrix.arch }})
+    needs: soak
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            other: aarch64
+            runner: ubuntu-latest
+          - arch: aarch64
+            other: x86_64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: soak-x86_64
+          path: soak-x86_64
+      - uses: actions/download-artifact@v4
+        with:
+          name: soak-aarch64
+          path: soak-aarch64
+      - uses: actions/download-artifact@v4
+        with:
+          name: toy-server-${{ matrix.arch }}
+          path: bin
+      - name: Per-tick state-hash traces are identical across architectures
+        run: diff soak-x86_64/hashes.txt soak-aarch64/hashes.txt
+      - name: This architecture replays the other architecture's logs
+        run: |
+          chmod +x bin/toy-server
+          bin/toy-server replay soak-${{ matrix.other }}/cell-1.log soak-${{ matrix.other }}/cell-2.log

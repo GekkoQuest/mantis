@@ -1,0 +1,15 @@
+[package]
+name = "std-chat-client"
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+mantis-core = { path = "../../../../../crates/core" }
+mantis-client = { path = "../../../../../crates/client" }
+mantis-ui = { path = "../../../../../crates/ui" }
+std-chat-contract = { path = "../contract" }
+
+[lints]
+workspace = true

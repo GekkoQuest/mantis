@@ -1,0 +1,6 @@
+# Frozen prefix of friends.registry. Editing this file is a reviewed protocol change.
+1020 Request
+1021 Respond
+1022 Remove
+1023 Requested
+1024 FriendList

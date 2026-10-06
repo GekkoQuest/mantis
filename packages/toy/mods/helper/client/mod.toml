@@ -1,0 +1,8 @@
+# Asks for the automation tier (emit intents); runs at the presentation tier where
+# the instance permits only that.
+[mod]
+tier = "automation"
+demote = true
+screens = ["panel"]
+theme = "style"
+scripts = ["main"]

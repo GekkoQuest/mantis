@@ -1,0 +1,67 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "packages/*/adapters/*", "packages/*/server", "packages/*/client", "packages/*/e2e", "packages/*/modules/*/contract", "packages/*/modules/*/server", "packages/*/modules/*/client"]
+exclude = []
+
+[workspace.package]
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+[workspace.dependencies]
+# Third-party versions are pinned here and only here. A crate uses `dep = { workspace = true }`.
+# An owner needing a new dependency declares it per-crate with an exact version AND messages the
+# lead; the lead lifts it into this table at the next milestone boundary.
+bytemuck = { version = "1", features = ["derive"] }
+wgpu = "30.0.1"
+winit = "0.30.13"
+pollster = "0.4.0"
+glam = { version = "0.34.1", features = ["bytemuck"] }   # presentation math only; never in simulation code (client confines it to render-thread modules by test)
+blake3 = "1"                                               # ContentHash in core and the cook; one function everywhere
+naga = { version = "30.0.1", features = ["wgsl-in"] }      # shadergen dev-dependency only; must match wgpu's naga so one copy is built
+# UI text (crates/ui only): shaping, bidi, line breaking, grapheme segmentation.
+rustybuzz = "0.20.1"
+unicode-bidi = "0.3.18"
+unicode-linebreak = "0.1.5"
+unicode-segmentation = "1.13.3"
+# Networking (crates/net only). ring instead of aws-lc-rs: aws-lc-sys needs cmake and NASM on Windows.
+quinn = { version = "0.11.12", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "net", "sync", "time", "io-util", "macros"] }
+rustls = { version = "0.23.44", default-features = false, features = ["ring", "std"] }
+rcgen = "0.14.10"                                          # self-signed certificates for development and tests only
+bytes = "1.12.1"                                           # quinn's datagram API takes bytes::Bytes
+ring = "0.17.14"                                           # Ed25519 bundle signing in the cook; already built via rustls
+mlua = { version = "0.12.2", features = ["luau"] }        # Luau binding (decision 0001); crates/script only; vendors Luau via cc, no system deps
+# Services (crates/services only): Postgres driver, Ops dashboard HTTP, TLS for the dashboard listener.
+tokio-postgres = "0.7.18"
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
+tokio-rustls = "0.26.6"
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+missing_docs = "warn"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "warn"
+float_cmp = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+
+# Debug info is the bulk of build-cache size on this host (three target dirs reached 251 GB and
+# filled the disk on 2026-10-06). Dev builds keep line tables only, and dependencies carry none.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.release]
+debug = 1
+lto = "thin"
+codegen-units = 1

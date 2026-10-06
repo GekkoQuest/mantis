@@ -1,0 +1,87 @@
+name: gates
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  gates:
+    name: build, test, clippy, fmt (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --workspace --all-targets
+      - name: Test
+        run: cargo test --workspace
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: No game names in engine or packages
+        shell: bash
+        run: |
+          if grep -rniE "\bdbo\b|dragon ?ball|wildstar" crates packages docs/decisions MANTIS-PLAN.md CLAUDE.md; then
+            echo "game-specific names are forbidden in the engine (CLAUDE.md rule 1)"; exit 1; fi
+
+  budgets:
+    name: budget rows (release, x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Server budget tests
+        run: |
+          cargo test --release -p toy-server --test play --test budget_timing -- --include-ignored --nocapture
+      - name: Exhaustive deterministic math sweep
+        run: cargo test --release -p mantis-testkit -- --include-ignored --nocapture exhaustive
+
+  fuzz-long:
+    # crates/testkit/ci/fuzz-long.md: nightly long fuzz over every contract and adapter decoder.
+    name: long fuzz (nightly)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Fuzz decoders and adapters with a dated seed
+        env:
+          MANTIS_FUZZ_ITERS: "200000"
+        run: |
+          export MANTIS_FUZZ_SEED=$(date +%Y%m%d)
+          echo "seed=$MANTIS_FUZZ_SEED"
+          cargo test --release -p mantis-testkit --test fuzz_decoders --test fuzz_adapters -- --nocapture
+
+  module-removal-matrix:
+    name: module removal matrix (plan 13)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Deleting any module folder keeps build and tests green
+        run: cargo test -p mantis-testkit --test module_wiring -- --ignored --nocapture removing_any_module_folder_keeps_build_and_tests_green

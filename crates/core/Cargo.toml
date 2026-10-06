@@ -1,0 +1,15 @@
+[package]
+name = "mantis-core"
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+blake3 = { workspace = true }
+
+[dev-dependencies]
+mantis-testkit = { path = "../testkit" }
+
+[lints]
+workspace = true

@@ -1,0 +1,21 @@
+# Crates: a plank pattern.
+textures = ["textures/planks.ppm"]
+
+[lighting]
+model = "lambert"
+
+[output]
+base_color = "rgb"
+
+[node.uv]
+op = "uv0"
+
+[node.albedo]
+op = "texture"
+slot = 0
+inputs = ["uv"]
+
+[node.rgb]
+op = "swizzle"
+components = "xyz"
+inputs = ["albedo"]

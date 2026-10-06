@@ -1,0 +1,14 @@
+[package]
+name = "std-friends-server"
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+mantis-core = { path = "../../../../../crates/core" }
+mantis-server = { path = "../../../../../crates/server" }
+std-friends-contract = { path = "../contract" }
+
+[lints]
+workspace = true

@@ -1,0 +1,86 @@
+# Simulation-crate lint configuration (decision 0013, plan principles 8 and 9).
+#
+# This file is canonical. Every simulation crate (core, server, and the
+# sim-side client crate) carries an identical copy in its own directory, and
+# the architecture test checks that the copies match.
+#
+# Standard-library float transcendentals are not bit-identical across
+# x86_64 and aarch64; use mantis_core::math instead. `sqrt` is IEEE-exact and
+# allowed (prefer mantis_core::math::sqrt, which canonicalises NaN). `mul_add`
+# and `powi` are banned because their lowering differs by target and
+# optimisation level.
+#
+# No crate may `allow` these lints (lead ruling), except the single wall-clock
+# site in the client's platform layer.
+
+disallowed-methods = [
+  { path = "f32::sin", reason = "use mantis_core::math::sin (decision 0013)" },
+  { path = "f32::cos", reason = "use mantis_core::math::cos (decision 0013)" },
+  { path = "f32::tan", reason = "use mantis_core::math::tan (decision 0013)" },
+  { path = "f32::sin_cos", reason = "use mantis_core::math::sin_cos (decision 0013)" },
+  { path = "f32::asin", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f32::acos", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f32::atan", reason = "use mantis_core::math::atan (decision 0013)" },
+  { path = "f32::atan2", reason = "use mantis_core::math::atan2 (decision 0013)" },
+  { path = "f32::sinh", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f32::cosh", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f32::tanh", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f32::asinh", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f32::acosh", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f32::atanh", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f32::exp", reason = "use mantis_core::math::exp (decision 0013)" },
+  { path = "f32::exp2", reason = "use mantis_core::math::pow (decision 0013)" },
+  { path = "f32::exp_m1", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f32::ln", reason = "use mantis_core::math::ln (decision 0013)" },
+  { path = "f32::log", reason = "use mantis_core::math::ln (decision 0013)" },
+  { path = "f32::log2", reason = "use mantis_core::math::ln (decision 0013)" },
+  { path = "f32::log10", reason = "use mantis_core::math::ln (decision 0013)" },
+  { path = "f32::ln_1p", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f32::powf", reason = "use mantis_core::math::pow (decision 0013)" },
+  { path = "f32::powi", reason = "lowering differs by target and opt level; use mantis_core::math::pow" },
+  { path = "f32::cbrt", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f32::hypot", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f32::mul_add", reason = "lowering differs by target (hardware FMA or libm)" },
+  { path = "f64::sin", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f64::cos", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f64::tan", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f64::sin_cos", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f64::asin", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f64::acos", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f64::atan", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f64::atan2", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f64::sinh", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f64::cosh", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f64::tanh", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f64::asinh", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f64::acosh", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f64::atanh", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f64::exp", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f64::exp2", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f64::exp_m1", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f64::ln", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f64::log", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f64::log2", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f64::log10", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f64::ln_1p", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f64::powf", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f64::powi", reason = "lowering differs by target and opt level" },
+  { path = "f64::cbrt", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f64::hypot", reason = "not deterministic across architectures (decision 0013)" },
+  { path = "f64::mul_add", reason = "lowering differs by target (hardware FMA or libm)" },
+  { path = "std::time::Instant::now", reason = "no wall clock in simulation; inject a Clock (principle 8)" },
+  { path = "std::time::SystemTime::now", reason = "no wall clock in simulation; inject a Clock (principle 8)" },
+]
+
+disallowed-types = [
+  { path = "std::time::Instant", reason = "no wall clock in simulation; inject a Clock (principle 8)" },
+  { path = "std::time::SystemTime", reason = "no wall clock in simulation; inject a Clock (principle 8)" },
+  { path = "std::collections::HashMap", reason = "randomly seeded iteration order; use BTreeMap or indexed storage" },
+  { path = "std::collections::HashSet", reason = "randomly seeded iteration order; use BTreeSet or a bitset" },
+  { path = "std::collections::hash_map::RandomState", reason = "randomly seeded; breaks determinism" },
+]
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true

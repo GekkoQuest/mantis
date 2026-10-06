@@ -1,0 +1,19 @@
+[package]
+name = "mantis-ui"
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+rustybuzz = { workspace = true }
+unicode-bidi = { workspace = true }
+unicode-linebreak = { workspace = true }
+unicode-segmentation = { workspace = true }
+bytemuck = { workspace = true }
+
+[dev-dependencies]
+mantis-testkit = { path = "../testkit" }
+
+[lints]
+workspace = true

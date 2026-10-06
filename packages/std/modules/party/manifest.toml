@@ -1,0 +1,9 @@
+# std.party: small groups of characters that act together.
+[module]
+key = "std.party"
+version = "0.1.0"
+schemas = ["contract/schema/party.idl"]
+
+[flags]
+enabled = true
+invites = true

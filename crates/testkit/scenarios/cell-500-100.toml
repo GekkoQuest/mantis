@@ -1,0 +1,21 @@
+# One cell, 500 avatars, 100 attached native clients, 30 Hz.
+name = "cell-500-100"
+tier = "dev-desktop-2026"
+builder = "toy_server::scenario::Crowd::cell_500_100"
+entities = 500
+clients = 100
+tick_rate_hz = 30
+layout = "4 m grid, 25 columns by 20 rows; three in four avatars run in slow circles, one in four stands"
+clients_ack = "every snapshot, on the tick it is sent (a clean link)"
+workers = "min(available threads - 1, 4) for timing; 3 for the allocation row"
+interest_budget = 32   # remotes per snapshot, from packages/toy/package.toml
+
+[rows]
+cell_tick_p99_ms = { target = 4.0, measured = 0.63, test = "budget_timing.rs", profile = "release" }
+per_client_encode_p99_us = { target = 20.0, measured = 13.6, test = "budget_timing.rs", profile = "release" }
+allocations_per_tick = { target = 0, measured = 0, test = "budget_alloc.rs", profile = "any" }
+snapshot_bytes_per_client_per_s = { target = 20480, measured = 16982, test = "budget_alloc.rs", profile = "any" }
+
+[run]
+any = "cargo test -p toy-server --test budget_alloc -- --nocapture"
+release = "cargo test --release -p toy-server --test budget_timing -- --nocapture"

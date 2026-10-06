@@ -1,0 +1,12 @@
+# std.chat: talking to nearby characters, the party, the guild, or one character.
+[module]
+key = "std.chat"
+version = "0.1.0"
+schemas = ["contract/schema/chat.idl"]
+
+[dependencies]
+"std.party" = "0.1"
+
+[flags]
+enabled = true
+whispers = true

@@ -1,0 +1,53 @@
+# Generated toy sector (-1, 0): flat ground and a few crates.
+[sector]
+x = -1
+z = 0
+size = 32.0
+
+[ground]
+cell = 4.0
+flat = 0.0
+material = "materials/ground.material.toml"
+
+[streaming]
+preload_radius = 16.0
+
+[bake]
+probe_spacing = 4.0
+probe_height = 6.0
+samples = 32
+lightmap_texels_per_meter = 8.0
+lightmap_max_size = 128
+albedo = [0.5, 0.5, 0.5]
+
+[bake.noon]
+time = 0.5
+sun_direction = [0.35, -1.0, 0.25]
+sun_color = [2.0, 1.95, 1.85]
+sky_color = [0.35, 0.45, 0.6]
+
+[bake.dusk]
+time = 0.8
+sun_direction = [-0.9, -0.35, 0.2]
+sun_color = [1.2, 0.6, 0.35]
+sky_color = [0.15, 0.12, 0.2]
+
+[placement.crate_01]
+mesh = "meshes/crate.obj"
+material = "materials/crate.material.toml"
+position = [-14.0, 0.0, 8.0]
+yaw = 20.0
+scale = 2.0
+lods = [200.0]
+casts_shadows = true
+lightmapped = true
+
+[placement.crate_02]
+mesh = "meshes/crate.obj"
+material = "materials/crate.material.toml"
+position = [-26.0, 0.0, 22.0]
+yaw = 0.0
+scale = 2.0
+lods = [200.0]
+casts_shadows = true
+lightmapped = true

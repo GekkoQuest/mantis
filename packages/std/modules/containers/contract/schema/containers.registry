@@ -1,0 +1,7 @@
+# std.containers extension kinds. Append-only.
+1040 MoveItem
+1041 SplitStack
+1042 DestroyItem
+1043 Grant
+1044 ShowBag
+1045 Bag

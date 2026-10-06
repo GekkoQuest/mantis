@@ -1,0 +1,13 @@
+# std.auction extension kinds. Append-only.
+1060 retired Post
+1061 retired BuyListing
+1062 retired CancelListing
+1063 retired Search
+1064 retired Listings
+1065 PostLot
+1066 BuyLot
+1067 CancelLot
+1068 SearchLots
+1069 LotPage
+1160 AuctionResult
+1161 LotPageOf

@@ -1,0 +1,113 @@
+/// std.guild extension messages. Ids are extension kinds (1080 to 1099).
+package std_guild;
+
+/// Found a guild and lead it.
+message CreateGuild inbound {
+    /// Its name (3 to 24 bytes: letters, digits, spaces, hyphens).
+    name: string<24>;
+}
+
+/// Invite a character into the sender's guild (leader or officer).
+message InviteToGuild inbound {
+    /// The invitee's avatar, as replicated.
+    target: entity;
+}
+
+/// Accept a pending invitation.
+message AcceptGuild inbound {
+    /// The guild.
+    guild: u32;
+}
+
+/// Leave the guild.
+message LeaveGuild inbound {
+}
+
+/// Remove a member who ranks below the sender.
+message RemoveFromGuild inbound {
+    /// The member's character.
+    character: u64;
+}
+
+/// Set a member's rank (leader only); naming the leader rank passes the
+/// lead.
+message SetGuildRank inbound {
+    /// The member's character.
+    character: u64;
+    /// The rank: 0 leader, 1 officer, 2 member.
+    rank: u8;
+}
+
+/// Disband the guild (leader only).
+message DisbandGuild inbound {
+}
+
+/// You are in a guild (on founding, joining, and arriving in a cell). Its
+/// roster follows in `GuildRoster` pages.
+message GuildJoined outbound {
+    /// The guild.
+    guild: u32;
+    /// Its name.
+    name: string<24>;
+    /// Your rank.
+    rank: u8;
+}
+
+/// One member and rank.
+struct GuildMember {
+    /// The member's character.
+    character: u64;
+    /// Its rank.
+    rank: u8;
+}
+
+/// A page of the guild's roster; `first` starts a new roster.
+message GuildRoster outbound {
+    /// The guild.
+    guild: u32;
+    /// The first page.
+    first: bool;
+    /// Members (at most 40 per page).
+    members: list<GuildMember, 40>;
+}
+
+/// A member joined, or its rank changed.
+message GuildMemberChanged outbound {
+    /// The guild.
+    guild: u32;
+    /// The member.
+    character: u64;
+    /// Its rank.
+    rank: u8;
+}
+
+/// A member left or was removed (you, when `character` is yours).
+message GuildMemberGone outbound {
+    /// The guild.
+    guild: u32;
+    /// The former member.
+    character: u64;
+}
+
+/// Your guild was disbanded.
+message GuildDisbanded outbound {
+    /// The guild.
+    guild: u32;
+}
+
+/// You were invited into a guild.
+message GuildInvited outbound {
+    /// The guild.
+    guild: u32;
+    /// Its name.
+    name: string<24>;
+    /// The inviting character.
+    from: u64;
+}
+
+/// The social role refused your guild request. `op` is one of the `OP_*`
+/// codes in the contract crate.
+message GuildRefused outbound {
+    /// The refused operation.
+    op: u8;
+}

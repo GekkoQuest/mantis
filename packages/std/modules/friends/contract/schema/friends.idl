@@ -1,0 +1,62 @@
+/// std.friends extension messages. Ids are extension kinds (1020 to 1029).
+package std_friends;
+
+/// Ask a character to be friends.
+message Request inbound {
+    /// The character asked.
+    character: u64;
+}
+
+/// Answer a request.
+message Respond inbound {
+    /// The character who asked.
+    character: u64;
+    /// True to accept.
+    accept: bool;
+}
+
+/// End a friendship.
+message Remove inbound {
+    /// The friend.
+    character: u64;
+}
+
+/// Someone asks to be friends.
+message Requested outbound {
+    /// The asking character.
+    from: u64;
+}
+
+/// Your friends, and which of them are in this cell.
+message FriendList outbound {
+    /// Friends' characters, ascending.
+    friends: list<u64, 50>;
+    /// Bit i set when friend i is present.
+    present: u64;
+}
+
+/// Ask for your list and your open requests (on login, for example).
+message ShowFriends inbound {
+}
+
+/// Requests waiting: asked of you, and asked by you.
+message Pending outbound {
+    /// Characters asking you.
+    incoming: list<u64, 20>;
+    /// Characters you asked.
+    outgoing: list<u64, 20>;
+}
+
+/// A character declined your request.
+message Declined outbound {
+    /// The character who declined.
+    by: u64;
+}
+
+/// The social role refused your friends request (asking a friend or
+/// yourself, a full list, too many waiting requests, answering a request
+/// that is not there). `op` is one of the `OP_*` codes in the contract crate.
+message FriendRefused outbound {
+    /// The refused operation.
+    op: u8;
+}

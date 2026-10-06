@@ -1,0 +1,8 @@
+# std.containers: each character's bag of item stacks and its gold.
+[module]
+key = "std.containers"
+version = "0.1.0"
+schemas = ["contract/schema/containers.idl"]
+
+[flags]
+enabled = true

@@ -1,0 +1,15 @@
+# std.mail extension kinds. Append-only.
+1030 retired Send
+1031 retired TakeAttachments
+1032 retired DeleteMail
+1033 retired ListMail
+1034 ReadMail
+1035 retired MailList
+1036 MailText
+1037 NewMail
+1038 ListMailPage
+1039 MailPage
+1130 SendMail
+1131 TakeMail
+1132 DeleteLetter
+1133 MailResult

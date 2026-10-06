@@ -1,0 +1,5 @@
+# std.titles extension kinds. Append-only.
+1070 SetActiveTitle
+1071 GrantTitle
+1072 ShowTitles
+1073 Titles

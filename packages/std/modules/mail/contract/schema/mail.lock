@@ -1,0 +1,9 @@
+# Frozen prefix of mail.registry. Editing this file is a reviewed protocol change.
+1030 Send
+1031 TakeAttachments
+1032 DeleteMail
+1033 ListMail
+1034 ReadMail
+1035 MailList
+1036 MailText
+1037 NewMail

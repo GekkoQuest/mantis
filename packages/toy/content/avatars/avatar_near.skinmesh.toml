@@ -1,0 +1,3194 @@
+# Town avatar, near detail.
+mesh = "avatars/avatar_near.skin.obj"
+
+[weights.1]
+joints = [6]
+weights = [1.0]
+
+[weights.2]
+joints = [6]
+weights = [1.0]
+
+[weights.3]
+joints = [6]
+weights = [1.0]
+
+[weights.4]
+joints = [6]
+weights = [1.0]
+
+[weights.5]
+joints = [6]
+weights = [1.0]
+
+[weights.6]
+joints = [6]
+weights = [1.0]
+
+[weights.7]
+joints = [6]
+weights = [1.0]
+
+[weights.8]
+joints = [6]
+weights = [1.0]
+
+[weights.9]
+joints = [6]
+weights = [1.0]
+
+[weights.10]
+joints = [6]
+weights = [1.0]
+
+[weights.11]
+joints = [6]
+weights = [1.0]
+
+[weights.12]
+joints = [6]
+weights = [1.0]
+
+[weights.13]
+joints = [6]
+weights = [1.0]
+
+[weights.14]
+joints = [6]
+weights = [1.0]
+
+[weights.15]
+joints = [6]
+weights = [1.0]
+
+[weights.16]
+joints = [6]
+weights = [1.0]
+
+[weights.17]
+joints = [6]
+weights = [1.0]
+
+[weights.18]
+joints = [6]
+weights = [1.0]
+
+[weights.19]
+joints = [6]
+weights = [1.0]
+
+[weights.20]
+joints = [6]
+weights = [1.0]
+
+[weights.21]
+joints = [6]
+weights = [1.0]
+
+[weights.22]
+joints = [6]
+weights = [1.0]
+
+[weights.23]
+joints = [6]
+weights = [1.0]
+
+[weights.24]
+joints = [6]
+weights = [1.0]
+
+[weights.25]
+joints = [6]
+weights = [1.0]
+
+[weights.26]
+joints = [6]
+weights = [1.0]
+
+[weights.27]
+joints = [6]
+weights = [1.0]
+
+[weights.28]
+joints = [6]
+weights = [1.0]
+
+[weights.29]
+joints = [6]
+weights = [1.0]
+
+[weights.30]
+joints = [6]
+weights = [1.0]
+
+[weights.31]
+joints = [6]
+weights = [1.0]
+
+[weights.32]
+joints = [6]
+weights = [1.0]
+
+[weights.33]
+joints = [6]
+weights = [1.0]
+
+[weights.34]
+joints = [6]
+weights = [1.0]
+
+[weights.35]
+joints = [6]
+weights = [1.0]
+
+[weights.36]
+joints = [6]
+weights = [1.0]
+
+[weights.37]
+joints = [6]
+weights = [1.0]
+
+[weights.38]
+joints = [6]
+weights = [1.0]
+
+[weights.39]
+joints = [6]
+weights = [1.0]
+
+[weights.40]
+joints = [6]
+weights = [1.0]
+
+[weights.41]
+joints = [6]
+weights = [1.0]
+
+[weights.42]
+joints = [6]
+weights = [1.0]
+
+[weights.43]
+joints = [6]
+weights = [1.0]
+
+[weights.44]
+joints = [6]
+weights = [1.0]
+
+[weights.45]
+joints = [6]
+weights = [1.0]
+
+[weights.46]
+joints = [6]
+weights = [1.0]
+
+[weights.47]
+joints = [6]
+weights = [1.0]
+
+[weights.48]
+joints = [6]
+weights = [1.0]
+
+[weights.49]
+joints = [6]
+weights = [1.0]
+
+[weights.50]
+joints = [6]
+weights = [1.0]
+
+[weights.51]
+joints = [6]
+weights = [1.0]
+
+[weights.52]
+joints = [6]
+weights = [1.0]
+
+[weights.53]
+joints = [6]
+weights = [1.0]
+
+[weights.54]
+joints = [6]
+weights = [1.0]
+
+[weights.55]
+joints = [6]
+weights = [1.0]
+
+[weights.56]
+joints = [6]
+weights = [1.0]
+
+[weights.57]
+joints = [6]
+weights = [1.0]
+
+[weights.58]
+joints = [6]
+weights = [1.0]
+
+[weights.59]
+joints = [6]
+weights = [1.0]
+
+[weights.60]
+joints = [6]
+weights = [1.0]
+
+[weights.61]
+joints = [6]
+weights = [1.0]
+
+[weights.62]
+joints = [6]
+weights = [1.0]
+
+[weights.63]
+joints = [6]
+weights = [1.0]
+
+[weights.64]
+joints = [6]
+weights = [1.0]
+
+[weights.65]
+joints = [6]
+weights = [1.0]
+
+[weights.66]
+joints = [6]
+weights = [1.0]
+
+[weights.67]
+joints = [6]
+weights = [1.0]
+
+[weights.68]
+joints = [6]
+weights = [1.0]
+
+[weights.69]
+joints = [6]
+weights = [1.0]
+
+[weights.70]
+joints = [6]
+weights = [1.0]
+
+[weights.71]
+joints = [6]
+weights = [1.0]
+
+[weights.72]
+joints = [6]
+weights = [1.0]
+
+[weights.73]
+joints = [6]
+weights = [1.0]
+
+[weights.74]
+joints = [6]
+weights = [1.0]
+
+[weights.75]
+joints = [6]
+weights = [1.0]
+
+[weights.76]
+joints = [6]
+weights = [1.0]
+
+[weights.77]
+joints = [6]
+weights = [1.0]
+
+[weights.78]
+joints = [6]
+weights = [1.0]
+
+[weights.79]
+joints = [6]
+weights = [1.0]
+
+[weights.80]
+joints = [6]
+weights = [1.0]
+
+[weights.81]
+joints = [6]
+weights = [1.0]
+
+[weights.82]
+joints = [6]
+weights = [1.0]
+
+[weights.83]
+joints = [6]
+weights = [1.0]
+
+[weights.84]
+joints = [6]
+weights = [1.0]
+
+[weights.85]
+joints = [6]
+weights = [1.0]
+
+[weights.86]
+joints = [6]
+weights = [1.0]
+
+[weights.87]
+joints = [6]
+weights = [1.0]
+
+[weights.88]
+joints = [6]
+weights = [1.0]
+
+[weights.89]
+joints = [6]
+weights = [1.0]
+
+[weights.90]
+joints = [6]
+weights = [1.0]
+
+[weights.91]
+joints = [6]
+weights = [1.0]
+
+[weights.92]
+joints = [6]
+weights = [1.0]
+
+[weights.93]
+joints = [6]
+weights = [1.0]
+
+[weights.94]
+joints = [6]
+weights = [1.0]
+
+[weights.95]
+joints = [6]
+weights = [1.0]
+
+[weights.96]
+joints = [6]
+weights = [1.0]
+
+[weights.97]
+joints = [6]
+weights = [1.0]
+
+[weights.98]
+joints = [6]
+weights = [1.0]
+
+[weights.99]
+joints = [6]
+weights = [1.0]
+
+[weights.100]
+joints = [6]
+weights = [1.0]
+
+[weights.101]
+joints = [6]
+weights = [1.0]
+
+[weights.102]
+joints = [6]
+weights = [1.0]
+
+[weights.103]
+joints = [6]
+weights = [1.0]
+
+[weights.104]
+joints = [6]
+weights = [1.0]
+
+[weights.105]
+joints = [6]
+weights = [1.0]
+
+[weights.106]
+joints = [6]
+weights = [1.0]
+
+[weights.107]
+joints = [6]
+weights = [1.0]
+
+[weights.108]
+joints = [6]
+weights = [1.0]
+
+[weights.109]
+joints = [6]
+weights = [1.0]
+
+[weights.110]
+joints = [6]
+weights = [1.0]
+
+[weights.111]
+joints = [6]
+weights = [1.0]
+
+[weights.112]
+joints = [6]
+weights = [1.0]
+
+[weights.113]
+joints = [6]
+weights = [1.0]
+
+[weights.114]
+joints = [6]
+weights = [1.0]
+
+[weights.115]
+joints = [7]
+weights = [1.0]
+
+[weights.116]
+joints = [7]
+weights = [1.0]
+
+[weights.117]
+joints = [7]
+weights = [1.0]
+
+[weights.118]
+joints = [7]
+weights = [1.0]
+
+[weights.119]
+joints = [7]
+weights = [1.0]
+
+[weights.120]
+joints = [7]
+weights = [1.0]
+
+[weights.121]
+joints = [7]
+weights = [1.0]
+
+[weights.122]
+joints = [7]
+weights = [1.0]
+
+[weights.123]
+joints = [7]
+weights = [1.0]
+
+[weights.124]
+joints = [7]
+weights = [1.0]
+
+[weights.125]
+joints = [7]
+weights = [1.0]
+
+[weights.126]
+joints = [7]
+weights = [1.0]
+
+[weights.127]
+joints = [7]
+weights = [1.0]
+
+[weights.128]
+joints = [7]
+weights = [1.0]
+
+[weights.129]
+joints = [7]
+weights = [1.0]
+
+[weights.130]
+joints = [7]
+weights = [1.0]
+
+[weights.131]
+joints = [7]
+weights = [1.0]
+
+[weights.132]
+joints = [7]
+weights = [1.0]
+
+[weights.133]
+joints = [7]
+weights = [1.0]
+
+[weights.134]
+joints = [7]
+weights = [1.0]
+
+[weights.135]
+joints = [7]
+weights = [1.0]
+
+[weights.136]
+joints = [7]
+weights = [1.0]
+
+[weights.137]
+joints = [7]
+weights = [1.0]
+
+[weights.138]
+joints = [7]
+weights = [1.0]
+
+[weights.139]
+joints = [7]
+weights = [1.0]
+
+[weights.140]
+joints = [7]
+weights = [1.0]
+
+[weights.141]
+joints = [7]
+weights = [1.0]
+
+[weights.142]
+joints = [7]
+weights = [1.0]
+
+[weights.143]
+joints = [7]
+weights = [1.0]
+
+[weights.144]
+joints = [7]
+weights = [1.0]
+
+[weights.145]
+joints = [7]
+weights = [1.0]
+
+[weights.146]
+joints = [7]
+weights = [1.0]
+
+[weights.147]
+joints = [7]
+weights = [1.0]
+
+[weights.148]
+joints = [7]
+weights = [1.0]
+
+[weights.149]
+joints = [7]
+weights = [1.0]
+
+[weights.150]
+joints = [7]
+weights = [1.0]
+
+[weights.151]
+joints = [7]
+weights = [1.0]
+
+[weights.152]
+joints = [7]
+weights = [1.0]
+
+[weights.153]
+joints = [7]
+weights = [1.0]
+
+[weights.154]
+joints = [7]
+weights = [1.0]
+
+[weights.155]
+joints = [7]
+weights = [1.0]
+
+[weights.156]
+joints = [7]
+weights = [1.0]
+
+[weights.157]
+joints = [7]
+weights = [1.0]
+
+[weights.158]
+joints = [7]
+weights = [1.0]
+
+[weights.159]
+joints = [7]
+weights = [1.0]
+
+[weights.160]
+joints = [7]
+weights = [1.0]
+
+[weights.161]
+joints = [7]
+weights = [1.0]
+
+[weights.162]
+joints = [7]
+weights = [1.0]
+
+[weights.163]
+joints = [7]
+weights = [1.0]
+
+[weights.164]
+joints = [7]
+weights = [1.0]
+
+[weights.165]
+joints = [7]
+weights = [1.0]
+
+[weights.166]
+joints = [7]
+weights = [1.0]
+
+[weights.167]
+joints = [7]
+weights = [1.0]
+
+[weights.168]
+joints = [7]
+weights = [1.0]
+
+[weights.169]
+joints = [7]
+weights = [1.0]
+
+[weights.170]
+joints = [7]
+weights = [1.0]
+
+[weights.171]
+joints = [7]
+weights = [1.0]
+
+[weights.172]
+joints = [7]
+weights = [1.0]
+
+[weights.173]
+joints = [7]
+weights = [1.0]
+
+[weights.174]
+joints = [7]
+weights = [1.0]
+
+[weights.175]
+joints = [7]
+weights = [1.0]
+
+[weights.176]
+joints = [7]
+weights = [1.0]
+
+[weights.177]
+joints = [7]
+weights = [1.0]
+
+[weights.178]
+joints = [7]
+weights = [1.0]
+
+[weights.179]
+joints = [7]
+weights = [1.0]
+
+[weights.180]
+joints = [7]
+weights = [1.0]
+
+[weights.181]
+joints = [7]
+weights = [1.0]
+
+[weights.182]
+joints = [7]
+weights = [1.0]
+
+[weights.183]
+joints = [7]
+weights = [1.0]
+
+[weights.184]
+joints = [7]
+weights = [1.0]
+
+[weights.185]
+joints = [7]
+weights = [1.0]
+
+[weights.186]
+joints = [7]
+weights = [1.0]
+
+[weights.187]
+joints = [7]
+weights = [1.0]
+
+[weights.188]
+joints = [7]
+weights = [1.0]
+
+[weights.189]
+joints = [7]
+weights = [1.0]
+
+[weights.190]
+joints = [7]
+weights = [1.0]
+
+[weights.191]
+joints = [7]
+weights = [1.0]
+
+[weights.192]
+joints = [7]
+weights = [1.0]
+
+[weights.193]
+joints = [7]
+weights = [1.0]
+
+[weights.194]
+joints = [7]
+weights = [1.0]
+
+[weights.195]
+joints = [7]
+weights = [1.0]
+
+[weights.196]
+joints = [7]
+weights = [1.0]
+
+[weights.197]
+joints = [7]
+weights = [1.0]
+
+[weights.198]
+joints = [7]
+weights = [1.0]
+
+[weights.199]
+joints = [7]
+weights = [1.0]
+
+[weights.200]
+joints = [7]
+weights = [1.0]
+
+[weights.201]
+joints = [7]
+weights = [1.0]
+
+[weights.202]
+joints = [7]
+weights = [1.0]
+
+[weights.203]
+joints = [7]
+weights = [1.0]
+
+[weights.204]
+joints = [7]
+weights = [1.0]
+
+[weights.205]
+joints = [7]
+weights = [1.0]
+
+[weights.206]
+joints = [7]
+weights = [1.0]
+
+[weights.207]
+joints = [7]
+weights = [1.0]
+
+[weights.208]
+joints = [7]
+weights = [1.0]
+
+[weights.209]
+joints = [7]
+weights = [1.0]
+
+[weights.210]
+joints = [7]
+weights = [1.0]
+
+[weights.211]
+joints = [7]
+weights = [1.0]
+
+[weights.212]
+joints = [7]
+weights = [1.0]
+
+[weights.213]
+joints = [7]
+weights = [1.0]
+
+[weights.214]
+joints = [7]
+weights = [1.0]
+
+[weights.215]
+joints = [7]
+weights = [1.0]
+
+[weights.216]
+joints = [7]
+weights = [1.0]
+
+[weights.217]
+joints = [7]
+weights = [1.0]
+
+[weights.218]
+joints = [7]
+weights = [1.0]
+
+[weights.219]
+joints = [7]
+weights = [1.0]
+
+[weights.220]
+joints = [7]
+weights = [1.0]
+
+[weights.221]
+joints = [7]
+weights = [1.0]
+
+[weights.222]
+joints = [7]
+weights = [1.0]
+
+[weights.223]
+joints = [7]
+weights = [1.0]
+
+[weights.224]
+joints = [7]
+weights = [1.0]
+
+[weights.225]
+joints = [7]
+weights = [1.0]
+
+[weights.226]
+joints = [7]
+weights = [1.0]
+
+[weights.227]
+joints = [7]
+weights = [1.0]
+
+[weights.228]
+joints = [7]
+weights = [1.0]
+
+[weights.229]
+joints = [1]
+weights = [1.0]
+
+[weights.230]
+joints = [1]
+weights = [1.0]
+
+[weights.231]
+joints = [1]
+weights = [1.0]
+
+[weights.232]
+joints = [1]
+weights = [1.0]
+
+[weights.233]
+joints = [1]
+weights = [1.0]
+
+[weights.234]
+joints = [1]
+weights = [1.0]
+
+[weights.235]
+joints = [1]
+weights = [1.0]
+
+[weights.236]
+joints = [1]
+weights = [1.0]
+
+[weights.237]
+joints = [1]
+weights = [1.0]
+
+[weights.238]
+joints = [1]
+weights = [1.0]
+
+[weights.239]
+joints = [1]
+weights = [1.0]
+
+[weights.240]
+joints = [1]
+weights = [1.0]
+
+[weights.241]
+joints = [1]
+weights = [1.0]
+
+[weights.242]
+joints = [1]
+weights = [1.0]
+
+[weights.243]
+joints = [1]
+weights = [1.0]
+
+[weights.244]
+joints = [1]
+weights = [1.0]
+
+[weights.245]
+joints = [1]
+weights = [1.0]
+
+[weights.246]
+joints = [1]
+weights = [1.0]
+
+[weights.247]
+joints = [1]
+weights = [1.0]
+
+[weights.248]
+joints = [1]
+weights = [1.0]
+
+[weights.249]
+joints = [1]
+weights = [1.0]
+
+[weights.250]
+joints = [1]
+weights = [1.0]
+
+[weights.251]
+joints = [1]
+weights = [1.0]
+
+[weights.252]
+joints = [1]
+weights = [1.0]
+
+[weights.253]
+joints = [1]
+weights = [1.0]
+
+[weights.254]
+joints = [1]
+weights = [1.0]
+
+[weights.255]
+joints = [1]
+weights = [1.0]
+
+[weights.256]
+joints = [1]
+weights = [1.0]
+
+[weights.257]
+joints = [1]
+weights = [1.0]
+
+[weights.258]
+joints = [1]
+weights = [1.0]
+
+[weights.259]
+joints = [1]
+weights = [1.0]
+
+[weights.260]
+joints = [1]
+weights = [1.0]
+
+[weights.261]
+joints = [1]
+weights = [1.0]
+
+[weights.262]
+joints = [1]
+weights = [1.0]
+
+[weights.263]
+joints = [1]
+weights = [1.0]
+
+[weights.264]
+joints = [1]
+weights = [1.0]
+
+[weights.265]
+joints = [1]
+weights = [1.0]
+
+[weights.266]
+joints = [1]
+weights = [1.0]
+
+[weights.267]
+joints = [1]
+weights = [1.0]
+
+[weights.268]
+joints = [1]
+weights = [1.0]
+
+[weights.269]
+joints = [1]
+weights = [1.0]
+
+[weights.270]
+joints = [1]
+weights = [1.0]
+
+[weights.271]
+joints = [1]
+weights = [1.0]
+
+[weights.272]
+joints = [1]
+weights = [1.0]
+
+[weights.273]
+joints = [1]
+weights = [1.0]
+
+[weights.274]
+joints = [1]
+weights = [1.0]
+
+[weights.275]
+joints = [1]
+weights = [1.0]
+
+[weights.276]
+joints = [1]
+weights = [1.0]
+
+[weights.277]
+joints = [1]
+weights = [1.0]
+
+[weights.278]
+joints = [1]
+weights = [1.0]
+
+[weights.279]
+joints = [1]
+weights = [1.0]
+
+[weights.280]
+joints = [1]
+weights = [1.0]
+
+[weights.281]
+joints = [1]
+weights = [1.0]
+
+[weights.282]
+joints = [1]
+weights = [1.0]
+
+[weights.283]
+joints = [1]
+weights = [1.0]
+
+[weights.284]
+joints = [1]
+weights = [1.0]
+
+[weights.285]
+joints = [1]
+weights = [1.0]
+
+[weights.286]
+joints = [1]
+weights = [1.0]
+
+[weights.287]
+joints = [1]
+weights = [1.0]
+
+[weights.288]
+joints = [1]
+weights = [1.0]
+
+[weights.289]
+joints = [1]
+weights = [1.0]
+
+[weights.290]
+joints = [1]
+weights = [1.0]
+
+[weights.291]
+joints = [1]
+weights = [1.0]
+
+[weights.292]
+joints = [1]
+weights = [1.0]
+
+[weights.293]
+joints = [1]
+weights = [1.0]
+
+[weights.294]
+joints = [1]
+weights = [1.0]
+
+[weights.295]
+joints = [1]
+weights = [1.0]
+
+[weights.296]
+joints = [1]
+weights = [1.0]
+
+[weights.297]
+joints = [1]
+weights = [1.0]
+
+[weights.298]
+joints = [1]
+weights = [1.0]
+
+[weights.299]
+joints = [1]
+weights = [1.0]
+
+[weights.300]
+joints = [1]
+weights = [1.0]
+
+[weights.301]
+joints = [1]
+weights = [1.0]
+
+[weights.302]
+joints = [1]
+weights = [1.0]
+
+[weights.303]
+joints = [1]
+weights = [1.0]
+
+[weights.304]
+joints = [1]
+weights = [1.0]
+
+[weights.305]
+joints = [1]
+weights = [1.0]
+
+[weights.306]
+joints = [1]
+weights = [1.0]
+
+[weights.307]
+joints = [1]
+weights = [1.0]
+
+[weights.308]
+joints = [1]
+weights = [1.0]
+
+[weights.309]
+joints = [1]
+weights = [1.0]
+
+[weights.310]
+joints = [1]
+weights = [1.0]
+
+[weights.311]
+joints = [1]
+weights = [1.0]
+
+[weights.312]
+joints = [1]
+weights = [1.0]
+
+[weights.313]
+joints = [1]
+weights = [1.0]
+
+[weights.314]
+joints = [1]
+weights = [1.0]
+
+[weights.315]
+joints = [1]
+weights = [1.0]
+
+[weights.316]
+joints = [1]
+weights = [1.0]
+
+[weights.317]
+joints = [1]
+weights = [1.0]
+
+[weights.318]
+joints = [1]
+weights = [1.0]
+
+[weights.319]
+joints = [1]
+weights = [1.0]
+
+[weights.320]
+joints = [1]
+weights = [1.0]
+
+[weights.321]
+joints = [1]
+weights = [1.0]
+
+[weights.322]
+joints = [1]
+weights = [1.0]
+
+[weights.323]
+joints = [1]
+weights = [1.0]
+
+[weights.324]
+joints = [1]
+weights = [1.0]
+
+[weights.325]
+joints = [1]
+weights = [1.0]
+
+[weights.326]
+joints = [1]
+weights = [1.0]
+
+[weights.327]
+joints = [1]
+weights = [1.0]
+
+[weights.328]
+joints = [1]
+weights = [1.0]
+
+[weights.329]
+joints = [1]
+weights = [1.0]
+
+[weights.330]
+joints = [1]
+weights = [1.0]
+
+[weights.331]
+joints = [1]
+weights = [1.0]
+
+[weights.332]
+joints = [1]
+weights = [1.0]
+
+[weights.333]
+joints = [1]
+weights = [1.0]
+
+[weights.334]
+joints = [1]
+weights = [1.0]
+
+[weights.335]
+joints = [1]
+weights = [1.0]
+
+[weights.336]
+joints = [1]
+weights = [1.0]
+
+[weights.337]
+joints = [1]
+weights = [1.0]
+
+[weights.338]
+joints = [1]
+weights = [1.0]
+
+[weights.339]
+joints = [1]
+weights = [1.0]
+
+[weights.340]
+joints = [1]
+weights = [1.0]
+
+[weights.341]
+joints = [1]
+weights = [1.0]
+
+[weights.342]
+joints = [1]
+weights = [1.0]
+
+[weights.343]
+joints = [2]
+weights = [1.0]
+
+[weights.344]
+joints = [2]
+weights = [1.0]
+
+[weights.345]
+joints = [2]
+weights = [1.0]
+
+[weights.346]
+joints = [2]
+weights = [1.0]
+
+[weights.347]
+joints = [2]
+weights = [1.0]
+
+[weights.348]
+joints = [2]
+weights = [1.0]
+
+[weights.349]
+joints = [2]
+weights = [1.0]
+
+[weights.350]
+joints = [2]
+weights = [1.0]
+
+[weights.351]
+joints = [2]
+weights = [1.0]
+
+[weights.352]
+joints = [2]
+weights = [1.0]
+
+[weights.353]
+joints = [2]
+weights = [1.0]
+
+[weights.354]
+joints = [2]
+weights = [1.0]
+
+[weights.355]
+joints = [2]
+weights = [1.0]
+
+[weights.356]
+joints = [2]
+weights = [1.0]
+
+[weights.357]
+joints = [2]
+weights = [1.0]
+
+[weights.358]
+joints = [2]
+weights = [1.0]
+
+[weights.359]
+joints = [2]
+weights = [1.0]
+
+[weights.360]
+joints = [2]
+weights = [1.0]
+
+[weights.361]
+joints = [2]
+weights = [1.0]
+
+[weights.362]
+joints = [2]
+weights = [1.0]
+
+[weights.363]
+joints = [2]
+weights = [1.0]
+
+[weights.364]
+joints = [2]
+weights = [1.0]
+
+[weights.365]
+joints = [2]
+weights = [1.0]
+
+[weights.366]
+joints = [2]
+weights = [1.0]
+
+[weights.367]
+joints = [2]
+weights = [1.0]
+
+[weights.368]
+joints = [2]
+weights = [1.0]
+
+[weights.369]
+joints = [2]
+weights = [1.0]
+
+[weights.370]
+joints = [2]
+weights = [1.0]
+
+[weights.371]
+joints = [2]
+weights = [1.0]
+
+[weights.372]
+joints = [2]
+weights = [1.0]
+
+[weights.373]
+joints = [2]
+weights = [1.0]
+
+[weights.374]
+joints = [2]
+weights = [1.0]
+
+[weights.375]
+joints = [2]
+weights = [1.0]
+
+[weights.376]
+joints = [2]
+weights = [1.0]
+
+[weights.377]
+joints = [2]
+weights = [1.0]
+
+[weights.378]
+joints = [2]
+weights = [1.0]
+
+[weights.379]
+joints = [2]
+weights = [1.0]
+
+[weights.380]
+joints = [2]
+weights = [1.0]
+
+[weights.381]
+joints = [2]
+weights = [1.0]
+
+[weights.382]
+joints = [2]
+weights = [1.0]
+
+[weights.383]
+joints = [2]
+weights = [1.0]
+
+[weights.384]
+joints = [2]
+weights = [1.0]
+
+[weights.385]
+joints = [2]
+weights = [1.0]
+
+[weights.386]
+joints = [2]
+weights = [1.0]
+
+[weights.387]
+joints = [2]
+weights = [1.0]
+
+[weights.388]
+joints = [2]
+weights = [1.0]
+
+[weights.389]
+joints = [2]
+weights = [1.0]
+
+[weights.390]
+joints = [2]
+weights = [1.0]
+
+[weights.391]
+joints = [2]
+weights = [1.0]
+
+[weights.392]
+joints = [2]
+weights = [1.0]
+
+[weights.393]
+joints = [2]
+weights = [1.0]
+
+[weights.394]
+joints = [2]
+weights = [1.0]
+
+[weights.395]
+joints = [2]
+weights = [1.0]
+
+[weights.396]
+joints = [2]
+weights = [1.0]
+
+[weights.397]
+joints = [2]
+weights = [1.0]
+
+[weights.398]
+joints = [2]
+weights = [1.0]
+
+[weights.399]
+joints = [2]
+weights = [1.0]
+
+[weights.400]
+joints = [2]
+weights = [1.0]
+
+[weights.401]
+joints = [2]
+weights = [1.0]
+
+[weights.402]
+joints = [2]
+weights = [1.0]
+
+[weights.403]
+joints = [2]
+weights = [1.0]
+
+[weights.404]
+joints = [2]
+weights = [1.0]
+
+[weights.405]
+joints = [2]
+weights = [1.0]
+
+[weights.406]
+joints = [2]
+weights = [1.0]
+
+[weights.407]
+joints = [2]
+weights = [1.0]
+
+[weights.408]
+joints = [2]
+weights = [1.0]
+
+[weights.409]
+joints = [2]
+weights = [1.0]
+
+[weights.410]
+joints = [2]
+weights = [1.0]
+
+[weights.411]
+joints = [2]
+weights = [1.0]
+
+[weights.412]
+joints = [2]
+weights = [1.0]
+
+[weights.413]
+joints = [2]
+weights = [1.0]
+
+[weights.414]
+joints = [2]
+weights = [1.0]
+
+[weights.415]
+joints = [2]
+weights = [1.0]
+
+[weights.416]
+joints = [2]
+weights = [1.0]
+
+[weights.417]
+joints = [2]
+weights = [1.0]
+
+[weights.418]
+joints = [2]
+weights = [1.0]
+
+[weights.419]
+joints = [2]
+weights = [1.0]
+
+[weights.420]
+joints = [2]
+weights = [1.0]
+
+[weights.421]
+joints = [2]
+weights = [1.0]
+
+[weights.422]
+joints = [2]
+weights = [1.0]
+
+[weights.423]
+joints = [2]
+weights = [1.0]
+
+[weights.424]
+joints = [2]
+weights = [1.0]
+
+[weights.425]
+joints = [2]
+weights = [1.0]
+
+[weights.426]
+joints = [2]
+weights = [1.0]
+
+[weights.427]
+joints = [2]
+weights = [1.0]
+
+[weights.428]
+joints = [2]
+weights = [1.0]
+
+[weights.429]
+joints = [2]
+weights = [1.0]
+
+[weights.430]
+joints = [2]
+weights = [1.0]
+
+[weights.431]
+joints = [2]
+weights = [1.0]
+
+[weights.432]
+joints = [2]
+weights = [1.0]
+
+[weights.433]
+joints = [2]
+weights = [1.0]
+
+[weights.434]
+joints = [2]
+weights = [1.0]
+
+[weights.435]
+joints = [2]
+weights = [1.0]
+
+[weights.436]
+joints = [2]
+weights = [1.0]
+
+[weights.437]
+joints = [2]
+weights = [1.0]
+
+[weights.438]
+joints = [2]
+weights = [1.0]
+
+[weights.439]
+joints = [2]
+weights = [1.0]
+
+[weights.440]
+joints = [2]
+weights = [1.0]
+
+[weights.441]
+joints = [2]
+weights = [1.0]
+
+[weights.442]
+joints = [2]
+weights = [1.0]
+
+[weights.443]
+joints = [2]
+weights = [1.0]
+
+[weights.444]
+joints = [2]
+weights = [1.0]
+
+[weights.445]
+joints = [2]
+weights = [1.0]
+
+[weights.446]
+joints = [2]
+weights = [1.0]
+
+[weights.447]
+joints = [2]
+weights = [1.0]
+
+[weights.448]
+joints = [2]
+weights = [1.0]
+
+[weights.449]
+joints = [2]
+weights = [1.0]
+
+[weights.450]
+joints = [2]
+weights = [1.0]
+
+[weights.451]
+joints = [2]
+weights = [1.0]
+
+[weights.452]
+joints = [2]
+weights = [1.0]
+
+[weights.453]
+joints = [2]
+weights = [1.0]
+
+[weights.454]
+joints = [2]
+weights = [1.0]
+
+[weights.455]
+joints = [2]
+weights = [1.0]
+
+[weights.456]
+joints = [2]
+weights = [1.0]
+
+[weights.457]
+joints = [3]
+weights = [1.0]
+
+[weights.458]
+joints = [3]
+weights = [1.0]
+
+[weights.459]
+joints = [3]
+weights = [1.0]
+
+[weights.460]
+joints = [3]
+weights = [1.0]
+
+[weights.461]
+joints = [3]
+weights = [1.0]
+
+[weights.462]
+joints = [3]
+weights = [1.0]
+
+[weights.463]
+joints = [3]
+weights = [1.0]
+
+[weights.464]
+joints = [3]
+weights = [1.0]
+
+[weights.465]
+joints = [3]
+weights = [1.0]
+
+[weights.466]
+joints = [3]
+weights = [1.0]
+
+[weights.467]
+joints = [3]
+weights = [1.0]
+
+[weights.468]
+joints = [3]
+weights = [1.0]
+
+[weights.469]
+joints = [3]
+weights = [1.0]
+
+[weights.470]
+joints = [3]
+weights = [1.0]
+
+[weights.471]
+joints = [3]
+weights = [1.0]
+
+[weights.472]
+joints = [3]
+weights = [1.0]
+
+[weights.473]
+joints = [3]
+weights = [1.0]
+
+[weights.474]
+joints = [3]
+weights = [1.0]
+
+[weights.475]
+joints = [3]
+weights = [1.0]
+
+[weights.476]
+joints = [3]
+weights = [1.0]
+
+[weights.477]
+joints = [3]
+weights = [1.0]
+
+[weights.478]
+joints = [3]
+weights = [1.0]
+
+[weights.479]
+joints = [3]
+weights = [1.0]
+
+[weights.480]
+joints = [3]
+weights = [1.0]
+
+[weights.481]
+joints = [3]
+weights = [1.0]
+
+[weights.482]
+joints = [3]
+weights = [1.0]
+
+[weights.483]
+joints = [3]
+weights = [1.0]
+
+[weights.484]
+joints = [3]
+weights = [1.0]
+
+[weights.485]
+joints = [3]
+weights = [1.0]
+
+[weights.486]
+joints = [3]
+weights = [1.0]
+
+[weights.487]
+joints = [3]
+weights = [1.0]
+
+[weights.488]
+joints = [3]
+weights = [1.0]
+
+[weights.489]
+joints = [3]
+weights = [1.0]
+
+[weights.490]
+joints = [3]
+weights = [1.0]
+
+[weights.491]
+joints = [3]
+weights = [1.0]
+
+[weights.492]
+joints = [3]
+weights = [1.0]
+
+[weights.493]
+joints = [3]
+weights = [1.0]
+
+[weights.494]
+joints = [3]
+weights = [1.0]
+
+[weights.495]
+joints = [3]
+weights = [1.0]
+
+[weights.496]
+joints = [3]
+weights = [1.0]
+
+[weights.497]
+joints = [3]
+weights = [1.0]
+
+[weights.498]
+joints = [3]
+weights = [1.0]
+
+[weights.499]
+joints = [3]
+weights = [1.0]
+
+[weights.500]
+joints = [3]
+weights = [1.0]
+
+[weights.501]
+joints = [3]
+weights = [1.0]
+
+[weights.502]
+joints = [3]
+weights = [1.0]
+
+[weights.503]
+joints = [3]
+weights = [1.0]
+
+[weights.504]
+joints = [3]
+weights = [1.0]
+
+[weights.505]
+joints = [3]
+weights = [1.0]
+
+[weights.506]
+joints = [3]
+weights = [1.0]
+
+[weights.507]
+joints = [3]
+weights = [1.0]
+
+[weights.508]
+joints = [3]
+weights = [1.0]
+
+[weights.509]
+joints = [3]
+weights = [1.0]
+
+[weights.510]
+joints = [3]
+weights = [1.0]
+
+[weights.511]
+joints = [3]
+weights = [1.0]
+
+[weights.512]
+joints = [3]
+weights = [1.0]
+
+[weights.513]
+joints = [3]
+weights = [1.0]
+
+[weights.514]
+joints = [3]
+weights = [1.0]
+
+[weights.515]
+joints = [3]
+weights = [1.0]
+
+[weights.516]
+joints = [3]
+weights = [1.0]
+
+[weights.517]
+joints = [3]
+weights = [1.0]
+
+[weights.518]
+joints = [3]
+weights = [1.0]
+
+[weights.519]
+joints = [3]
+weights = [1.0]
+
+[weights.520]
+joints = [3]
+weights = [1.0]
+
+[weights.521]
+joints = [3]
+weights = [1.0]
+
+[weights.522]
+joints = [3]
+weights = [1.0]
+
+[weights.523]
+joints = [3]
+weights = [1.0]
+
+[weights.524]
+joints = [3]
+weights = [1.0]
+
+[weights.525]
+joints = [3]
+weights = [1.0]
+
+[weights.526]
+joints = [3]
+weights = [1.0]
+
+[weights.527]
+joints = [3]
+weights = [1.0]
+
+[weights.528]
+joints = [3]
+weights = [1.0]
+
+[weights.529]
+joints = [3]
+weights = [1.0]
+
+[weights.530]
+joints = [3]
+weights = [1.0]
+
+[weights.531]
+joints = [3]
+weights = [1.0]
+
+[weights.532]
+joints = [3]
+weights = [1.0]
+
+[weights.533]
+joints = [3]
+weights = [1.0]
+
+[weights.534]
+joints = [3]
+weights = [1.0]
+
+[weights.535]
+joints = [3]
+weights = [1.0]
+
+[weights.536]
+joints = [3]
+weights = [1.0]
+
+[weights.537]
+joints = [3]
+weights = [1.0]
+
+[weights.538]
+joints = [3]
+weights = [1.0]
+
+[weights.539]
+joints = [3]
+weights = [1.0]
+
+[weights.540]
+joints = [3]
+weights = [1.0]
+
+[weights.541]
+joints = [3]
+weights = [1.0]
+
+[weights.542]
+joints = [3]
+weights = [1.0]
+
+[weights.543]
+joints = [3]
+weights = [1.0]
+
+[weights.544]
+joints = [3]
+weights = [1.0]
+
+[weights.545]
+joints = [3]
+weights = [1.0]
+
+[weights.546]
+joints = [3]
+weights = [1.0]
+
+[weights.547]
+joints = [3]
+weights = [1.0]
+
+[weights.548]
+joints = [3]
+weights = [1.0]
+
+[weights.549]
+joints = [3]
+weights = [1.0]
+
+[weights.550]
+joints = [3]
+weights = [1.0]
+
+[weights.551]
+joints = [3]
+weights = [1.0]
+
+[weights.552]
+joints = [3]
+weights = [1.0]
+
+[weights.553]
+joints = [3]
+weights = [1.0]
+
+[weights.554]
+joints = [3]
+weights = [1.0]
+
+[weights.555]
+joints = [3]
+weights = [1.0]
+
+[weights.556]
+joints = [3]
+weights = [1.0]
+
+[weights.557]
+joints = [3]
+weights = [1.0]
+
+[weights.558]
+joints = [3]
+weights = [1.0]
+
+[weights.559]
+joints = [3]
+weights = [1.0]
+
+[weights.560]
+joints = [3]
+weights = [1.0]
+
+[weights.561]
+joints = [3]
+weights = [1.0]
+
+[weights.562]
+joints = [3]
+weights = [1.0]
+
+[weights.563]
+joints = [3]
+weights = [1.0]
+
+[weights.564]
+joints = [3]
+weights = [1.0]
+
+[weights.565]
+joints = [3]
+weights = [1.0]
+
+[weights.566]
+joints = [3]
+weights = [1.0]
+
+[weights.567]
+joints = [3]
+weights = [1.0]
+
+[weights.568]
+joints = [3]
+weights = [1.0]
+
+[weights.569]
+joints = [3]
+weights = [1.0]
+
+[weights.570]
+joints = [3]
+weights = [1.0]
+
+[weights.571]
+joints = [4]
+weights = [1.0]
+
+[weights.572]
+joints = [4]
+weights = [1.0]
+
+[weights.573]
+joints = [4]
+weights = [1.0]
+
+[weights.574]
+joints = [4]
+weights = [1.0]
+
+[weights.575]
+joints = [4]
+weights = [1.0]
+
+[weights.576]
+joints = [4]
+weights = [1.0]
+
+[weights.577]
+joints = [4]
+weights = [1.0]
+
+[weights.578]
+joints = [4]
+weights = [1.0]
+
+[weights.579]
+joints = [4]
+weights = [1.0]
+
+[weights.580]
+joints = [4]
+weights = [1.0]
+
+[weights.581]
+joints = [4]
+weights = [1.0]
+
+[weights.582]
+joints = [4]
+weights = [1.0]
+
+[weights.583]
+joints = [4]
+weights = [1.0]
+
+[weights.584]
+joints = [4]
+weights = [1.0]
+
+[weights.585]
+joints = [4]
+weights = [1.0]
+
+[weights.586]
+joints = [4]
+weights = [1.0]
+
+[weights.587]
+joints = [4]
+weights = [1.0]
+
+[weights.588]
+joints = [4]
+weights = [1.0]
+
+[weights.589]
+joints = [4]
+weights = [1.0]
+
+[weights.590]
+joints = [4]
+weights = [1.0]
+
+[weights.591]
+joints = [4]
+weights = [1.0]
+
+[weights.592]
+joints = [4]
+weights = [1.0]
+
+[weights.593]
+joints = [4]
+weights = [1.0]
+
+[weights.594]
+joints = [4]
+weights = [1.0]
+
+[weights.595]
+joints = [4]
+weights = [1.0]
+
+[weights.596]
+joints = [4]
+weights = [1.0]
+
+[weights.597]
+joints = [4]
+weights = [1.0]
+
+[weights.598]
+joints = [4]
+weights = [1.0]
+
+[weights.599]
+joints = [4]
+weights = [1.0]
+
+[weights.600]
+joints = [4]
+weights = [1.0]
+
+[weights.601]
+joints = [4]
+weights = [1.0]
+
+[weights.602]
+joints = [4]
+weights = [1.0]
+
+[weights.603]
+joints = [4]
+weights = [1.0]
+
+[weights.604]
+joints = [4]
+weights = [1.0]
+
+[weights.605]
+joints = [4]
+weights = [1.0]
+
+[weights.606]
+joints = [4]
+weights = [1.0]
+
+[weights.607]
+joints = [4]
+weights = [1.0]
+
+[weights.608]
+joints = [4]
+weights = [1.0]
+
+[weights.609]
+joints = [4]
+weights = [1.0]
+
+[weights.610]
+joints = [4]
+weights = [1.0]
+
+[weights.611]
+joints = [4]
+weights = [1.0]
+
+[weights.612]
+joints = [4]
+weights = [1.0]
+
+[weights.613]
+joints = [4]
+weights = [1.0]
+
+[weights.614]
+joints = [4]
+weights = [1.0]
+
+[weights.615]
+joints = [4]
+weights = [1.0]
+
+[weights.616]
+joints = [4]
+weights = [1.0]
+
+[weights.617]
+joints = [4]
+weights = [1.0]
+
+[weights.618]
+joints = [4]
+weights = [1.0]
+
+[weights.619]
+joints = [4]
+weights = [1.0]
+
+[weights.620]
+joints = [4]
+weights = [1.0]
+
+[weights.621]
+joints = [4]
+weights = [1.0]
+
+[weights.622]
+joints = [4]
+weights = [1.0]
+
+[weights.623]
+joints = [4]
+weights = [1.0]
+
+[weights.624]
+joints = [4]
+weights = [1.0]
+
+[weights.625]
+joints = [4]
+weights = [1.0]
+
+[weights.626]
+joints = [4]
+weights = [1.0]
+
+[weights.627]
+joints = [4]
+weights = [1.0]
+
+[weights.628]
+joints = [4]
+weights = [1.0]
+
+[weights.629]
+joints = [4]
+weights = [1.0]
+
+[weights.630]
+joints = [4]
+weights = [1.0]
+
+[weights.631]
+joints = [4]
+weights = [1.0]
+
+[weights.632]
+joints = [4]
+weights = [1.0]
+
+[weights.633]
+joints = [4]
+weights = [1.0]
+
+[weights.634]
+joints = [4]
+weights = [1.0]
+
+[weights.635]
+joints = [4]
+weights = [1.0]
+
+[weights.636]
+joints = [4]
+weights = [1.0]
+
+[weights.637]
+joints = [4]
+weights = [1.0]
+
+[weights.638]
+joints = [4]
+weights = [1.0]
+
+[weights.639]
+joints = [4]
+weights = [1.0]
+
+[weights.640]
+joints = [4]
+weights = [1.0]
+
+[weights.641]
+joints = [4]
+weights = [1.0]
+
+[weights.642]
+joints = [4]
+weights = [1.0]
+
+[weights.643]
+joints = [4]
+weights = [1.0]
+
+[weights.644]
+joints = [4]
+weights = [1.0]
+
+[weights.645]
+joints = [4]
+weights = [1.0]
+
+[weights.646]
+joints = [4]
+weights = [1.0]
+
+[weights.647]
+joints = [4]
+weights = [1.0]
+
+[weights.648]
+joints = [4]
+weights = [1.0]
+
+[weights.649]
+joints = [4]
+weights = [1.0]
+
+[weights.650]
+joints = [4]
+weights = [1.0]
+
+[weights.651]
+joints = [4]
+weights = [1.0]
+
+[weights.652]
+joints = [4]
+weights = [1.0]
+
+[weights.653]
+joints = [4]
+weights = [1.0]
+
+[weights.654]
+joints = [4]
+weights = [1.0]
+
+[weights.655]
+joints = [4]
+weights = [1.0]
+
+[weights.656]
+joints = [4]
+weights = [1.0]
+
+[weights.657]
+joints = [4]
+weights = [1.0]
+
+[weights.658]
+joints = [4]
+weights = [1.0]
+
+[weights.659]
+joints = [4]
+weights = [1.0]
+
+[weights.660]
+joints = [4]
+weights = [1.0]
+
+[weights.661]
+joints = [4]
+weights = [1.0]
+
+[weights.662]
+joints = [4]
+weights = [1.0]
+
+[weights.663]
+joints = [4]
+weights = [1.0]
+
+[weights.664]
+joints = [4]
+weights = [1.0]
+
+[weights.665]
+joints = [4]
+weights = [1.0]
+
+[weights.666]
+joints = [4]
+weights = [1.0]
+
+[weights.667]
+joints = [4]
+weights = [1.0]
+
+[weights.668]
+joints = [4]
+weights = [1.0]
+
+[weights.669]
+joints = [4]
+weights = [1.0]
+
+[weights.670]
+joints = [4]
+weights = [1.0]
+
+[weights.671]
+joints = [4]
+weights = [1.0]
+
+[weights.672]
+joints = [4]
+weights = [1.0]
+
+[weights.673]
+joints = [4]
+weights = [1.0]
+
+[weights.674]
+joints = [4]
+weights = [1.0]
+
+[weights.675]
+joints = [4]
+weights = [1.0]
+
+[weights.676]
+joints = [4]
+weights = [1.0]
+
+[weights.677]
+joints = [4]
+weights = [1.0]
+
+[weights.678]
+joints = [4]
+weights = [1.0]
+
+[weights.679]
+joints = [4]
+weights = [1.0]
+
+[weights.680]
+joints = [4]
+weights = [1.0]
+
+[weights.681]
+joints = [4]
+weights = [1.0]
+
+[weights.682]
+joints = [4]
+weights = [1.0]
+
+[weights.683]
+joints = [4]
+weights = [1.0]
+
+[weights.684]
+joints = [4]
+weights = [1.0]
+
+[weights.685]
+joints = [5]
+weights = [1.0]
+
+[weights.686]
+joints = [5]
+weights = [1.0]
+
+[weights.687]
+joints = [5]
+weights = [1.0]
+
+[weights.688]
+joints = [5]
+weights = [1.0]
+
+[weights.689]
+joints = [5]
+weights = [1.0]
+
+[weights.690]
+joints = [5]
+weights = [1.0]
+
+[weights.691]
+joints = [5]
+weights = [1.0]
+
+[weights.692]
+joints = [5]
+weights = [1.0]
+
+[weights.693]
+joints = [5]
+weights = [1.0]
+
+[weights.694]
+joints = [5]
+weights = [1.0]
+
+[weights.695]
+joints = [5]
+weights = [1.0]
+
+[weights.696]
+joints = [5]
+weights = [1.0]
+
+[weights.697]
+joints = [5]
+weights = [1.0]
+
+[weights.698]
+joints = [5]
+weights = [1.0]
+
+[weights.699]
+joints = [5]
+weights = [1.0]
+
+[weights.700]
+joints = [5]
+weights = [1.0]
+
+[weights.701]
+joints = [5]
+weights = [1.0]
+
+[weights.702]
+joints = [5]
+weights = [1.0]
+
+[weights.703]
+joints = [5]
+weights = [1.0]
+
+[weights.704]
+joints = [5]
+weights = [1.0]
+
+[weights.705]
+joints = [5]
+weights = [1.0]
+
+[weights.706]
+joints = [5]
+weights = [1.0]
+
+[weights.707]
+joints = [5]
+weights = [1.0]
+
+[weights.708]
+joints = [5]
+weights = [1.0]
+
+[weights.709]
+joints = [5]
+weights = [1.0]
+
+[weights.710]
+joints = [5]
+weights = [1.0]
+
+[weights.711]
+joints = [5]
+weights = [1.0]
+
+[weights.712]
+joints = [5]
+weights = [1.0]
+
+[weights.713]
+joints = [5]
+weights = [1.0]
+
+[weights.714]
+joints = [5]
+weights = [1.0]
+
+[weights.715]
+joints = [5]
+weights = [1.0]
+
+[weights.716]
+joints = [5]
+weights = [1.0]
+
+[weights.717]
+joints = [5]
+weights = [1.0]
+
+[weights.718]
+joints = [5]
+weights = [1.0]
+
+[weights.719]
+joints = [5]
+weights = [1.0]
+
+[weights.720]
+joints = [5]
+weights = [1.0]
+
+[weights.721]
+joints = [5]
+weights = [1.0]
+
+[weights.722]
+joints = [5]
+weights = [1.0]
+
+[weights.723]
+joints = [5]
+weights = [1.0]
+
+[weights.724]
+joints = [5]
+weights = [1.0]
+
+[weights.725]
+joints = [5]
+weights = [1.0]
+
+[weights.726]
+joints = [5]
+weights = [1.0]
+
+[weights.727]
+joints = [5]
+weights = [1.0]
+
+[weights.728]
+joints = [5]
+weights = [1.0]
+
+[weights.729]
+joints = [5]
+weights = [1.0]
+
+[weights.730]
+joints = [5]
+weights = [1.0]
+
+[weights.731]
+joints = [5]
+weights = [1.0]
+
+[weights.732]
+joints = [5]
+weights = [1.0]
+
+[weights.733]
+joints = [5]
+weights = [1.0]
+
+[weights.734]
+joints = [5]
+weights = [1.0]
+
+[weights.735]
+joints = [5]
+weights = [1.0]
+
+[weights.736]
+joints = [5]
+weights = [1.0]
+
+[weights.737]
+joints = [5]
+weights = [1.0]
+
+[weights.738]
+joints = [5]
+weights = [1.0]
+
+[weights.739]
+joints = [5]
+weights = [1.0]
+
+[weights.740]
+joints = [5]
+weights = [1.0]
+
+[weights.741]
+joints = [5]
+weights = [1.0]
+
+[weights.742]
+joints = [5]
+weights = [1.0]
+
+[weights.743]
+joints = [5]
+weights = [1.0]
+
+[weights.744]
+joints = [5]
+weights = [1.0]
+
+[weights.745]
+joints = [5]
+weights = [1.0]
+
+[weights.746]
+joints = [5]
+weights = [1.0]
+
+[weights.747]
+joints = [5]
+weights = [1.0]
+
+[weights.748]
+joints = [5]
+weights = [1.0]
+
+[weights.749]
+joints = [5]
+weights = [1.0]
+
+[weights.750]
+joints = [5]
+weights = [1.0]
+
+[weights.751]
+joints = [5]
+weights = [1.0]
+
+[weights.752]
+joints = [5]
+weights = [1.0]
+
+[weights.753]
+joints = [5]
+weights = [1.0]
+
+[weights.754]
+joints = [5]
+weights = [1.0]
+
+[weights.755]
+joints = [5]
+weights = [1.0]
+
+[weights.756]
+joints = [5]
+weights = [1.0]
+
+[weights.757]
+joints = [5]
+weights = [1.0]
+
+[weights.758]
+joints = [5]
+weights = [1.0]
+
+[weights.759]
+joints = [5]
+weights = [1.0]
+
+[weights.760]
+joints = [5]
+weights = [1.0]
+
+[weights.761]
+joints = [5]
+weights = [1.0]
+
+[weights.762]
+joints = [5]
+weights = [1.0]
+
+[weights.763]
+joints = [5]
+weights = [1.0]
+
+[weights.764]
+joints = [5]
+weights = [1.0]
+
+[weights.765]
+joints = [5]
+weights = [1.0]
+
+[weights.766]
+joints = [5]
+weights = [1.0]
+
+[weights.767]
+joints = [5]
+weights = [1.0]
+
+[weights.768]
+joints = [5]
+weights = [1.0]
+
+[weights.769]
+joints = [5]
+weights = [1.0]
+
+[weights.770]
+joints = [5]
+weights = [1.0]
+
+[weights.771]
+joints = [5]
+weights = [1.0]
+
+[weights.772]
+joints = [5]
+weights = [1.0]
+
+[weights.773]
+joints = [5]
+weights = [1.0]
+
+[weights.774]
+joints = [5]
+weights = [1.0]
+
+[weights.775]
+joints = [5]
+weights = [1.0]
+
+[weights.776]
+joints = [5]
+weights = [1.0]
+
+[weights.777]
+joints = [5]
+weights = [1.0]
+
+[weights.778]
+joints = [5]
+weights = [1.0]
+
+[weights.779]
+joints = [5]
+weights = [1.0]
+
+[weights.780]
+joints = [5]
+weights = [1.0]
+
+[weights.781]
+joints = [5]
+weights = [1.0]
+
+[weights.782]
+joints = [5]
+weights = [1.0]
+
+[weights.783]
+joints = [5]
+weights = [1.0]
+
+[weights.784]
+joints = [5]
+weights = [1.0]
+
+[weights.785]
+joints = [5]
+weights = [1.0]
+
+[weights.786]
+joints = [5]
+weights = [1.0]
+
+[weights.787]
+joints = [5]
+weights = [1.0]
+
+[weights.788]
+joints = [5]
+weights = [1.0]
+
+[weights.789]
+joints = [5]
+weights = [1.0]
+
+[weights.790]
+joints = [5]
+weights = [1.0]
+
+[weights.791]
+joints = [5]
+weights = [1.0]
+
+[weights.792]
+joints = [5]
+weights = [1.0]
+
+[weights.793]
+joints = [5]
+weights = [1.0]
+
+[weights.794]
+joints = [5]
+weights = [1.0]
+
+[weights.795]
+joints = [5]
+weights = [1.0]
+
+[weights.796]
+joints = [5]
+weights = [1.0]
+
+[weights.797]
+joints = [5]
+weights = [1.0]
+
+[weights.798]
+joints = [5]
+weights = [1.0]

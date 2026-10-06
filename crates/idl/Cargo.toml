@@ -1,0 +1,11 @@
+[package]
+name = "mantis-idl"
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+
+[lints]
+workspace = true

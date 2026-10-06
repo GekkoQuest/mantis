@@ -1,0 +1,26 @@
+[package]
+name = "toy-e2e"
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+
+[dev-dependencies]
+mantis-core = { path = "../../../crates/core" }
+mantis-testkit = { path = "../../../crates/testkit" }
+mantis-client = { path = "../../../crates/client" }
+mantis-server = { path = "../../../crates/server" }
+mantis-net = { path = "../../../crates/net" }
+mantis-adapter-contract = { path = "../../../crates/adapter-contract" }
+toy-client = { path = "../client" }
+toy-server = { path = "../server" }
+# The streamed-world test cooks the toy content and renders it headless.
+mantis-cook = { path = "../../../crates/cook" }
+mantis-render = { path = "../../../crates/render" }
+glam = { workspace = true }
+wgpu = { workspace = true, features = ["noop"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,28 @@
+/// std.titles extension messages. Ids are extension kinds (1070 to 1079).
+package std_titles;
+
+/// Show one of your titles (0 shows none).
+message SetActiveTitle inbound {
+    /// The title.
+    title: u32;
+}
+
+/// Award a title (services only: Ops, events, restores).
+message GrantTitle inbound {
+    /// The character.
+    character: u64;
+    /// The title.
+    title: u32;
+}
+
+/// Ask for your titles.
+message ShowTitles inbound {
+}
+
+/// Your titles.
+message Titles outbound {
+    /// Titles you hold, ascending.
+    owned: list<u32, 64>;
+    /// The one you show, or 0.
+    active: u32;
+}

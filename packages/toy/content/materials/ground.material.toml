@@ -1,0 +1,33 @@
+# The ground: a gray checker, one tile per ground cell, tinted by the `tint` parameter.
+textures = ["textures/checker.ppm"]
+
+[lighting]
+model = "lambert"
+
+[output]
+base_color = "rgb"
+
+[node.uv]
+op = "uv0"
+
+[node.albedo]
+op = "texture"
+slot = 0
+inputs = ["uv"]
+
+[param.tint]
+kind = "color"
+default = [0.55, 0.75, 0.5, 1.0]
+
+[node.tint]
+op = "color_param"
+name = "tint"
+
+[node.tinted]
+op = "multiply"
+inputs = ["albedo", "tint"]
+
+[node.rgb]
+op = "swizzle"
+components = "xyz"
+inputs = ["tinted"]

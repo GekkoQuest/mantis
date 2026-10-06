@@ -1,0 +1,7 @@
+theme {
+  style town_screen { padding = 12 gap = 8 width = grow height = grow }
+  style town_bar { background = #10141ccc padding_x = 12 padding_y = 6 radius = 4 }
+  style town_panel { background = #1a1e26d0 radius = 6 padding = 8 gap = 4 }
+  style town_title { font = "ui" size = 18 color = #f0e6d0 }
+  style text { font = "ui" size = 14 color = #e8e8e8 }
+}

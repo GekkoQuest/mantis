@@ -1,0 +1,15 @@
+[package]
+name = "mantis-audio"
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+mantis-formats = { path = "../formats" }
+
+[dev-dependencies]
+mantis-testkit = { path = "../testkit" }
+
+[lints]
+workspace = true

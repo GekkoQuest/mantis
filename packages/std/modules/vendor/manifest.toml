@@ -1,0 +1,13 @@
+# std.vendor: buying from and selling to fixed-price vendors.
+[module]
+key = "std.vendor"
+version = "0.1.0"
+schemas = ["contract/schema/vendor.idl"]
+tables = ["std.vendor.stock"]
+
+[dependencies]
+"std.containers" = "0.1"
+
+[flags]
+enabled = true
+selling = true

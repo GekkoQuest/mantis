@@ -1,0 +1,16 @@
+[package]
+name = "std-vendor-client"
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+mantis-core = { path = "../../../../../crates/core" }
+mantis-client = { path = "../../../../../crates/client" }
+mantis-ui = { path = "../../../../../crates/ui" }
+std-vendor-contract = { path = "../contract" }
+std-containers-contract = { path = "../../containers/contract" }
+
+[lints]
+workspace = true

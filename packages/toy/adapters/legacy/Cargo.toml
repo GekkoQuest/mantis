@@ -1,0 +1,12 @@
+[package]
+name = "toy-adapter-legacy"
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+mantis-adapter-contract = { path = "../../../../crates/adapter-contract" }
+
+[lints]
+workspace = true

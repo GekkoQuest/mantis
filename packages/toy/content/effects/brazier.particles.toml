@@ -1,0 +1,35 @@
+# A brazier: rising embers over a soft glow.
+[emitter.embers]
+capacity = 192
+duration = 1.0
+looping = true
+rate = 96.0
+lifetime_min = 1.0
+lifetime_max = 2.0
+speed_min = 0.6
+speed_max = 1.4
+acceleration = [0.0, 0.8, 0.0]
+drag = 0.4
+shape = "cone"
+angle = 0.35
+radius = 0.2
+blend = "additive"
+color.0 = [0.0, 1.0, 0.7, 0.25, 1.0]
+color.1 = [1.0, 0.9, 0.2, 0.05, 0.0]
+size.0 = [0.0, 0.06]
+size.1 = [1.0, 0.0]
+
+[emitter.glow]
+capacity = 32
+duration = 1.0
+looping = true
+rate = 16.0
+lifetime_min = 1.5
+lifetime_max = 2.0
+shape = "sphere"
+radius = 0.3
+blend = "additive"
+color.0 = [0.0, 1.0, 0.5, 0.15, 0.4]
+color.1 = [1.0, 1.0, 0.4, 0.1, 0.0]
+size.0 = [0.0, 0.5]
+size.1 = [1.0, 0.8]

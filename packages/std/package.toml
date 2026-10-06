@@ -1,0 +1,10 @@
+# packages/std: game-agnostic gameplay modules (plan 13, decision 0010):
+# party, chat, friends, mail, containers, vendor, auction, titles. Game
+# packages include them with `uses = ["std"]` and replace any of them with
+# `overrides = ["std.<module>"]` plus a module implementing the same
+# contract.
+
+[package]
+name = "std"
+version = "0.1.0"
+engine = "0.1.0"

@@ -1,0 +1,626 @@
+/// Internal RPC messages between service roles (plan 10). Requests are
+/// `inbound`, responses `outbound`; ids are stable per the registry.
+package services;
+
+/// An account.
+newtype AccountId : u64;
+
+/// A character.
+newtype CharacterId : u64;
+
+/// A cell (world region or instance).
+newtype CellNo : u64;
+
+/// Nothing to say.
+message Empty outbound {
+}
+
+/// Create an account (Ops and the gateway sign-up flow).
+message Register inbound {
+    /// Account name.
+    name: string<32>;
+    /// Password (hashed with a per-account salt on arrival; never stored).
+    password: string<64>;
+}
+
+/// An account was created.
+message Registered outbound {
+    /// The account.
+    account: AccountId;
+}
+
+/// Log in (the gateway, for a client).
+message Login inbound {
+    /// Account name.
+    name: string<32>;
+    /// Password.
+    password: string<64>;
+}
+
+/// A session token, valid until verified once or expired.
+message Session outbound {
+    /// The account.
+    account: AccountId;
+    /// The token the client presents in its Hello.
+    token: list<u8, 32>;
+}
+
+/// Verify (and consume) a session token (cells, at the handshake).
+message VerifyToken inbound {
+    /// The token.
+    token: list<u8, 32>;
+}
+
+/// Whose token it was.
+message Verified outbound {
+    /// The account.
+    account: AccountId;
+}
+
+/// Ban an account until a time (Ops).
+message Ban inbound {
+    /// The account.
+    account: AccountId;
+    /// Unix milliseconds the ban ends (0 lifts it).
+    until_ms: u64;
+    /// Why.
+    reason: string<128>;
+}
+
+/// Turn maintenance mode on or off (Ops): logins are refused while on.
+message SetMaintenance inbound {
+    /// On.
+    on: bool;
+}
+
+/// A cell host announces a cell it runs.
+message RegisterCell inbound {
+    /// The cell.
+    cell: CellNo;
+    /// Where its game listener is.
+    address: string<64>;
+    /// The low end of the x range it owns (world cells).
+    lo: f32;
+    /// The high end of the x range it owns (world cells).
+    hi: f32;
+    /// True for an instance cell available for instance creation.
+    instance: bool;
+}
+
+/// Ask for an account's characters.
+message ListCharacters inbound {
+    /// The account.
+    account: AccountId;
+}
+
+/// An account's characters.
+message Characters outbound {
+    /// Their ids.
+    ids: list<CharacterId, 16>;
+}
+
+/// Create a character for an account.
+message CreateCharacter inbound {
+    /// The account.
+    account: AccountId;
+    /// Its name.
+    name: string<32>;
+}
+
+/// A character was created.
+message Created outbound {
+    /// The character.
+    character: CharacterId;
+}
+
+/// Select a character to play: the realm answers with the cell to join.
+message SelectCharacter inbound {
+    /// The account.
+    account: AccountId;
+    /// The character.
+    character: CharacterId;
+}
+
+/// Where to go, with a single-use entry token.
+message Placement outbound {
+    /// The cell.
+    cell: CellNo;
+    /// Its game address.
+    address: string<64>;
+    /// The token the cell redeems.
+    token: list<u8, 32>;
+}
+
+/// Create an instance from a template (matchmaking, cells).
+message CreateInstance inbound {
+    /// The template id (package content).
+    template: u32;
+}
+
+/// The instance cell.
+message InstanceCell outbound {
+    /// The cell.
+    cell: CellNo;
+    /// Its game address.
+    address: string<64>;
+}
+
+/// Issue a transfer token for a character moving between cells.
+message IssueTransfer inbound {
+    /// The character.
+    character: CharacterId;
+    /// From cell.
+    from: CellNo;
+    /// To cell.
+    to: CellNo;
+    /// Lease epoch granted to the destination.
+    epoch: u64;
+}
+
+/// A transfer token.
+message TransferToken outbound {
+    /// The token.
+    token: list<u8, 32>;
+}
+
+/// Redeem a transfer or entry token (the destination cell).
+message Redeem inbound {
+    /// The token.
+    token: list<u8, 32>;
+    /// The redeeming cell.
+    cell: CellNo;
+}
+
+/// Who the token was for.
+message Redeemed outbound {
+    /// The character.
+    character: CharacterId;
+    /// The lease epoch.
+    epoch: u64;
+}
+
+/// A line for a cross-cell channel: 1 party, 2 guild, 3 whisper, 4 world.
+message Publish inbound {
+    /// The channel.
+    channel: u8;
+    /// The speaker.
+    from: CharacterId;
+    /// The whisper target, or the party or guild id.
+    to: u64;
+    /// The text.
+    text: string<200>;
+}
+
+/// A cell says which characters it hosts (its projection subscription).
+message Present inbound {
+    /// The cell.
+    cell: CellNo;
+    /// The characters now in it.
+    characters: list<CharacterId, 256>;
+}
+
+/// A cell polls its projection: what changed for its characters.
+message PollSocial inbound {
+    /// The cell.
+    cell: CellNo;
+    /// The last sequence number it has.
+    since: u64;
+}
+
+/// One projected change.
+struct SocialUpdate {
+    /// Sequence number.
+    seq: u64;
+    /// The character it is for.
+    to: CharacterId;
+    /// Kind: 1 a chat line (the only kind sent; guild membership travels as
+    /// projections, `GUILD_UPDATE`).
+    kind: u8;
+    /// The speaker or subject.
+    from: CharacterId;
+    /// Channel (chat lines).
+    channel: u8;
+    /// Text (chat lines, guild names).
+    text: string<200>;
+}
+
+/// Changes since the last poll. Sequence numbers count within one `epoch`
+/// (one run of the social role): a new epoch starts them again, and the
+/// poller starts again from 0.
+message SocialUpdates outbound {
+    /// The changes, oldest first.
+    updates: list<SocialUpdate, 32>;
+    /// The social role's run.
+    epoch: u64;
+}
+
+/// Create a guild.
+message CreateGuild inbound {
+    /// Its leader.
+    leader: CharacterId;
+    /// Its name.
+    name: string<32>;
+}
+
+/// A guild.
+message Guild outbound {
+    /// Its id.
+    guild: u64;
+}
+
+/// Join a guild.
+message JoinGuild inbound {
+    /// The character.
+    character: CharacterId;
+    /// The guild.
+    guild: u64;
+}
+
+/// One economy outcome from a cell log.
+struct OutcomeRow {
+    /// The cell tick.
+    tick: u64;
+    /// Unix milliseconds the cell recorded it (picks the ledger month).
+    at_ms: u64;
+    /// The command kind.
+    kind: u16;
+    /// The session it acted for (0 for none).
+    session: u64;
+    /// True when it succeeded.
+    ok: bool;
+    /// Its payload (a ledger first, by convention).
+    payload: list<u8, 512>;
+}
+
+/// A batch of outcomes, in log order, with the batch sequence number.
+message PushOutcomes inbound {
+    /// The cell.
+    cell: CellNo;
+    /// The batch sequence number (a resent batch is a no-op).
+    seq: u64;
+    /// The outcomes.
+    rows: list<OutcomeRow, 32>;
+}
+
+/// The acknowledgement: everything up to `seq` is durable.
+message Durable outbound {
+    /// The last durable batch.
+    seq: u64;
+}
+
+/// Ask for a character ledger (Ops).
+message LedgerOf inbound {
+    /// The character.
+    character: CharacterId;
+}
+
+/// One stored ledger row.
+struct LedgerEntry {
+    /// The month partition, as YYYYMM.
+    month: u32;
+    /// The cell.
+    cell: CellNo;
+    /// The tick.
+    tick: u64;
+    /// The item (0 gold).
+    item: u32;
+    /// The change.
+    delta: i64;
+}
+
+/// Ledger rows, oldest first.
+message LedgerRows outbound {
+    /// The rows.
+    rows: list<LedgerEntry, 64>;
+}
+
+/// Join a queue.
+message Enqueue inbound {
+    /// The character.
+    character: CharacterId;
+    /// The queue (package content: an arena, a dungeon).
+    queue: u16;
+}
+
+/// Ask whether a match was found.
+message PollMatch inbound {
+    /// The character.
+    character: CharacterId;
+}
+
+/// A match: where to go (cell 0 while still waiting).
+message Match outbound {
+    /// The instance cell, or 0.
+    cell: CellNo;
+    /// Its game address.
+    address: string<64>;
+    /// The queue that formed the match (the package sets the instance's
+    /// client module tier from it).
+    queue: u16;
+}
+
+/// A cell host polls signed live changes (flags, tunables) since `since`.
+message PollLive inbound {
+    /// The cell.
+    cell: CellNo;
+    /// The last change sequence it applied.
+    since: u64;
+}
+
+/// One signed live change. The signature (Ed25519 over the other fields)
+/// is checked by the cell host before it is applied at a tick boundary.
+struct LiveChange {
+    /// Sequence number.
+    seq: u64;
+    /// The flag (`<module key>.<flag>`) or tunable name.
+    name: string<96>;
+    /// 0 flag, 1 tunable.
+    kind: u8;
+    /// The value (flags: 0 or 1).
+    value: f32;
+    /// Ed25519 signature.
+    signature: list<u8, 64>;
+}
+
+/// Live changes since the poll.
+message LiveChanges outbound {
+    /// The changes, in order.
+    changes: list<LiveChange, 32>;
+}
+
+/// The Ops inspector asks a cell host for a read-only summary.
+message Inspect inbound {
+    /// The cell.
+    cell: CellNo;
+}
+
+/// A read-only summary of a cell.
+message CellSummary outbound {
+    /// The cell.
+    cell: CellNo;
+    /// Its tick.
+    tick: u64;
+    /// Its state hash.
+    state_hash: u64;
+    /// Sessions in it.
+    sessions: u32;
+    /// Entities replicated.
+    entities: u32;
+    /// Cheat counts of its sessions, summed (envelope violations, refused
+    /// intents, and rate-limited messages).
+    cheats: u32;
+}
+
+/// What a ban replaced (Ops before rows and undo).
+message Banned outbound {
+    /// Unix milliseconds the previous ban ended (0: there was none).
+    previous_until_ms: u64;
+}
+
+/// Maintenance mode before the change (Ops before rows and undo).
+message MaintenanceWas outbound {
+    /// It was on.
+    was: bool;
+}
+
+/// Redeem an entry or transfer token on a cell host: the token must name
+/// one of the host's cells (async admission at the game handshake).
+message RedeemOnHost inbound {
+    /// The token.
+    token: list<u8, 32>;
+    /// The host's cells.
+    cells: list<CellNo, 16>;
+}
+
+/// Ops: end a character's session on whichever cell host has it.
+message KickCharacter inbound {
+    /// The character.
+    character: CharacterId;
+}
+
+/// Whether the host had the character (the kick applies at its next tick).
+message Kicked outbound {
+    /// The host had it.
+    found: bool;
+}
+
+/// Ops: drain a cell host for maintenance (refuse new sessions, then end
+/// every session after a grace period), or lift the drain.
+message DrainHost inbound {
+    /// Drain (true) or lift (false).
+    on: bool;
+    /// Milliseconds before remaining sessions are ended.
+    grace_ms: u32;
+}
+
+/// A cell relays a module's operation for the social role (party and
+/// friends operations, `mantis_core::social`).
+message Relay inbound {
+    /// The cell.
+    cell: CellNo;
+    /// Per-cell sequence number: a resent operation (same cell and seq)
+    /// is applied once.
+    seq: u64;
+    /// A `Restore` from the host's projection, sent after a restart of the
+    /// social role before any other operation of the cell.
+    restore: bool;
+    /// The topic (`mantis_core::social::PARTY_OP`, `FRIEND_OP`, `GUILD_OP`).
+    topic: u16;
+    /// The operation, as the core encodes it.
+    payload: list<u8, 512>;
+}
+
+/// A cell polls the updates social projected onto it.
+message PollProjections inbound {
+    /// The cell.
+    cell: CellNo;
+    /// The last sequence number it received.
+    since: u64;
+}
+
+/// One update for a character in the polling cell.
+struct Projected {
+    /// Sequence number.
+    seq: u64;
+    /// The topic (`PARTY_UPDATE`, `FRIEND_UPDATE`, `GUILD_UPDATE`).
+    topic: u16;
+    /// The update, as the core encodes it.
+    payload: list<u8, 512>;
+}
+
+/// Projected updates, in order. Sequence numbers count per cell from 1
+/// within one `epoch` (one run of the social role): a new epoch means the
+/// role restarted, and the cell polls again from 0.
+message Projections outbound {
+    /// This run of the social role.
+    epoch: u64;
+    /// The updates.
+    items: list<Projected, 16>;
+}
+
+/// Take a cell out of the directory (a host draining for maintenance):
+/// matchmaking is offered no instance on it until it registers again.
+message WithdrawCell inbound {
+    /// The cell.
+    cell: CellNo;
+}
+
+/// What a relayed operation did.
+message RelayAck outbound {
+    /// Applied.
+    applied: bool;
+    /// Not applied: the social role restarted and has not seen this cell's
+    /// projection yet. The host restores it (`Relay` with `restore`, then
+    /// `RestoredCell`) and sends the operation again.
+    needs_restore: bool;
+}
+
+/// The host finished restoring a cell's projection into a restarted social
+/// role.
+message RestoredCell inbound {
+    /// The cell.
+    cell: CellNo;
+}
+
+/// One system's recent run times (the Ops inspector, plan 13).
+struct SystemTime {
+    /// The system.
+    name: string<64>;
+    /// Its phase (index in the tick's phase order).
+    phase: u8;
+    /// The last run, in microseconds.
+    micros_last: u32;
+    /// The 99th percentile of recent runs, in microseconds.
+    micros_p99: u32;
+    /// Runs since the cell started.
+    runs: u64;
+}
+
+/// The Ops inspector asks a cell host for a cell's system run times.
+message InspectSystems inbound {
+    /// The cell.
+    cell: CellNo;
+}
+
+/// A cell's run times: per system, the inbox, encoding, and the log.
+message SystemTimes outbound {
+    /// The cell.
+    cell: CellNo;
+    /// Its tick when measured.
+    tick: u64;
+    /// Each system and engine step.
+    systems: list<SystemTime, 128>;
+    /// Intents drained in the last tick.
+    inbox_depth: u32;
+    /// The 99th percentile of recent per-client encodes, in microseconds.
+    encode_micros_p99: u32;
+    /// Ticks the oldest outcome not yet durable at the writer is behind.
+    log_lag_ticks: u32;
+}
+
+/// The Ops inspector asks for a cell's component names.
+message InspectComponents inbound {
+    /// The cell.
+    cell: CellNo;
+}
+
+/// Every component registered in a cell.
+message ComponentNames outbound {
+    /// The names, in registration order (the first 256).
+    names: list<string<64>, 256>;
+}
+
+/// The Ops inspector asks for a page of a cell's entities with a component.
+message InspectEntities inbound {
+    /// The cell.
+    cell: CellNo;
+    /// The component.
+    component: string<64>;
+    /// Entities to skip.
+    offset: u32;
+    /// Entities to return (1 to 100).
+    limit: u16;
+}
+
+/// A page of entities.
+message EntityPage outbound {
+    /// The cell.
+    cell: CellNo;
+    /// Its tick when read.
+    tick: u64;
+    /// The component.
+    component: string<64>;
+    /// Entities with it, in all.
+    total: u32;
+    /// Entities in this page (fewer than asked when values are long: the
+    /// next page starts at offset plus this count).
+    count: u16;
+    /// The page as text: one line per entity, `index:generation`, then for
+    /// each component a tab and `name=value`; a tab, newline, or backslash
+    /// in a value is written `\t`, `\n`, `\\`. Values are cut at 200
+    /// bytes, and at most 16 components are listed per entity.
+    text: string<60000>;
+}
+
+/// One durable guild change (`mantis_core::social::GuildChange`).
+struct GuildRow {
+    /// 1 a guild and its name, 2 no such guild (with its members), 3 a
+    /// member and its rank, 4 no such member.
+    kind: u8;
+    /// The guild.
+    guild: u32;
+    /// The member (kinds 3 and 4).
+    character: u64;
+    /// Its rank (kind 3).
+    rank: u8;
+    /// Its join order (kind 3).
+    since: u64;
+    /// The guild's name (kind 1).
+    name: string<24>;
+}
+
+/// Social makes one operation's guild changes durable, in order, before it
+/// tells anyone. A batch at or below the stored sequence is applied once.
+message StoreGuildRows inbound {
+    /// Batch sequence number.
+    seq: u64;
+    /// The changes.
+    rows: list<GuildRow, 8>;
+}
+
+/// Social reads every guild row back after a restart, a page at a time.
+message ReadGuildRows inbound {
+    /// The page (from 0).
+    page: u32;
+}
+
+/// A page of guild rows: each guild, then its members.
+message GuildRows outbound {
+    /// The stored batch watermark (the next batch numbers past it).
+    seq: u64;
+    /// The rows.
+    rows: list<GuildRow, 256>;
+    /// More pages follow.
+    more: bool;
+}
+

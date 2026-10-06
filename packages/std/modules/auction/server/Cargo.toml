@@ -1,0 +1,15 @@
+[package]
+name = "std-auction-server"
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+mantis-core = { path = "../../../../../crates/core" }
+mantis-server = { path = "../../../../../crates/server" }
+std-auction-contract = { path = "../contract" }
+std-containers-contract = { path = "../../containers/contract" }
+std-mail-contract = { path = "../../mail/contract" }
+[lints]
+workspace = true

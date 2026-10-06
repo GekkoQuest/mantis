@@ -1,0 +1,37 @@
+[package]
+name = "toy-server"
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+mantis-core = { path = "../../../crates/core" }
+mantis-server = { path = "../../../crates/server" }
+mantis-net = { path = "../../../crates/net" }
+mantis-adapter-contract = { path = "../../../crates/adapter-contract" }
+mantis-script = { path = "../../../crates/script" }
+mantis-formats = { path = "../../../crates/formats" }
+mantis-services = { path = "../../../crates/services" }
+toy-adapter-native = { path = "../adapters/native" }
+toy-adapter-legacy = { path = "../adapters/legacy" }
+# BEGIN GENERATED MODULES (mantis-modsync; do not edit)
+std-auction-server = { path = "../../std/modules/auction/server" }
+std-chat-server = { path = "../../std/modules/chat/server" }
+std-containers-server = { path = "../../std/modules/containers/server" }
+std-friends-server = { path = "../../std/modules/friends/server" }
+std-guild-server = { path = "../../std/modules/guild/server" }
+std-mail-server = { path = "../../std/modules/mail/server" }
+std-party-server = { path = "../../std/modules/party/server" }
+std-titles-server = { path = "../../std/modules/titles/server" }
+std-vendor-server = { path = "../../std/modules/vendor/server" }
+# END GENERATED MODULES
+
+[dev-dependencies]
+mantis-testkit = { path = "../../../crates/testkit" }
+tokio = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls = { workspace = true }
+
+[lints]
+workspace = true

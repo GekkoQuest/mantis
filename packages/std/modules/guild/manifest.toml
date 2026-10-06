@@ -1,0 +1,9 @@
+# std.guild: durable groups of characters with a roster and ranks.
+[module]
+key = "std.guild"
+version = "0.1.0"
+schemas = ["contract/schema/guild.idl"]
+
+[flags]
+enabled = true
+invites = true

@@ -1,0 +1,20 @@
+# The class's pulse ability: it starts, lasts 6 ticks, and expires.
+name = "toy.ability.pulse"
+entry = "start"
+
+[node.start]
+key = 1
+kind = "marker"
+marker = "cast_start"
+next = "hold"
+
+[node.hold]
+key = 2
+kind = "delay"
+ticks = 6
+next = "end"
+
+[node.end]
+key = 3
+kind = "marker"
+marker = "expire"

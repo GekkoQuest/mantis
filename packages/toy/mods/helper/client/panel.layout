@@ -1,0 +1,7 @@
+panel id=toy_helper_panel style=toy_helper_panel {
+  text id=toy_helper_status bind="toy.helper.status"
+  row id=toy_helper_buttons gap=4 {
+    button id=toy_helper_greet text="Greet" intent="toy.helper.greet" enabled="toy.helper.automation" disabled_text="Greet (automation off)"
+    button id=toy_helper_wave text="Wave" intent="std.chat.say" payload="waves" enabled="toy.helper.automation" disabled_text="Wave (automation off)"
+  }
+}

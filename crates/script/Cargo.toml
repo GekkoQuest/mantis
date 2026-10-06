@@ -1,0 +1,16 @@
+[package]
+name = "mantis-script"
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+mantis-core = { path = "../core" }
+mlua = { workspace = true, features = ["send"] }
+
+[dev-dependencies]
+mantis-testkit = { path = "../testkit" }
+
+[lints]
+workspace = true

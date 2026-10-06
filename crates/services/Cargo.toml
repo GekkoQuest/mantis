@@ -1,0 +1,24 @@
+[package]
+name = "mantis-services"
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+mantis-core = { path = "../core" }
+tokio = { workspace = true }
+ring = { workspace = true }
+tokio-postgres = { workspace = true }
+axum = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls = { workspace = true }
+rcgen = { workspace = true }
+
+[dev-dependencies]
+mantis-testkit = { path = "../testkit" }
+# Game-protocol frames, to prove none reaches an Ops handler.
+mantis-adapter-contract = { path = "../adapter-contract" }
+
+[lints]
+workspace = true

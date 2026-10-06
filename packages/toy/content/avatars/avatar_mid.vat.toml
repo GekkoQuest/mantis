@@ -1,0 +1,5 @@
+# The walk cycle baked for the mid crowd tier.
+skeleton = "avatars/avatar.skeleton.toml"
+clip = "avatars/walk.clip.toml"
+mesh = "avatars/avatar_mid.skinmesh.toml"
+fps = 30.0

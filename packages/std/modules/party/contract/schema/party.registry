@@ -1,0 +1,9 @@
+# std.party extension kinds. Append-only.
+1000 Invite
+1001 Accept
+1002 Leave
+1003 Kick
+1004 Invited
+1005 Roster
+1006 Disbanded
+1007 PartyRefused

@@ -1,0 +1,22 @@
+# The client reference scene: the toy world streamed, 300 animated avatars, particles, UI.
+name = "town-300"
+tier = "dev-desktop-2026"
+builder = "toy_client::town::town_300"
+scene = "toy_client::town::TownScene"
+avatars = 300
+tiers = "50 near, 100 mid, 150 far, placed by the crowd selector's reference budgets (mantis_render::crowd::CrowdConfig::default); every avatar is in view and within range, so the budgets decide"
+layout = "camera at eye height near the south edge of the toy world looking north; avatars on arcs 2 m apart from 4 m out, about 1.5 m apart within 30 degrees of the view axis; each walks a 0.6 m circle"
+content = "packages/toy/content: avatars/ (skeleton, idle and walk clips, graph, near/mid/far meshes, mid and far VATs, material in three tints), effects/brazier, ui/town/hud"
+particles = "12 braziers, 2 emitters each"
+ui = "ui/town/hud: status bar (frame counter reshaped every frame), party roster, scrolling chat"
+output = "1920x1080 Rgba8Unorm, shadows, SSAO, TAA, bloom"
+workers = "min(available threads - 1, 4), at least 1"
+frames = "60 warm-up, then 600 measured"
+
+[rows]
+client_cpu_frame_p99_ms = { target = 6.0, measured = 1.982, test = "packages/toy/e2e/tests/town_300.rs", profile = "release" }
+client_gpu_frame_p99_ms = { target = 8.0, measured = 0.914, test = "packages/toy/e2e/tests/town_300.rs", profile = "release" }
+
+[run]
+any = "cargo test -p toy-e2e --test town_300"
+release = "cargo test --release -p toy-e2e --test town_300 -- --nocapture"

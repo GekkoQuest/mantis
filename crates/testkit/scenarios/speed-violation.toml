@@ -1,0 +1,12 @@
+# A legacy client running 20% faster than allowed, on a zero-latency link.
+name = "speed-violation"
+tier = "any (simulated time)"
+link = { one_way_ms = 0, jitter_ms = 0, loss_permille = 0, rto_ms = 0 }
+bots = "one honest, one speed x1.2, one teleporting 6 m every 90 ticks; all legacy (Validated)"
+measure = "client ticks from the first claim beyond the run speed to receiving the correction"
+
+[rows]
+detection_ticks = { target = 2, test = "play.rs::a_20pct_speed_violation_is_detected_within_2_ticks" }
+
+[run]
+any = "cargo test -p toy-server --test play -- --nocapture"

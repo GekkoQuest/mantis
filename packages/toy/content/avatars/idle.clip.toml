@@ -1,0 +1,8 @@
+# A looping idle: the upper body breathes.
+skeleton = "avatars/avatar.skeleton.toml"
+duration = 2.0
+looping = true
+
+[track.spine.rotation]
+times = [0.0, 1.0, 2.0]
+values = [0.0, 0.0, 0.0, 1.0, 0.024997, 0.0, 0.0, 0.999688, 0.0, 0.0, 0.0, 1.0]

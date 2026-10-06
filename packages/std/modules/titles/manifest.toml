@@ -1,0 +1,9 @@
+# std.titles: earned titles and the one a character shows.
+[module]
+key = "std.titles"
+version = "0.1.0"
+schemas = ["contract/schema/titles.idl"]
+tables = ["std.titles.list"]
+
+[flags]
+enabled = true

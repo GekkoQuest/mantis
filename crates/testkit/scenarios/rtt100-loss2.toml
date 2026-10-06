@@ -1,0 +1,13 @@
+# Bots over the simulated network at the budget link condition.
+name = "rtt100-loss2"
+tier = "any (simulated time)"
+link = { one_way_ms = 50, jitter_ms = 10, loss_permille = 20, rto_ms = 200 }
+bots = "24 honest native (Predictive) and 24 honest legacy (Validated), 900 ticks at 30 Hz"
+transport = "the native listener drops unreliable frames; the legacy listener is a TCP stream (nothing lost, retransmission delays)"
+
+[rows]
+predictive_correction_p99_m = { target = 0.10, test = "play.rs::honest_bots_at_100ms_rtt_and_2pct_loss" }
+validated_false_rejection_rate = { target = 0.001, test = "play.rs::honest_bots_at_100ms_rtt_and_2pct_loss" }
+
+[run]
+any = "cargo test -p toy-server --test play -- --nocapture"

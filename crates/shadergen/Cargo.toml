@@ -1,0 +1,16 @@
+[package]
+name = "mantis-shadergen"
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+mantis-core = { path = "../core" }
+mantis-formats = { path = "../formats" }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+naga = { workspace = true }

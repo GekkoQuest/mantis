@@ -1,0 +1,8 @@
+# toy.hud: a presentation-tier client mod for the toy package. It reads view models
+# and draws a small panel; it never acts in the world. Generic content only.
+[module]
+key = "toy.hud"
+version = "0.1.0"
+
+[dependencies]
+"std.chat" = "0.1"

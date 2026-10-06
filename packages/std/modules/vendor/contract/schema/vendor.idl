@@ -1,0 +1,64 @@
+/// std.vendor extension messages. Ids are extension kinds (1050 to 1059).
+package std_vendor;
+
+/// Ask a vendor's stock.
+message Browse inbound {
+    /// The vendor.
+    vendor: u32;
+}
+
+/// A vendor's stock: `items[i]` costs `prices[i]` gold each, and vendors
+/// pay `sell_prices[i]` gold each for it.
+message Stock outbound {
+    /// The vendor.
+    vendor: u32;
+    /// Items.
+    items: list<u32, 20>;
+    /// Buying prices.
+    prices: list<u64, 20>;
+    /// Selling prices (what a vendor pays).
+    sell_prices: list<u64, 20>;
+}
+
+/// Buy from a vendor; answered with `Traded`.
+message BuyItems inbound {
+    /// Echoed in the result.
+    request: u32;
+    /// The vendor.
+    vendor: u32;
+    /// The item.
+    item: u32;
+    /// How many.
+    count: u32;
+}
+
+/// Sell from a bag slot; answered with `Traded`.
+message SellItems inbound {
+    /// Echoed in the result.
+    request: u32;
+    /// The vendor (echoed; any vendor buys back).
+    vendor: u32;
+    /// Bag slot.
+    slot: u8;
+    /// How many.
+    count: u32;
+}
+
+/// What a trade did. `reason` is 0 on success, else a `TradeResult`
+/// reason code (see the contract crate).
+message Traded outbound {
+    /// The request it answers.
+    request: u32;
+    /// The vendor.
+    vendor: u32;
+    /// Done.
+    ok: bool;
+    /// Why not.
+    reason: u8;
+    /// The item.
+    item: u32;
+    /// How many.
+    count: u32;
+    /// Gold paid (a purchase) or received (a sale).
+    total: u64;
+}

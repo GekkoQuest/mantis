@@ -1,0 +1,21 @@
+[package]
+name = "mantis-net"
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+mantis-core = { path = "../core" }
+mantis-adapter-contract = { path = "../adapter-contract" }
+quinn = { workspace = true }
+tokio = { workspace = true }
+rustls = { workspace = true }
+rcgen = { workspace = true }
+bytes = { workspace = true }
+
+[dev-dependencies]
+mantis-testkit = { path = "../testkit" }
+
+[lints]
+workspace = true

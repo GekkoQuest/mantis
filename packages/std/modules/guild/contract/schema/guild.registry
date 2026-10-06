@@ -1,0 +1,15 @@
+# std.guild extension kinds. Append-only.
+1080 CreateGuild
+1081 InviteToGuild
+1082 AcceptGuild
+1083 LeaveGuild
+1084 RemoveFromGuild
+1085 SetGuildRank
+1086 DisbandGuild
+1087 GuildJoined
+1088 GuildRoster
+1089 GuildMemberChanged
+1090 GuildMemberGone
+1091 GuildDisbanded
+1092 GuildInvited
+1093 GuildRefused

@@ -1,0 +1,13 @@
+# A party observing a border crossing.
+name = "border-party"
+tier = "any (simulated time)"
+zone = "two toy cells split at x = 0, 30 m ghost margin"
+bots = "two walkers (one per adapter) running +x across the border; four idle observers on both sides, both adapters"
+link = "rtt100-loss2"
+
+[rows]
+transfer_completes_ticks = { target = 2, test = "play.rs::border_party_observers_never_lose_a_crossing_entity" }
+observer_gap_ticks = { target = 1, test = "play.rs::border_party_observers_never_lose_a_crossing_entity" }
+
+[run]
+any = "cargo test -p toy-server --test play -- --nocapture"

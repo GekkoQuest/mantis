@@ -1,0 +1,25 @@
+/// std.chat extension messages. Ids are extension kinds (1010 to 1019).
+package std_chat;
+
+/// Say something. Channel 0 is local, 1 the party, 2 a whisper, 3 the
+/// guild.
+message Say inbound {
+    /// The channel.
+    channel: u8;
+    /// The whisper target's character (ignored otherwise).
+    target: u64;
+    /// The text, UTF-8.
+    text: string<200>;
+}
+
+/// A line someone said.
+message Line outbound {
+    /// The channel.
+    channel: u8;
+    /// The speaking character.
+    from: u64;
+    /// For a whisper, the character it was said to; 0 otherwise.
+    to: u64;
+    /// The text.
+    text: string<200>;
+}

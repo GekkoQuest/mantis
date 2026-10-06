@@ -1,0 +1,18 @@
+[package]
+name = "mantis-anim"
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+mantis-core = { path = "../core" }
+mantis-formats = { path = "../formats" }
+glam = { workspace = true }
+bytemuck = { workspace = true }
+
+[dev-dependencies]
+mantis-testkit = { path = "../testkit" }
+
+[lints]
+workspace = true

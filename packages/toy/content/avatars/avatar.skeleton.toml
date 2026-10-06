@@ -1,0 +1,32 @@
+# The town avatar skeleton: eight bones, feet at the origin, facing +Z.
+
+[bone.root]
+translation = [0.0, 0.0, 0.0]
+
+[bone.hips]
+parent = "root"
+translation = [0.0, 0.95, 0.0]
+
+[bone.spine]
+parent = "hips"
+translation = [0.0, 0.25, 0.0]
+
+[bone.head]
+parent = "spine"
+translation = [0.0, 0.45, 0.0]
+
+[bone.arm_l]
+parent = "spine"
+translation = [-0.25, 0.4, 0.0]
+
+[bone.arm_r]
+parent = "spine"
+translation = [0.25, 0.4, 0.0]
+
+[bone.leg_l]
+parent = "hips"
+translation = [-0.12, 0.0, 0.0]
+
+[bone.leg_r]
+parent = "hips"
+translation = [0.12, 0.0, 0.0]

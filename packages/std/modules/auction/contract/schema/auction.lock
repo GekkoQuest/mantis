@@ -1,0 +1,6 @@
+# Frozen prefix of auction.registry. Editing this file is a reviewed protocol change.
+1060 Post
+1061 BuyListing
+1062 CancelListing
+1063 Search
+1064 Listings

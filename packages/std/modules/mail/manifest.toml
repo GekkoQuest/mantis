@@ -1,0 +1,12 @@
+# std.mail: letters between characters, with gold and item attachments.
+[module]
+key = "std.mail"
+version = "0.1.0"
+schemas = ["contract/schema/mail.idl"]
+
+[dependencies]
+"std.containers" = "0.1"
+
+[flags]
+enabled = true
+attachments = true

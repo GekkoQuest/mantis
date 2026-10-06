@@ -1,0 +1,27 @@
+[package]
+name = "mantis-editor"
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+mantis-core = { path = "../core" }
+mantis-formats = { path = "../formats" }
+mantis-cook = { path = "../cook" }
+mantis-client = { path = "../client" }
+mantis-render = { path = "../render" }
+mantis-ui = { path = "../ui" }
+mantis-shadergen = { path = "../shadergen" }
+glam = { workspace = true }
+wgpu = { workspace = true }
+# The Ops dashboard is HTTPS; the inspector pins its certificate (read-only GETs).
+rustls = { workspace = true }
+
+[dev-dependencies]
+rcgen = { workspace = true }
+mantis-testkit = { path = "../testkit" }
+wgpu = { workspace = true, features = ["noop"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,20 @@
+[package]
+name = "mantis-testkit"
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+serde_json = "1"
+
+[dev-dependencies]
+mantis-core = { path = "../core" }
+mantis-idl = { path = "../idl" }
+mantis-adapter-contract = { path = "../adapter-contract" }
+mantis-modsync = { path = "../modsync" }
+toy-adapter-legacy = { path = "../../packages/toy/adapters/legacy" }
+toy-adapter-native = { path = "../../packages/toy/adapters/native" }
+
+[lints]
+workspace = true

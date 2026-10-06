@@ -1,0 +1,104 @@
+/// std.auction extension messages. Ids are extension kinds (1060 to 1069, then
+/// 1160 to 1169).
+package std_auction;
+
+/// List part of a bag stack; answered with an `AuctionResult` and a fresh
+/// page of your listings.
+message PostLot inbound {
+    /// Echoed in the result.
+    request: u32;
+    /// Bag slot.
+    slot: u8;
+    /// How many.
+    count: u32;
+    /// Price in gold.
+    price: u64;
+}
+
+/// Buy a listing; answered like `PostLot`.
+message BuyLot inbound {
+    /// Echoed in the result.
+    request: u32;
+    /// The listing.
+    listing: u32;
+}
+
+/// Withdraw your listing; answered like `PostLot`.
+message CancelLot inbound {
+    /// Echoed in the result.
+    request: u32;
+    /// The listing.
+    listing: u32;
+}
+
+/// Ask for one page of listings, cheapest first.
+message SearchLots inbound {
+    /// The item, or 0 for anything.
+    item: u32;
+    /// Only your own listings.
+    mine: bool;
+    /// Listings to skip.
+    offset: u16;
+}
+
+/// One listing in a page.
+struct LotEntry {
+    /// The listing.
+    listing: u32;
+    /// The seller's character.
+    seller: u64;
+    /// The item.
+    item: u32;
+    /// How many.
+    count: u32;
+    /// Price in gold.
+    price: u64;
+    /// The deposit the seller paid.
+    deposit: u64;
+    /// Seconds until it comes down.
+    expires_in: u32;
+}
+
+/// One page of listings, with the house rules a seller needs to see their
+/// proceeds before posting.
+message LotPage outbound {
+    /// Listings matching the search.
+    total: u16;
+    /// Listings skipped.
+    offset: u16;
+    /// What the house keeps of a sale, in percent.
+    cut_percent: u8;
+    /// The deposit, in percent of the price, paid when posting and
+    /// returned with the proceeds of a sale.
+    deposit_percent: u8;
+    /// How long a listing stays up.
+    duration_seconds: u32;
+    /// This page.
+    entries: list<LotEntry, 10>;
+}
+
+/// What an auction command did. `reason` is 0 on success, else one of the
+/// `AUCTION_*` codes in the contract crate.
+message AuctionResult outbound {
+    /// The request it answers.
+    request: u32;
+    /// Done.
+    ok: bool;
+    /// Why not.
+    reason: u8;
+    /// The listing (posted, bought, or withdrawn).
+    listing: u32;
+    /// Gold moved for you: the deposit paid (post), the price paid (buy).
+    gold: u64;
+}
+
+/// Sent immediately before every `LotPage`: the search it answers (a page
+/// after a requested command is `mine` with item 0 and offset 0).
+message LotPageOf outbound {
+    /// The item searched, or 0 for anything.
+    item: u32;
+    /// Only the requester's own listings.
+    mine: bool;
+    /// Listings skipped.
+    offset: u16;
+}

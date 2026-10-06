@@ -1,0 +1,75 @@
+# The toy package: the engine's proving package (plan 18 step 2).
+# One zone (two cells split at x = 0, so play crosses a border), one class,
+# two adapters. Generic content only.
+#
+# Distance is in metres, time in seconds unless a key says otherwise. Every
+# tunable carries its unit in a trailing comment; the server refuses a
+# tunable line without one.
+
+[package]
+name = "toy"
+version = "0.1.0"
+engine = "0.1.0"
+adapters = ["toy.native", "toy.legacy"]
+uses = ["std"]                # packages whose modules the toy includes
+overrides = []
+client_mods = ["toy.hud", "toy.helper"] # client modules sessions may run
+
+# Feature-flag defaults for this package (`<module key>.<flag>`).
+[flags]
+"std.chat.whispers" = true
+
+[tunables.server]
+tick_rate = 30               # Hz
+instance_release_grace = 30  # s an instance cell stays empty before it is released
+
+# Movement of the one class (core MotionParams; both hosts run it).
+[tunables.motion]
+run_speed = 7.0              # m/s
+walk_speed = 2.5             # m/s
+backward_scale = 0.6         # ratio of forward speed
+ground_accel = 60.0          # m/s^2
+air_accel = 8.0              # m/s^2
+jump_speed = 8.0             # m/s, vertical launch speed
+gravity = 20.0               # m/s^2, downward
+max_fall_speed = 50.0        # m/s
+max_step_up = 0.45           # m per tick
+max_slope = 1.0              # rise over run (1.0 is 45 degrees)
+ground_snap = 0.3            # m
+
+# Validated-mode envelope for the legacy adapter, tuned by the honest and
+# cheating bots in packages/toy/server/tests.
+[tunables.envelope]
+speed_tolerance = 0.10       # ratio over the allowed speed
+distance_slack = 0.01        # m per claim
+vertical_tolerance = 0.35    # m
+jitter_allowance_ms = 600    # ms
+resync_window_ms = 600       # ms a corrected client may report unreachable positions
+
+# Replication interest (plan 7.2): distance tiers and the per-snapshot
+# remote budget. The budget is the bandwidth knob: each remote update costs
+# about 16 bytes on the native wire, sent every tick.
+[tunables.interest]
+near = 20.0                  # m
+mid = 50.0                   # m
+far = 100.0                  # m, nothing beyond is replicated
+hysteresis = 5.0             # m beyond a boundary before dropping a tier
+weight_near = 9              # priority gained per tick in the near tier
+weight_mid = 3               # priority gained per tick in the mid tier
+weight_far = 1               # priority gained per tick in the far tier
+budget = 32                  # remotes per snapshot
+
+# Per-session rate limits (plan 12), enforced by the host before a cell sees
+# anything. A client sends one input per tick at 30 Hz; the limits leave room
+# for loss-induced bursts and resends.
+[tunables.limits]
+input_rate = 90              # messages/s, inputs and claims
+input_burst = 45             # messages
+action_rate = 20             # messages/s, casts, interactions, choices
+action_burst = 20            # messages
+extension_rate = 20          # messages/s, per extension kind
+extension_burst = 20         # messages
+ack_rate = 90                # messages/s, snapshot acknowledgements
+ack_burst = 45               # messages
+bytes_per_second = 32768     # B/s received per session
+kick_after = 600             # refused messages before the session is ended

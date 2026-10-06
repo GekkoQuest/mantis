@@ -1,0 +1,18 @@
+# Message ids of the adapter contract. Append-only: add new messages at the end
+# with the next id; never renumber; mark removed messages `retired`.
+1 Hello
+2 Move
+3 MoveClaim
+4 Cast
+5 Interact
+6 Choose
+7 Extension
+8 SnapshotAck
+9 Goodbye
+10 Welcome
+11 Refuse
+12 SetPosition
+13 ExtensionRefused
+14 ExtensionMessage
+15 FeatureState
+16 PermittedModules

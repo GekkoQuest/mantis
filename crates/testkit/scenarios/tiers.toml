@@ -1,0 +1,29 @@
+# Reference scenarios and hardware tiers (plan 17).
+#
+# Every budget row names a scenario file in this directory and a tier below.
+# Each scenario file states which test proves which row, how to run it, and
+# the tier its numbers were taken on. Timing rows run in release builds only;
+# the other rows run in every `cargo test --workspace`.
+#
+#   cell-500-100     tick p99, allocations, per-client encode p99, snapshot bytes
+#   rtt100-loss2     Predictive correction p99, Validated false rejections
+#   speed-violation  Validated detection of a 20% speed violation
+#   border-party     border transfer
+#   soak-10m         replay divergences, x86_64 vs aarch64
+#   town-300         client CPU frame time p99, client GPU frame time p99
+
+[tier.dev-desktop-2026]
+cpu = "AMD Ryzen 7 9700X, 8 cores / 16 threads, desktop class, 2024 generation"
+gpu = "NVIDIA GeForce RTX 5070 (Vulkan backend), driver 32.0.15.9186"
+display = "headless; 1920x1080 offscreen target"
+memory_gb = 32
+os = "Windows 11"
+note = "the server-engine development machine; numbers in scenarios were taken here"
+
+[tier.ci-x86_64]
+cpu = "CI runner, x86_64, 4 vCPU or more"
+note = "soak-10m, first half of the cross-architecture pair"
+
+[tier.ci-aarch64]
+cpu = "CI runner, aarch64, 4 vCPU or more"
+note = "soak-10m, second half of the cross-architecture pair"

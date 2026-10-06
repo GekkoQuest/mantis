@@ -1,0 +1,9 @@
+# std.vendor extension kinds. Append-only.
+1050 retired Buy
+1051 retired Sell
+1052 Browse
+1053 Stock
+1054 retired TradeResult
+1055 BuyItems
+1056 SellItems
+1057 Traded

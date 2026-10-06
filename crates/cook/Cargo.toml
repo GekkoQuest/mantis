@@ -1,0 +1,21 @@
+[package]
+name = "mantis-cook"
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+mantis-anim = { path = "../anim" }
+mantis-core = { path = "../core" }
+mantis-formats = { path = "../formats" }
+mantis-shadergen = { path = "../shadergen" }
+mantis-ui = { path = "../ui" }
+naga = { workspace = true }
+ring = { workspace = true }
+
+[dev-dependencies]
+mantis-testkit = { path = "../testkit" }
+
+[lints]
+workspace = true

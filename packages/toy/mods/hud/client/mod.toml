@@ -1,0 +1,6 @@
+# Runs at the presentation tier: reads view models, draws UI, plays audio.
+[mod]
+tier = "presentation"
+screens = ["panel"]
+theme = "style"
+scripts = ["main"]

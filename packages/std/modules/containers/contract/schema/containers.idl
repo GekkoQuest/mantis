@@ -1,0 +1,55 @@
+/// std.containers extension messages. Ids are extension kinds (1040 to
+/// 1049). Every change to a bag is an economy command.
+package std_containers;
+
+/// Move a stack to another slot: swap, or merge into a stack of the same item.
+message MoveItem inbound {
+    /// From slot.
+    from: u8;
+    /// To slot.
+    to: u8;
+}
+
+/// Split part of a stack into an empty slot.
+message SplitStack inbound {
+    /// From slot.
+    from: u8;
+    /// To slot, which must be empty.
+    to: u8;
+    /// How many to move.
+    count: u32;
+}
+
+/// Destroy items from a stack.
+message DestroyItem inbound {
+    /// The slot.
+    slot: u8;
+    /// How many.
+    count: u32;
+}
+
+/// Grant items and gold (services only: quests, Ops, restores).
+message Grant inbound {
+    /// The receiving character.
+    character: u64;
+    /// The item, or 0 for none.
+    item: u32;
+    /// How many.
+    count: u32;
+    /// Gold.
+    gold: u64;
+}
+
+/// Ask for your bag.
+message ShowBag inbound {
+}
+
+/// Your bag. Slot i holds `counts[i]` of `items[i]`; item 0 is an empty slot.
+message Bag outbound {
+    /// Gold.
+    gold: u64;
+    /// Item per slot.
+    items: list<u32, 20>;
+    /// Count per slot.
+    counts: list<u32, 20>;
+}

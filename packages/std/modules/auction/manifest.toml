@@ -1,0 +1,13 @@
+# std.auction: an auction house of fixed-price listings.
+[module]
+key = "std.auction"
+version = "0.1.0"
+schemas = ["contract/schema/auction.idl"]
+tables = ["std.auction.rules"]
+
+[dependencies]
+"std.containers" = "0.1"
+"std.mail" = "0.1"
+
+[flags]
+enabled = true

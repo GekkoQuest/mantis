@@ -1,0 +1,36 @@
+[package]
+name = "mantis-client"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Mantis native client host: sim thread, prediction, render world, input, scopes, threads."
+
+[dependencies]
+mantis-core = { path = "../core" }
+mantis-formats = { path = "../formats" }
+mantis-adapter-contract = { path = "../adapter-contract" }
+mantis-net = { path = "../net" }
+mantis-render = { path = "../render" }
+mantis-ui = { path = "../ui" }
+mantis-anim = { path = "../anim" }
+mantis-audio = { path = "../audio" }
+# Client mods run in Luau VMs at the tier the server grants (plan 12).
+mantis-script = { path = "../script" }
+# Render-thread glue only (characters, media, presentation); never in sim modules
+# (tests/lint_config.rs enforces it).
+glam = { workspace = true }
+# Window and GPU device creation live only in `src/platform.rs`.
+winit = { workspace = true }
+wgpu = { workspace = true }
+pollster = { workspace = true }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+mantis-testkit = { path = "../testkit" }
+# Streaming tests sign a hand-built content store.
+ring = { workspace = true }
+# Headless renderer tests use the no-op backend.
+wgpu = { workspace = true, features = ["noop"] }

@@ -1,0 +1,10 @@
+# std.friends extension kinds. Append-only.
+1020 Request
+1021 Respond
+1022 Remove
+1023 Requested
+1024 FriendList
+1025 ShowFriends
+1026 Pending
+1027 Declined
+1028 FriendRefused

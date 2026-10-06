@@ -1,0 +1,14 @@
+# Frozen prefix of contract.registry. The registry must start with every
+# entry below, unchanged. Editing this file is a reviewed protocol change.
+1 Hello
+2 Move
+3 MoveClaim
+4 Cast
+5 Interact
+6 Choose
+7 Extension
+8 SnapshotAck
+9 Goodbye
+10 Welcome
+11 Refuse
+12 SetPosition

@@ -1,0 +1,230 @@
+/// The adapter contract's wire messages: the Mantis-native intent model, the
+/// session handshake, and corrections (plan 7.3, 9; decisions 0002, 0011,
+/// 0017). Snapshots are not here: they are delta-encoded by the native codec.
+package contract;
+
+/// An ability, as defined by package content.
+newtype AbilityId : u32;
+
+/// A dialogue or choice prompt, as defined by package content.
+newtype PromptId : u32;
+
+/// A package-defined intent extension kind.
+newtype ExtensionKind : u16;
+
+/// What an entity looks like, as defined by package presentation content.
+newtype AppearanceId : u32;
+
+/// Who owns a mover's position (decision 0011).
+enum MovementMode : u8 {
+    /// Native clients: inputs in, the server integrates, the client predicts.
+    Predictive = 0;
+    /// Legacy clients: the client reports positions, the server validates.
+    Validated = 1;
+}
+
+/// Why a package-defined intent extension was refused.
+enum ExtensionRefusal : u8 {
+    /// The module that handles it is disabled (feature flag); clients show
+    /// the feature as unavailable.
+    FeatureDisabled = 0;
+    /// Not allowed in the session's current state.
+    NotAllowed = 1;
+    /// The payload was malformed or failed validation.
+    Invalid = 2;
+}
+
+/// What client modules may do in a cell (plan 12): presentation only
+/// (visuals, sound, UI layout), or presentation and automation (macros,
+/// helpers acting for the player).
+enum ModTier : u8 {
+    /// Presentation only.
+    Presentation = 0;
+    /// Presentation and automation.
+    Automation = 1;
+}
+
+/// Why a session was refused.
+enum RefuseReason : u8 {
+    /// The protocol version is not supported.
+    VersionMismatch = 0;
+    /// The client's gameplay content differs from the server's.
+    ContentMismatch = 1;
+    /// The client reported a module the server does not permit.
+    ModuleRefused = 2;
+    /// The server is full.
+    Full = 3;
+    /// The session token is invalid or used.
+    BadToken = 4;
+    /// The server is in maintenance.
+    Maintenance = 5;
+}
+
+/// A client module and its hash (for compatibility and refusal, never trust).
+struct ModuleEntry {
+    /// The module key.
+    name: string<32>;
+    /// The module content hash.
+    hash: content_hash;
+}
+
+/// Opens a session.
+message Hello inbound {
+    /// Protocol version.
+    protocol: u16;
+    /// Capability bits the client supports.
+    capabilities: u32;
+    /// The client's gameplay content hash; must equal the server's.
+    content: content_hash;
+    /// The client's modules.
+    modules: list<ModuleEntry, 32>;
+    /// The session token issued by the account service.
+    token: list<u8, 64>;
+}
+
+/// One tick of movement input (Predictive adapters).
+message Move inbound {
+    /// The input, exactly as the client predicted with it.
+    input: move_input;
+}
+
+/// A reported position (Validated adapters).
+message MoveClaim inbound {
+    /// Where the client says its avatar is.
+    position: vec3;
+    /// The client's clock, in milliseconds; informational, never trusted.
+    client_time_ms: u32;
+}
+
+/// Use an ability.
+message Cast inbound {
+    /// The ability.
+    ability: AbilityId;
+    /// The target, if any.
+    target: option<entity>;
+    /// What the client was showing: the server tick of its remote
+    /// interpolation instant (plan 7.4 lag compensation). The server refuses
+    /// view times older than its rewind buffer or newer than now.
+    view_tick: tick;
+    /// The fraction of a tick past `view_tick`, in 1/65536.
+    view_frac: u16;
+}
+
+/// Interact with an entity.
+message Interact inbound {
+    /// The entity.
+    entity: entity;
+    /// What the client was showing (see `Cast::view_tick`); range is checked
+    /// against the rewound positions.
+    view_tick: tick;
+    /// The fraction of a tick past `view_tick`, in 1/65536.
+    view_frac: u16;
+}
+
+/// Answer a prompt.
+message Choose inbound {
+    /// The prompt.
+    prompt: PromptId;
+    /// The chosen option.
+    option: u16;
+}
+
+/// A package-defined intent, decoded by the owning module's own codec.
+message Extension inbound {
+    /// Which extension.
+    kind: ExtensionKind;
+    /// Chosen by the client (0: not tracked) and echoed in any
+    /// `ExtensionRefused` for this send.
+    request: u32;
+    /// Its encoded payload.
+    payload: list<u8, 512>;
+}
+
+/// Acknowledges receipt of the snapshot for a server tick (delta baseline).
+message SnapshotAck inbound {
+    /// The acknowledged server tick.
+    tick: tick;
+}
+
+/// Closes the session cleanly.
+message Goodbye inbound {
+}
+
+/// Accepts a session.
+message Welcome outbound {
+    /// Protocol version in use.
+    protocol: u16;
+    /// Capability bits in use (the intersection).
+    capabilities: u32;
+    /// The session id.
+    session: u64;
+    /// The server's current tick.
+    tick: tick;
+    /// Ticks per second.
+    tick_rate: u16;
+    /// The movement mode of this session.
+    mode: MovementMode;
+    /// The session's avatar, once spawned.
+    avatar: option<entity>;
+    /// The session's persistent character identity (what modules call the
+    /// player: chat senders, party members, friends).
+    character: u64;
+}
+
+/// Refuses a session.
+message Refuse outbound {
+    /// Why.
+    reason: RefuseReason;
+}
+
+/// A hard correction: the client must place the entity here (Validated
+/// clients; native clients reconcile from snapshots instead).
+message SetPosition outbound {
+    /// The entity.
+    entity: entity;
+    /// Its authoritative position.
+    position: vec3;
+    /// Its authoritative facing.
+    yaw: angle16;
+    /// The server tick of the correction.
+    tick: tick;
+}
+
+/// A package-defined intent extension was refused.
+message ExtensionRefused outbound {
+    /// Which extension.
+    kind: ExtensionKind;
+    /// The `request` of the refused send (0 when untracked).
+    request: u32;
+    /// Why.
+    reason: ExtensionRefusal;
+}
+
+/// A package-defined message from a module to one client (a chat line, a
+/// mailbox listing, a party roster), decoded by the module's client half.
+message ExtensionMessage outbound {
+    /// Which extension.
+    kind: ExtensionKind;
+    /// Its encoded payload.
+    payload: list<u8, 512>;
+}
+
+/// Whether a module is enabled, sent when a session joins a cell and
+/// whenever Ops switches the module, so clients can show a feature as
+/// unavailable before anyone tries it.
+message FeatureState outbound {
+    /// The module key, for example `std.party`.
+    module: string<64>;
+    /// Enabled.
+    enabled: bool;
+}
+
+/// The client modules a session may run in its current cell and the tier
+/// they run at. Sent when a session joins a cell (and on every transfer),
+/// and whenever the cell's tier changes; clients enforce it.
+message PermittedModules outbound {
+    /// The tier.
+    tier: ModTier;
+    /// Permitted client module keys.
+    modules: list<string<32>, 32>;
+}

@@ -1,0 +1,36 @@
+[package]
+name = "toy-client"
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+mantis-core = { path = "../../../crates/core" }
+mantis-client = { path = "../../../crates/client" }
+mantis-adapter-contract = { path = "../../../crates/adapter-contract" }
+mantis-net = { path = "../../../crates/net" }
+mantis-ui = { path = "../../../crates/ui" }
+mantis-formats = { path = "../../../crates/formats" }
+mantis-render = { path = "../../../crates/render" }
+mantis-anim = { path = "../../../crates/anim" }
+mantis-editor = { path = "../../../crates/editor" }
+glam = { workspace = true }
+wgpu = { workspace = true }
+# BEGIN GENERATED MODULES (mantis-modsync; do not edit)
+std-auction-client = { path = "../../std/modules/auction/client" }
+std-chat-client = { path = "../../std/modules/chat/client" }
+std-containers-client = { path = "../../std/modules/containers/client" }
+std-friends-client = { path = "../../std/modules/friends/client" }
+std-guild-client = { path = "../../std/modules/guild/client" }
+std-mail-client = { path = "../../std/modules/mail/client" }
+std-party-client = { path = "../../std/modules/party/client" }
+std-titles-client = { path = "../../std/modules/titles/client" }
+std-vendor-client = { path = "../../std/modules/vendor/client" }
+# END GENERATED MODULES
+
+[dev-dependencies]
+mantis-testkit = { path = "../../../crates/testkit" }
+
+[lints]
+workspace = true

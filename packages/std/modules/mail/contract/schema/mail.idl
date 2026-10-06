@@ -1,0 +1,118 @@
+/// std.mail extension messages. Ids are extension kinds (1030 to 1039, then
+/// 1130 to 1139).
+package std_mail;
+
+/// Ask for one letter.
+message ReadMail inbound {
+    /// The letter.
+    mail: u32;
+}
+
+/// One letter.
+message MailText outbound {
+    /// The letter.
+    mail: u32;
+    /// Sender.
+    from: u64;
+    /// Subject.
+    subject: string<32>;
+    /// Body.
+    body: string<200>;
+    /// Attached gold.
+    gold: u64;
+    /// Attached item, or 0.
+    item: u32;
+    /// Attached count.
+    count: u32;
+}
+
+/// A letter arrived.
+message NewMail outbound {
+    /// The letter.
+    mail: u32;
+    /// Sender.
+    from: u64;
+}
+
+/// Ask for one page of your mailbox, newest first.
+message ListMailPage inbound {
+    /// Letters to skip from the newest.
+    offset: u16;
+}
+
+/// One letter in a page.
+struct MailEntry {
+    /// The letter.
+    mail: u32;
+    /// Sender (0 is the system).
+    from: u64;
+    /// Subject.
+    subject: string<32>;
+    /// Opened already.
+    read: bool;
+    /// Attached gold.
+    gold: u64;
+    /// Attached item, or 0.
+    item: u32;
+    /// Attached count.
+    count: u32;
+}
+
+/// One page of your mailbox, newest first.
+message MailPage outbound {
+    /// Letters in the mailbox.
+    total: u16;
+    /// Letters skipped from the newest.
+    offset: u16;
+    /// This page.
+    entries: list<MailEntry, 6>;
+}
+
+/// Send a letter; answered with a `MailResult` and a fresh first page.
+message SendMail inbound {
+    /// Echoed in the result.
+    request: u32;
+    /// The recipient's character.
+    to: u64;
+    /// Subject.
+    subject: string<32>;
+    /// Body.
+    body: string<200>;
+    /// Gold to attach.
+    gold: u64;
+    /// An item is attached.
+    has_item: bool;
+    /// Bag slot of the item to attach.
+    slot: u8;
+    /// How many to attach.
+    count: u32;
+}
+
+/// Take a letter's attachments; answered like `SendMail`.
+message TakeMail inbound {
+    /// Echoed in the result.
+    request: u32;
+    /// The letter.
+    mail: u32;
+}
+
+/// Delete a letter with nothing attached; answered like `SendMail`.
+message DeleteLetter inbound {
+    /// Echoed in the result.
+    request: u32;
+    /// The letter.
+    mail: u32;
+}
+
+/// What a mail command did. `reason` is 0 on success, else one of the
+/// `MAIL_*` codes in the contract crate.
+message MailResult outbound {
+    /// The request it answers.
+    request: u32;
+    /// Done.
+    ok: bool;
+    /// Why not.
+    reason: u8;
+    /// The letter (sent, taken, or deleted).
+    mail: u32;
+}

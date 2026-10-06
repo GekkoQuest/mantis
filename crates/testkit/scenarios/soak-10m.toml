@@ -1,0 +1,14 @@
+# Ten minutes of play, replayed across architectures.
+name = "soak-10m"
+tiers = ["ci-x86_64", "ci-aarch64"]
+ticks = 18000          # 10 minutes at 30 Hz
+bots = 64              # half native, half legacy, honest, rtt100-loss2
+seed = 1
+outputs = "cell-1.log, cell-2.log, hashes.txt (tick, cell, state hash per tick)"
+
+[rows]
+replay_divergences = { target = 0, job = "crates/testkit/ci/soak-cross-arch.md" }
+
+[run]
+soak = "cargo run --release -p toy-server -- soak --out soak-out --ticks 18000 --bots 64 --seed 1"
+replay = "cargo run --release -p toy-server -- replay soak-out/cell-1.log soak-out/cell-2.log"

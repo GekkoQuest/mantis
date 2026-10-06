@@ -1,0 +1,5 @@
+# The walk cycle baked for the far crowd tier.
+skeleton = "avatars/avatar.skeleton.toml"
+clip = "avatars/walk.clip.toml"
+mesh = "avatars/avatar_far.skinmesh.toml"
+fps = 10.0

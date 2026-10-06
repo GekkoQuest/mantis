@@ -1,0 +1,8 @@
+target
+**/*.rs.bk
+artifacts/
+content/cooked/
+**/cooked/
+# the toy package's cook is checked in: toy-server loads it from packages/toy/cooked
+!packages/toy/cooked/
+!packages/toy/cooked/**

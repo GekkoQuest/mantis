@@ -1,0 +1,39 @@
+# The town avatar: idle until `speed` rises, then walk.
+skeleton = "avatars/avatar.skeleton.toml"
+
+[clip.idle]
+path = "avatars/idle.clip.toml"
+
+[clip.walk]
+path = "avatars/walk.clip.toml"
+
+[parameter.speed]
+kind = "float"
+default = 1.0
+
+[node.main]
+kind = "state_machine"
+states = ["idle", "walk"]
+
+[node.idle]
+kind = "clip"
+clip = "idle"
+
+[node.walk]
+kind = "clip"
+clip = "walk"
+
+[transition.main.start]
+from = "idle"
+to = "walk"
+crossfade = 0.2
+conditions = ["speed > 0.1"]
+
+[transition.main.stop]
+from = "walk"
+to = "idle"
+crossfade = 0.2
+conditions = ["speed < 0.1"]
+
+[layer.base]
+node = "main"
