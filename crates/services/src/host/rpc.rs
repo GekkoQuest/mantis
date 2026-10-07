@@ -466,16 +466,31 @@ async fn serve_tls(stream: TcpStream, secure: &ServerTls, ctx: &Serve<'_>) -> bo
     if stream.set_nodelay(true).is_err() {
         return false;
     }
-    let Ok(Ok(tls)) = tokio::time::timeout(HANDSHAKE_TIMEOUT, secure.acceptor.accept(stream)).await else {
+    let accept = secure.acceptor.accept(stream).into_fallible();
+    let tls = match tokio::time::timeout(HANDSHAKE_TIMEOUT, accept).await {
+        Ok(Ok(tls)) => tls,
+        Ok(Err((_, tcp))) => {
+            // Plaintext, or a certificate refused: close the socket so the
+            // peer sees the refusal at once, on every platform.
+            refuse(tcp).await;
+            return false;
+        }
+        Err(_) => return false,
+    };
+    let cluster_ok = peer_identity(tls.get_ref().1.peer_certificates())
+        .ok()
+        .filter(|peer| peer.cluster == secure.cluster);
+    let Some(peer) = cluster_ok else {
+        refuse(tls).await;
         return false;
     };
-    let Ok(peer) = peer_identity(tls.get_ref().1.peer_certificates()) else {
-        return false;
-    };
-    if peer.cluster != secure.cluster {
-        return false;
-    }
     serve_connection(tls, Some(peer.role), ctx).await
+}
+
+/// Closes a refused connection: shuts its write side (a close the peer sees
+/// as the end of the stream) and drops it.
+async fn refuse<S: AsyncWrite + Unpin>(mut stream: S) {
+    let _ = tokio::time::timeout(Duration::from_secs(1), stream.shutdown()).await;
 }
 
 /// Serves one connection: the hello (which must name `certified`, the role
@@ -495,6 +510,7 @@ where
         || hello.payload.get(1..) != Some(proof(ctx.key, role).as_slice())
         || certified.is_some_and(|r| r != role)
     {
+        refuse(stream).await;
         return false;
     }
     serve_requests(stream, role, ctx).await;
@@ -729,6 +745,13 @@ impl RpcClient {
             }
             let c = conn.as_ref().ok_or(RpcError::Disconnected)?;
             lock(&c.pending).insert(call, done);
+            // The reader marks a connection dead before it fails its
+            // waiters: a connection already dead here (refused at once)
+            // will not answer this call.
+            if !c.alive.load(std::sync::atomic::Ordering::Acquire) {
+                lock(&c.pending).remove(&call);
+                return Err(RpcError::Disconnected);
+            }
             c.tx.send(frame(REQUEST, call, M::ID, &payload))
                 .await
                 .map_err(|_| RpcError::Disconnected)?;

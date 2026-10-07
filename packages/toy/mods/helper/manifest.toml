@@ -1,9 +1,7 @@
 # toy.helper: an automation-tier client mod for the toy package. Its "Greet" button
-# says hello in local chat through the chat module's own intent. Where automation is
+# says hello through the package's chat when the package has one; it depends on no
+# module and only reports that greeting is unavailable otherwise. Where automation is
 # not permitted it is demoted to the presentation tier and says so. Generic content only.
 [module]
 key = "toy.helper"
 version = "0.1.0"
-
-[dependencies]
-"std.chat" = "0.1"

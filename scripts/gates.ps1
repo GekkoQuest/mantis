@@ -7,7 +7,12 @@
 # the toy-server executable built next to mantisd (cargo build --workspace --all-targets).
 # No gate needs a database or a container: the PostgreSQL tests skip unless
 # MANTIS_TEST_POSTGRES is set, and this script never sets it.
-param([switch]$StopOnFailure)
+#
+# -Matrix adds a tenth gate, the module removal matrix: for every module, a copy of the
+# workspace without it (and whatever depends on it) must build and pass every test. It
+# builds the workspace once per module in its own target directory under %TEMP% (about
+# 20 GB, removed afterwards) and takes a long time; run it before any push.
+param([switch]$StopOnFailure, [switch]$Matrix)
 . "$PSScriptRoot/common.ps1"
 
 $results = [ordered]@{}
@@ -58,6 +63,10 @@ Invoke-Gate 'architecture' { Invoke-Logged cargo @('test', '-p', 'mantis-testkit
 Invoke-Gate 'idl'          { Invoke-Logged cargo @('test', '-p', 'mantis-testkit', '--test', 'idl_codegen') }
 Invoke-Gate 'modsync'      { Invoke-Logged cargo @('run', '-q', '-p', 'mantis-modsync', '--', '.', '--check') }
 Invoke-Gate 'game-names'   { Find-GameNames }
+if ($Matrix) {
+    Invoke-Gate 'matrix'   { Invoke-Logged cargo @('test', '-p', 'mantis-testkit', '--test', 'module_wiring', '--',
+        '--ignored', 'removing_any_module_folder_keeps_build_and_tests_green', '--nocapture') }
+}
 
 Show-Summary
 if ($results.Values -contains $false) { exit 1 }

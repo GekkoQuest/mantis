@@ -5,6 +5,11 @@
 # the tier its numbers were taken on. Timing rows run in release builds only;
 # the other rows run in every `cargo test --workspace`.
 #
+# Timing limits are per tier: the budget tests read the tier named by the
+# MANTIS_TIER environment variable (default dev-desktop-2026) and its `*_ms`
+# and `*_us` keys below. Whatever the tier, every measured value is printed as a
+# MANTIS-METRIC line, so a regression shows on a tier whose limit is loose.
+#
 #   cell-500-100     tick p99, allocations, per-client encode p99, snapshot bytes
 #   rtt100-loss2     Predictive correction p99, Validated false rejections
 #   speed-violation  Validated detection of a 20% speed violation
@@ -19,6 +24,18 @@ display = "headless; 1920x1080 offscreen target"
 memory_gb = 32
 os = "Windows 11"
 note = "the server-engine development machine; numbers in scenarios were taken here"
+cell_tick_p99_ms = 4.0            # cell-500-100 tick p99
+per_client_encode_p99_us = 20.0   # cell-500-100 per-client encode p99, least-loaded window
+script_loop_tick_p99_ms = 4.0     # cell-500-100 tick p99 with an infinite-loop script
+inspector_tick_p99_ms = 4.0       # cell-500-100 tick p99 with the inspector timing on
+
+[tier.ci-ubuntu-latest]
+cpu = "GitHub-hosted ubuntu-latest runner, x86_64, 4 vCPU shared (3 worker threads)"
+note = "the budget-rows CI job; calibrated from its first run (encode p99 40.1, 39.9, 40.0 us; tick p99 1.21 ms) with margin"
+cell_tick_p99_ms = 4.0
+per_client_encode_p99_us = 60.0
+script_loop_tick_p99_ms = 4.0
+inspector_tick_p99_ms = 4.0
 
 [tier.ci-x86_64]
 cpu = "CI runner, x86_64, 4 vCPU or more"

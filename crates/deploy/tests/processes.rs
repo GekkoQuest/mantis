@@ -54,6 +54,12 @@ fn reconnect_limit_ticks() -> u64 {
     2 * ms.div_ceil(1000 / HZ)
 }
 
+/// The kind of the synthetic outcomes these tests push. The writer treats a
+/// kind as opaque (it stores the outcome and takes ledger rows from any
+/// successful one), so these tests depend on no module; the value is
+/// outside every module's extension range.
+const SYNTHETIC_KIND: u16 = 0xfff0;
+
 fn grant(cell: u64, tick: u64) -> CellOutcome {
     let character = cell * 1000 + tick % CHARACTERS;
     let mut l = Ledger::default();
@@ -69,7 +75,7 @@ fn grant(cell: u64, tick: u64) -> CellOutcome {
     payload[..bytes.len()].copy_from_slice(&bytes);
     CellOutcome {
         tick,
-        kind: 1043,
+        kind: SYNTHETIC_KIND,
         session: 0,
         ok: true,
         payload,

@@ -17,9 +17,18 @@ use toy_server::sim::Sim;
 use toy_server::tunables::Tunables;
 use toy_server::world;
 
-fn chat_enabled(sim: &Sim, cell: usize) -> bool {
+fn module_enabled(sim: &Sim, cell: usize, key: &str) -> bool {
     let states = sim.zone.cells()[cell].world().resource::<ModuleStates>().unwrap();
-    states.is_enabled(states.id("std.chat").unwrap())
+    states.is_enabled(states.id(key).unwrap())
+}
+
+/// The module is in the resolved graph (the module removal matrix builds
+/// the package without each module in turn).
+fn linked(sim: &Sim, key: &str) -> bool {
+    sim.zone.cells()[0]
+        .world()
+        .resource::<ModuleStates>()
+        .is_some_and(|s| s.id(key).is_some())
 }
 
 #[test]
@@ -62,12 +71,22 @@ fn the_zone_pushes_outcomes_and_applies_signed_live_changes() {
         payload: Payload::EMPTY,
     };
     assert!(sim.zone.cells()[0].commands().push(cmd));
+    // The flag switched off: std.chat's, or another leaf module's when the
+    // package is built without chat.
+    let key = ["std.chat", "std.titles", "std.vendor"]
+        .into_iter()
+        .find(|k| linked(&sim, k))
+        .unwrap();
+    if key != "std.chat" {
+        println!("live changes: std.chat is not linked; flagging {key} instead");
+    }
+    let chat_enabled = |sim: &Sim, cell: usize| module_enabled(sim, cell, key);
     assert!(chat_enabled(&sim, 0) && chat_enabled(&sim, 1));
     cluster
         .execute(
             "alice",
             &Command::Flag {
-                name: "std.chat".to_owned(),
+                name: key.to_owned(),
                 on: false,
             },
         )
@@ -289,6 +308,12 @@ fn a_whisper_crosses_cells_through_social_and_both_cells_replay_without_it() {
         Some(mantis_core::log::LogWriter::create(sink, &header(i), 1 << 20).unwrap())
     })
     .unwrap();
+    if !linked(&sim, "std.chat") {
+        println!(
+            "whisper: std.chat is not linked; the cross-cell whisper is skipped (1 chat-dependent check skipped)"
+        );
+        return;
+    }
     // Sessions 1 (x = -17, the first cell) and 12 (x = 3, the second).
     for _ in 0..12 {
         sim.add_bot(Side::Native, Profile::Idle, LinkConfig::PERFECT)
@@ -400,7 +425,9 @@ fn a_party_survives_an_instance_round_trip_and_the_instance_releases_itself() {
     use mantis_services::methods;
     use toy_server::cluster::relocate;
     use toy_server::sim::Side;
-
+    if toy_server::world::skip_unless_linked("std.party", "the party instance round trip") {
+        return;
+    }
     let cluster = LocalCluster::start(&ClusterConfig::local()).unwrap();
     let mut t = Tunables::defaults().unwrap();
     // Release one second after the instance empties.

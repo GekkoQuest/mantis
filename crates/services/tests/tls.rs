@@ -234,9 +234,19 @@ async fn mutual_tls_calls_work_and_plaintext_is_refused() {
     assert!(register_with(&ok).await.is_ok());
     assert_eq!(server.refused(), 0);
 
-    // A plaintext client, right key and all, gets no answer.
+    // A plaintext client, right key and all, gets no answer: the server
+    // closes the socket after refusing, so the client sees the loss at once
+    // (Disconnected); the property owned here is "no answer", so a platform
+    // whose close is slower than the call's timeout may see Timeout instead,
+    // and the refusal is counted either way.
     let plain = RpcClient::new(server.addr(), Role::Gateway, KEY.to_vec());
-    assert_eq!(register_with(&plain).await, Err(RpcError::Disconnected));
+    let answer = plain
+        .call::<methods::RegisterAccount>(&register(), Duration::from_secs(2))
+        .await;
+    assert!(
+        matches!(answer, Err(RpcError::Disconnected | RpcError::Timeout)),
+        "{answer:?}"
+    );
     refused(&server, 1).await;
 
     // Raw bytes that are not a TLS handshake are dropped too.

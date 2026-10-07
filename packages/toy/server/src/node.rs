@@ -87,9 +87,7 @@ impl CellHost for ToyCells {
                     .unwrap_or(0),
             })
         })?;
-        let mut t = Tunables::defaults().map_err(|e| e.to_string())?;
-        t.content = world::cooked_content(&s.cooked, s.key.as_deref())?;
-        world::use_gameplay(&s.cooked, s.key.as_deref())?;
+        let t = crate::content::load(Some(&s.cooked), s.key.as_deref())?.tunables;
         let world_cells: Vec<(u64, (f32, f32))> = (1u64..).zip(world::regions()).collect();
         let instance = world_cells.len() as u64 + 1;
         let state = node.state_dir().to_path_buf();

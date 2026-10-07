@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 pub mod cluster;
+pub mod content;
 pub mod login;
 pub mod modules;
 pub mod node;

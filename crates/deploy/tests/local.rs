@@ -86,7 +86,8 @@ fn local_mode_runs_every_role_and_a_cell_host_joins_it_through_the_registry() {
         1,
         vec![CellOutcome {
             tick: 3,
-            kind: 1043,
+            // Opaque to the writer: no module is involved.
+            kind: 0xfff0,
             session: 0,
             ok: true,
             payload,

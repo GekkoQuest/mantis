@@ -5,7 +5,9 @@
 //! - on joining the world the cell permits both at the automation tier: the presentation
 //!   mod (`toy.hud`) and the automation mod (`toy.helper`) run;
 //! - the automation mod's intent goes through the chat module to the server, whose echo
-//!   comes back as a chat line the presentation mod reads from the chat view model;
+//!   comes back as a chat line in the chat view model. The mods depend on no module, so
+//!   this part runs only when std.chat is linked (the module removal matrix deletes each
+//!   module in turn); otherwise it is skipped, counted, and printed;
 //! - the cell lowers the tier to presentation: the automation mod is demoted at once and
 //!   neither its script nor its widgets reach the network; raised again, it is promoted
 //!   with its script state.
@@ -164,24 +166,48 @@ fn the_package_mods_run_at_the_tier_each_cell_permits() -> TestResult {
         "the hud reads the client's view model"
     );
 
-    // The automation mod greets through the chat module; the server's echo comes back
-    // as a chat line, which the presentation mod reads from the chat view model.
+    // The mods depend on no module, so this test runs whatever the package links (the
+    // module removal matrix deletes each module in turn). The chat round trip runs only
+    // when std.chat is linked; otherwise it is skipped, counted, and printed.
+    let chat = w
+        .client
+        .modules
+        .as_ref()
+        .is_some_and(|(r, _)| r.keys().any(|k| k == "std.chat"));
+    let mut skipped = 0u32;
+
+    // The automation mod greets through the chat module, whose server echo comes back as
+    // a chat line in the chat view model.
     let before = sent(&w.client);
     assert_eq!(
         w.press("toy_helper_greet", "toy.helper.greet", None)?,
         ModRoute::Delivered
     );
     w.run(2)?;
-    assert_eq!(sent(&w.client), before + 1);
-    assert_eq!(
-        w.press("toy_helper_wave", "std.chat.say", Some("waves"))?,
-        ModRoute::Forwarded(IntentRoute::Handled)
-    );
-    w.until("the hud sees both chat lines", &|c| {
-        prop(c, "toy.hud.lines") == Some("chat lines: 2".to_owned())
-    })?;
-    assert_eq!(sent(&w.client), before + 2);
-    assert_eq!(prop(&w.client, "toy.helper.greetings"), Some("1".to_owned()));
+    if chat {
+        assert_eq!(sent(&w.client), before + 1);
+        assert_eq!(
+            w.press("toy_helper_wave", "std.chat.say", Some("waves"))?,
+            ModRoute::Forwarded(IntentRoute::Handled)
+        );
+        w.until("both chat lines echoed", &|c| {
+            prop(c, "std.chat.count") == Some("2".to_owned())
+        })?;
+        assert_eq!(sent(&w.client), before + 2);
+        assert_eq!(prop(&w.client, "toy.helper.greetings"), Some("1".to_owned()));
+    } else {
+        skipped += 1;
+        println!("client mods: std.chat is not linked; the greeting round trip is skipped");
+        assert_eq!(sent(&w.client), before, "nothing to greet through");
+        assert_eq!(
+            prop(&w.client, "toy.helper.status"),
+            Some("this package has no chat to greet in".to_owned())
+        );
+        assert_eq!(
+            w.press("toy_helper_wave", "std.chat.say", Some("waves"))?,
+            ModRoute::Forwarded(IntentRoute::NotModule)
+        );
+    }
 
     // The cell lowers the tier: the helper is demoted the moment the list arrives, and
     // nothing it does reaches the network.
@@ -232,8 +258,13 @@ fn the_package_mods_run_at_the_tier_each_cell_permits() -> TestResult {
         ModRoute::Delivered
     );
     w.run(3)?;
-    assert_eq!(sent(&w.client), before + 1);
-    assert_eq!(prop(&w.client, "toy.helper.greetings"), Some("2".to_owned()));
+    if chat {
+        assert_eq!(sent(&w.client), before + 1);
+        assert_eq!(prop(&w.client, "toy.helper.greetings"), Some("2".to_owned()));
+    } else {
+        skipped += 1;
+        assert_eq!(sent(&w.client), before);
+    }
     let stats = w
         .client
         .mods
@@ -244,8 +275,9 @@ fn the_package_mods_run_at_the_tier_each_cell_permits() -> TestResult {
     assert_eq!(stats.presentation_refused, 1, "{stats:?}");
     assert_eq!(stats.script_errors, 0, "{stats:?}");
     println!(
-        "client mods: {} permitted lists applied, {} intents handled, {} refused at the presentation tier",
+        "client mods: {} permitted lists applied, {} intents handled, {} refused at the presentation tier; {skipped} chat-dependent checks skipped",
         stats.permitted, stats.intents_handled, stats.presentation_refused
     );
+    assert_eq!(stats.intents_handled, if chat { 3 } else { 0 }, "{stats:?}");
     Ok(())
 }

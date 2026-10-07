@@ -28,7 +28,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use mantis_core::content::ContentHash;
-use mantis_core::ledger::{GOLD, ledger_of};
+use mantis_core::ledger::ledger_of;
 use mantis_core::log::{BuildId, LogEntry, LogError, LogReader};
 use mantis_server::intent::CellLogSchema;
 use mantis_services::generated::services as m;
@@ -36,11 +36,16 @@ use mantis_services::host::{RPC_TIMEOUT, Role};
 use mantis_services::methods;
 use support::{CellSpec, Cluster, TestStore, service, wait_for};
 
-/// std.containers' service-only grant, the cell host's test load.
-const GRANT: u16 = 1043;
+/// The module whose service-only grant is the cell host's test load. Plan
+/// 13: any module may be deleted and the tests stay green, so the checks
+/// that need the grant run only when the package links it.
+const CONTAINERS: &str = "std.containers";
 /// Ticks between snapshots: the recovery budget.
 const SNAPSHOT_EVERY: u64 = 150;
 const HOST: &str = "cells-toy";
+
+/// One ledger row: (character, cell, tick, item, change).
+type Row = (u64, u64, u64, u32, i64);
 
 fn workspace() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
@@ -131,9 +136,41 @@ fn recovery(output: &str, run: u32) -> BTreeMap<u64, (u64, u64, u64)> {
         .collect()
 }
 
-/// Every grant every log of the state directory holds, of every complete
-/// tick, as (character, cell, tick, gold).
-fn logged_grants(state: &Path) -> BTreeSet<(u64, u64, u64, i64)> {
+/// Whether the toy-server executable under test links module `key`: its
+/// own resolved module graph, as `serve` prints it at start (it is run for
+/// 0 ticks on ephemeral loopback ports). This crate cannot call the
+/// package's `world::linked` (engine crates never depend on packages), so
+/// it asks the binary the test runs. Fails closed: no graph, no answer.
+fn linked(key: &str) -> bool {
+    let out = Command::new(toy_server())
+        .args([
+            "serve",
+            "--quic",
+            "127.0.0.1:0",
+            "--tcp",
+            "127.0.0.1:0",
+            "--ticks",
+            "0",
+            "--cooked",
+        ])
+        .arg(cooked())
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        out.status.success() && text.contains("modules of package"),
+        "toy-server did not print its module graph:
+{text}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    text.lines()
+        .any(|l| l.trim_start().starts_with(&format!("{key} ")) && l.contains(" enabled"))
+}
+
+/// Every ledger row of every successful outcome every log of the state
+/// directory holds, of every complete tick, as (character, cell, tick,
+/// item, change), whatever module made it.
+fn logged_rows(state: &Path) -> BTreeSet<Row> {
     let mut out = BTreeSet::new();
     for entry in std::fs::read_dir(state).unwrap() {
         let path = entry.unwrap().path();
@@ -161,12 +198,11 @@ fn logged_grants(state: &Path) -> BTreeSet<(u64, u64, u64, i64)> {
         loop {
             match reader.next_entry() {
                 Ok(Some(LogEntry::Outcome { tick, outcome })) => {
-                    if outcome.kind.0 == GRANT
-                        && outcome.result.is_ok()
+                    if outcome.result.is_ok()
                         && let Some(l) = ledger_of(outcome.payload.as_slice())
                     {
-                        for r in l.rows().filter(|r| r.item == GOLD) {
-                            pending.push((r.character, cell, tick.0, r.delta));
+                        for r in l.rows() {
+                            pending.push((r.character, cell, tick.0, r.item, r.delta));
                         }
                     }
                 }
@@ -180,7 +216,7 @@ fn logged_grants(state: &Path) -> BTreeSet<(u64, u64, u64, i64)> {
             }
         }
         println!(
-            "log {}: cell {cell}, ticks {first}..={last}, {} grants not in a complete tick",
+            "log {}: cell {cell}, ticks {first}..={last}, {} ledger rows not in a complete tick",
             path.display(),
             pending.len()
         );
@@ -188,9 +224,9 @@ fn logged_grants(state: &Path) -> BTreeSet<(u64, u64, u64, i64)> {
     out
 }
 
-/// The writer's gold rows of `characters`, as (character, cell, tick,
-/// gold), read over RPC as Ops; and how many rows there were.
-fn durable_grants(cluster: &Cluster, characters: &BTreeSet<u64>) -> (BTreeSet<(u64, u64, u64, i64)>, usize) {
+/// The writer's ledger rows of `characters`, as (character, cell, tick,
+/// item, change), read over RPC as Ops; and how many rows there were.
+fn durable_rows(cluster: &Cluster, characters: &BTreeSet<u64>) -> (BTreeSet<Row>, usize) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -211,9 +247,9 @@ fn durable_grants(cluster: &Cluster, characters: &BTreeSet<u64>) -> (BTreeSet<(u
             n < 64,
             "character {c}: the ledger page is full, the check would be blind"
         );
-        for r in got.rows.iter().filter(|r| r.item == GOLD) {
+        for r in got.rows.iter() {
             rows += 1;
-            set.insert((*c, r.cell.0, r.tick, r.delta));
+            set.insert((*c, r.cell.0, r.tick, r.item, r.delta));
         }
     }
     (set, rows)
@@ -223,10 +259,18 @@ fn durable_grants(cluster: &Cluster, characters: &BTreeSet<u64>) -> (BTreeSet<(u
 fn bots_play_through_a_process_per_role_cluster_and_a_killed_cell_host_comes_back_losing_nothing() {
     let cooked = cooked();
     let toy = toy_server();
+    let containers = linked(CONTAINERS);
+    if !containers {
+        println!(
+            "skipped: {CONTAINERS} is not linked; the grant test load and its volume check are skipped \
+             (1 module-dependent check skipped); every other check runs"
+        );
+    }
     let package = format!(
         "quic = \"{{quic}}\"\ntcp = \"{{tcp}}\"\ncert_out = \"toy-cert.der\"\ncooked = \"{}\"\n\
-         seed = 7\ngrant_every_ticks = 30\n",
-        cooked.display().to_string().replace('\\', "/")
+         seed = 7\ngrant_every_ticks = {}\n",
+        cooked.display().to_string().replace('\\', "/"),
+        if containers { 30 } else { 0 }
     );
     let mut cluster = Cluster::new(
         "toy",
@@ -322,13 +366,16 @@ fn bots_play_through_a_process_per_role_cluster_and_a_killed_cell_host_comes_bac
         .copied()
         .unwrap_or(0);
     let tick_ready = cluster.metrics(HOST).get("cell_tick").copied().unwrap_or(0);
+    // Nothing left unacknowledged; and, when the test load runs (so there
+    // are outcomes to push), new batches durable through the new link.
+    // Without the load nothing produces outcomes, so only the first holds.
     wait_for(
         "the restarted host's link durable",
         Duration::from_secs(60),
         || {
             let now = cluster.metrics(HOST);
             now.get("link_pending") == Some(&0)
-                && now.get("link_durable_batches").copied().unwrap_or(0) > durable_before
+                && (!containers || now.get("link_durable_batches").copied().unwrap_or(0) > durable_before)
         },
     );
     let tick_durable = cluster.metrics(HOST).get("cell_tick").copied().unwrap_or(0);
@@ -355,16 +402,19 @@ fn bots_play_through_a_process_per_role_cluster_and_a_killed_cell_host_comes_bac
     assert_eq!(cluster.drain(HOST, Duration::from_secs(60)).code(), Some(0));
     assert!(cluster.output(HOST).contains("drained: every outcome durable"));
 
-    // Every grant every log holds is in the writer exactly once.
-    let logged = logged_grants(&cluster.dir.join("state").join(HOST));
-    assert!(logged.len() > 20, "the test load granted: {}", logged.len());
+    // Every ledger row every log holds is in the writer exactly once,
+    // whichever modules made them.
+    let logged = logged_rows(&cluster.dir.join("state").join(HOST));
+    if containers {
+        assert!(logged.len() > 20, "the test load granted: {}", logged.len());
+    }
     let characters: BTreeSet<u64> = logged.iter().map(|g| g.0).collect();
-    let (durable, rows) = durable_grants(&cluster, &characters);
+    let (durable, rows) = durable_rows(&cluster, &characters);
     let lost = logged.difference(&durable).count();
     let unexpected = durable.difference(&logged).count();
     let duplicates = rows - durable.len();
     println!(
-        "MANTIS-METRIC deploy_toy_grants_logged={} characters={} lost={lost} unexpected={unexpected} duplicates={duplicates}",
+        "MANTIS-METRIC deploy_toy_ledger_rows_logged={} characters={} lost={lost} unexpected={unexpected} duplicates={duplicates}",
         logged.len(),
         characters.len()
     );

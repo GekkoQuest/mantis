@@ -52,6 +52,15 @@ The job fails on any `diff` output or any non-zero exit.
 
 ## Notes
 
+- Every toy subcommand runs with the same content: the cooked package
+  checked in at `packages/toy/cooked`, verified (`--cooked DIR` and
+  `--key FILE` choose another; the jobs use the defaults). The log header
+  records its content hash, and `replay` refuses a log written with other
+  content naming both hashes. The default cook path is compiled into the
+  binary from its source checkout, so the compare job runs the binary from
+  a checkout of the same commit (or passes `--cooked` pointing at one).
+  Covered locally by `packages/toy/server/tests/soak_replay.rs`, which runs
+  these exact invocations with fewer ticks.
 - Logs carry a build id derived from the package name and version, not
   the target, so a log written on one architecture is accepted by the
   other architecture's binary of the same source. A version bump between

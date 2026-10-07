@@ -231,7 +231,13 @@ fn cargo(dir: &Path, target: &Path, args: &[&str]) -> Result<(), String> {
 }
 
 /// The removal matrix. Slow (a workspace build per module), so it runs
-/// in CI: `cargo test -p mantis-testkit --test module_wiring -- --ignored`.
+/// in CI and in `scripts/gates.ps1 -Matrix`:
+/// `cargo test -p mantis-testkit --test module_wiring -- --ignored`.
+///
+/// Each module is removed in turn with every module that requires it,
+/// transitively. A module another remaining module lists as `optional`
+/// keeps only its contract crate: the dependent compiles against the
+/// interface and runs without the provider.
 #[test]
 #[ignore = "removal matrix: a workspace build per module; run in CI"]
 fn removing_any_module_folder_keeps_build_and_tests_green() -> Result<(), String> {
@@ -239,7 +245,19 @@ fn removing_any_module_folder_keeps_build_and_tests_green() -> Result<(), String
     let modules = discover(&root).map_err(|e| e.to_string())?;
     let scratch = std::env::temp_dir().join(format!("mantis-removal-{}", std::process::id()));
     let target = scratch.join("target");
-    for victim in &modules {
+    // Every victim runs, and every failure is reported: a matrix that stopped
+    // at its first victim would hide the others behind it.
+    let mut failures = Vec::new();
+    // `MANTIS_MATRIX_ONLY=std.guild,std.chat` runs those victims alone (to
+    // re-check one after a fix); unset, every module is a victim.
+    let only: Option<Vec<String>> = std::env::var("MANTIS_MATRIX_ONLY")
+        .ok()
+        .map(|v| v.split(',').map(|k| k.trim().to_owned()).collect());
+    for victim in modules
+        .iter()
+        .filter(|m| only.as_ref().is_none_or(|o| o.contains(&m.manifest.key)))
+    {
+        let started = std::time::Instant::now();
         // The module and everything depending on its contract, transitively.
         let mut gone: BTreeSet<String> = BTreeSet::from([victim.manifest.contract.clone()]);
         loop {
@@ -263,16 +281,63 @@ fn removing_any_module_folder_keeps_build_and_tests_green() -> Result<(), String
                 .join(&m.origin)
                 .join("modules")
                 .join(&m.feature);
-            std::fs::remove_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            // A module that a remaining module names as `optional` leaves
+            // its contract crate behind: the dependent compiles against the
+            // contract (an interface, as every module dependency is) and
+            // resolves the provider absent at start. Everything else of the
+            // module goes, so the package no longer has it.
+            let optional_of_remaining = modules
+                .iter()
+                .filter(|o| !gone.contains(&o.manifest.contract))
+                .any(|o| {
+                    o.manifest
+                        .optional
+                        .iter()
+                        .any(|k| *k == m.manifest.key || *k == m.manifest.contract)
+                });
+            if optional_of_remaining {
+                for e in std::fs::read_dir(&dir)
+                    .map_err(|e| format!("{}: {e}", dir.display()))?
+                    .flatten()
+                {
+                    if e.file_name() == "contract" {
+                        continue;
+                    }
+                    let p = e.path();
+                    let removed = if p.is_dir() {
+                        std::fs::remove_dir_all(&p)
+                    } else {
+                        std::fs::remove_file(&p)
+                    };
+                    removed.map_err(|e| format!("{}: {e}", p.display()))?;
+                }
+            } else {
+                std::fs::remove_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            }
         }
         for (package, side) in hosts(&copy) {
             let g = generate_side(&copy, &package, side).map_err(|e| format!("without {gone:?}: {e}"))?;
             mantis_modsync::write(&g).map_err(|e| e.to_string())?;
         }
-        cargo(&copy, &target, &["build", "--workspace", "--all-targets"])
-            .map_err(|e| format!("without {gone:?}: {e}"))?;
-        cargo(&copy, &target, &["test", "--workspace"]).map_err(|e| format!("without {gone:?}: {e}"))?;
+        let result = cargo(&copy, &target, &["build", "--workspace", "--all-targets"])
+            .and_then(|()| cargo(&copy, &target, &["test", "--workspace", "--no-fail-fast"]));
+        eprintln!(
+            "removal matrix: without {gone:?}: {} in {:.0} s",
+            if result.is_ok() { "green" } else { "FAILED" },
+            started.elapsed().as_secs_f64()
+        );
+        if let Err(e) = result {
+            failures.push(format!("without {gone:?}: {e}"));
+        }
     }
     let _ = std::fs::remove_dir_all(&scratch);
-    Ok(())
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join(
+            "
+
+",
+        ))
+    }
 }

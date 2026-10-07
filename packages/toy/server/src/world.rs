@@ -54,9 +54,6 @@ pub fn uncooked_content() -> ContentHash {
     ContentHash::of(PACKAGE_TOML.as_bytes())
 }
 
-/// Where the cook writes the package (`cargo run -p mantis-cook -- packages/toy`).
-pub const COOKED_DIR: &str = "packages/toy/cooked";
-
 /// The package's content hash, as clients must match it: the hash of the
 /// cooked gameplay bundle in `cooked`, verified against `public_key` (the
 /// development key the same cook wrote, `cooked/keys/dev.pub`, when
@@ -96,6 +93,26 @@ pub const TABLES: &[(&str, &[u8])] = &[
         include_bytes!("../../content/tables/std.titles.list"),
     ),
 ];
+
+/// The module `key` is in the resolved graph: tests of one module's
+/// behaviour through the server check it first and skip, counted and
+/// printed, when that module is not linked (the module removal matrix
+/// builds the package without each module in turn).
+#[must_use]
+pub fn linked(key: &str) -> bool {
+    module_set(&BTreeMap::new()).is_ok_and(|s| s.graph().get(key).is_some())
+}
+
+/// Skips the rest of a test (printing why) unless module `key` is linked:
+/// `true` when the test should return.
+#[must_use]
+pub fn skip_unless_linked(key: &str, what: &str) -> bool {
+    if linked(key) {
+        return false;
+    }
+    println!("skipped: {key} is not linked; {what} is skipped (1 module-dependent check skipped)");
+    true
+}
 
 /// Resolves the package's module graph from the linked manifests, the
 /// package's flags, and `live` flags (Ops), and pairs it with the linked

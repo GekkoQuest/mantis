@@ -107,6 +107,12 @@ fn grant_all(sim: &Sim, characters: u64) -> u64 {
 fn a_crashed_cell_host_recovers_from_snapshot_and_log_losing_no_acknowledged_outcome() {
     const BOTS: u64 = 16;
     const CRASH: u64 = 420;
+    if toy_server::world::skip_unless_linked(
+        "std.containers",
+        "a crashed cell host recovers from snapshot and log losing no acknowledged outcome",
+    ) {
+        return;
+    }
     let cluster = LocalCluster::start(&ClusterConfig::local()).unwrap();
     let t = Tunables::defaults().unwrap();
     let logs: Vec<MemoryLog> = (0..2).map(|_| MemoryLog::default()).collect();
@@ -243,6 +249,12 @@ fn a_crashed_cell_host_recovers_from_snapshot_and_log_losing_no_acknowledged_out
 fn clean_shutdown_snapshots_and_a_new_build_recovers_from_the_snapshot_alone() {
     const BOTS: u64 = 8;
     const TICKS: u64 = 200;
+    if toy_server::world::skip_unless_linked(
+        "std.containers",
+        "clean shutdown snapshots and a new build recovers from the snapshot alone",
+    ) {
+        return;
+    }
     let t = Tunables::defaults().unwrap();
     let logs: Vec<MemoryLog> = (0..2).map(|_| MemoryLog::default()).collect();
     let mut sim = Sim::new(t, SEED, |i| {
@@ -495,6 +507,9 @@ fn social_restart_ticks(tls: bool) -> (u64, u64) {
 
 #[test]
 fn a_social_restart_during_party_changes_converges_with_no_member_lost() {
+    if toy_server::world::skip_unless_linked("std.party", "the social restart during party changes") {
+        return;
+    }
     let first = social_restart_ticks(false);
     assert_eq!(
         social_restart_ticks(false),
@@ -600,11 +615,23 @@ fn ledger_rows_survive_a_crash_recover_cycle_unchanged(store: mantis_services::c
 
 #[test]
 fn ledger_rows_survive_a_crash_recover_cycle_unchanged_in_memory() {
+    if toy_server::world::skip_unless_linked(
+        "std.containers",
+        "ledger rows survive a crash recover cycle unchanged in memory",
+    ) {
+        return;
+    }
     ledger_rows_survive_a_crash_recover_cycle_unchanged(mantis_services::cluster::StoreChoice::Memory);
 }
 
 #[test]
 fn ledger_rows_survive_a_crash_recover_cycle_unchanged_on_postgres() {
+    if toy_server::world::skip_unless_linked(
+        "std.containers",
+        "ledger rows survive a crash recover cycle unchanged on postgres",
+    ) {
+        return;
+    }
     let Some(conn) = mantis_services::persist::pg::postgres_or_skip(
         "ledger_rows_survive_a_crash_recover_cycle_unchanged_on_postgres",
     ) else {
@@ -636,6 +663,12 @@ fn a_log_torn_at_any_byte_of_its_last_tick_recovers_to_the_last_complete_tick() 
     use toy_server::node::start_cell;
     use toy_server::recovery::write_snapshots;
     const TICKS: u64 = 170;
+    if toy_server::world::skip_unless_linked(
+        "std.containers",
+        "a log torn at any byte of its last tick recovers to the last complete tick",
+    ) {
+        return;
+    }
     let t = Tunables::defaults().unwrap();
     let dir = std::env::temp_dir().join(format!("mantis-torn-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

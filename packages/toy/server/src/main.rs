@@ -8,6 +8,10 @@
 //!                    [--login-out FILE]
 //! toy-server soak   --out DIR [--ticks N] [--bots N] [--seed N]
 //! toy-server replay LOG...
+//!
+//! Every subcommand takes [--cooked DIR] [--key FILE]: the content it runs
+//! with is the cooked package (default the checked-in cook), verified, so
+//! logs any subcommand writes replay with the defaults.
 //! toy-server node   <role> --config FILE   (a deployed node: cell-host, or any service role)
 //! toy-server bots   [--quic ADDR --cert FILE | --tcp ADDR] [--profile P] [--count N]
 //!                   [--seconds N] [--seed N] [--cooked DIR] [--key FILE]
@@ -133,19 +137,19 @@ fn main() -> ExitCode {
     }
 }
 
-/// The tunables, with the content hash of the cooked package: `--cooked
-/// DIR` (default [`world::COOKED_DIR`]) and `--key FILE` (default the
-/// development key that cook wrote). The server refuses to start without a
-/// trustworthy cook.
-fn cooked_tunables(args: &Args) -> Result<Tunables, String> {
-    let mut t = Tunables::defaults().map_err(|e| e.to_string())?;
-    let dir = PathBuf::from(args.value("--cooked").unwrap_or(world::COOKED_DIR));
+/// The content every subcommand runs with ([`toy_server::content::load`]):
+/// the cooked package in `--cooked DIR` (default the checked-in cook,
+/// [`world::COOKED_PATH`]) verified with `--key FILE` (default the
+/// development key that cook wrote). Nothing runs without a trustworthy
+/// cook.
+fn loaded_content(args: &Args) -> Result<toy_server::content::Loaded, String> {
+    let dir = args.value("--cooked").map(PathBuf::from);
     let key = args.value("--key").map(PathBuf::from);
-    t.content = world::cooked_content(&dir, key.as_deref())
-        .map_err(|e| format!("{e} (cook the package first: cargo run -p mantis-cook -- packages/toy)"))?;
-    // Cells run the graphs of the same verified bundle.
-    world::use_gameplay(&dir, key.as_deref())?;
-    Ok(t)
+    toy_server::content::load(dir.as_deref(), key.as_deref())
+}
+
+fn cooked_tunables(args: &Args) -> Result<Tunables, String> {
+    loaded_content(args).map(|l| l.tunables)
 }
 
 /// Starts every service role in this process (`cluster`).
@@ -333,7 +337,7 @@ fn write_snapshots(args: &Args, zone: &mantis_server::zone::Zone, t: &Tunables) 
 }
 
 fn soak(args: &Args) -> Result<(), String> {
-    let t = Tunables::defaults().map_err(|e| e.to_string())?;
+    let t = cooked_tunables(args)?;
     let out = PathBuf::from(args.value("--out").ok_or("--out DIR is required")?);
     let ticks = args.number("--ticks", 18_000)?;
     let bots = args.number("--bots", 64)?;
@@ -390,18 +394,13 @@ fn soak(args: &Args) -> Result<(), String> {
 }
 
 fn replay_logs(args: &Args) -> Result<(), String> {
-    // A log records the content hash it ran with; replay checks it, so a
-    // log made by `serve` replays against the same cook (`--uncooked` for
-    // logs from `soak`, which does not cook: `--content manifest`).
-    let t = if args.value("--content") == Some("manifest") {
-        Tunables::defaults().map_err(|e| e.to_string())?
-    } else {
-        cooked_tunables(args)?
-    };
+    // A log records the content hash it ran with; replay loads the same
+    // cook every subcommand does by default and explains a mismatch.
+    let loaded = loaded_content(args)?;
     let mut any = false;
     for path in args.positional() {
         any = true;
-        replay_one(&t, Path::new(path))?;
+        replay_one(&loaded, Path::new(path))?;
     }
     if any {
         Ok(())
@@ -410,10 +409,22 @@ fn replay_logs(args: &Args) -> Result<(), String> {
     }
 }
 
-fn replay_one(t: &Tunables, path: &Path) -> Result<(), String> {
+fn replay_one(loaded: &toy_server::content::Loaded, path: &Path) -> Result<(), String> {
+    let t = &loaded.tunables;
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut reader = LogReader::<CellLogSchema>::open(&bytes, build_id(), t.content)
-        .map_err(|e| format!("{}: {e:?}", path.display()))?;
+    let mut reader = match LogReader::<CellLogSchema>::open(&bytes, build_id(), t.content) {
+        Ok(r) => r,
+        Err(mantis_core::log::LogError::ContentMismatch { found, .. }) => {
+            return Err(format!(
+                "{}: {}",
+                path.display(),
+                toy_server::content::check_log(loaded, found)
+                    .err()
+                    .unwrap_or_default()
+            ));
+        }
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
     let header = *reader.header();
     let index = usize::try_from(header.cell.0.saturating_sub(1)).map_err(|_| "cell id")?;
     // Cell seeds are the zone seed mixed with the cell id (world::cell_config).

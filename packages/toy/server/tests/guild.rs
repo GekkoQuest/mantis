@@ -79,6 +79,15 @@ fn say_guild(sim: &mut Sim, bot: usize, text: &str) {
 
 #[test]
 fn a_guild_spans_cells_survives_a_social_restart_and_every_cell_replays() {
+    if toy_server::world::skip_unless_linked("std.guild", "the cross-cell guild test") {
+        return;
+    }
+    if toy_server::world::skip_unless_linked(
+        "std.friends",
+        "the cross-cell guild test (it checks friends too)",
+    ) {
+        return;
+    }
     let mut cluster = LocalCluster::start(&ClusterConfig::local()).unwrap();
     let t = Tunables::defaults().unwrap();
     let build = mantis_core::log::BuildId([9; 32]);
@@ -140,6 +149,13 @@ fn a_guild_spans_cells_survives_a_social_restart_and_every_cell_replays() {
     until(&mut sim, "both in the world", &|s| {
         s.bots.iter().all(|b| b.bot.avatar().is_some()) && s.ticks() >= 31
     });
+    // Guild chat is std.chat's guild channel: checked when chat is linked;
+    // otherwise skipped, counted, and printed (the module removal matrix).
+    let chat = sim.zone.cells()[0]
+        .world()
+        .resource::<mantis_server::modules::ModuleStates>()
+        .is_some_and(|s| s.id("std.chat").is_some());
+    let mut skipped = 0u32;
 
     // 1 founds a guild; the name is checked in the cell and by social.
     let mut create = Vec::new();
@@ -184,14 +200,18 @@ fn a_guild_spans_cells_survives_a_social_restart_and_every_cell_replays() {
     });
 
     // Guild chat crosses cells through the social role.
-    say_guild(&mut sim, 0, "meet at the gate");
-    until(&mut sim, "the guild line in cell 2", &|s| {
-        guild_lines(s, 1).contains(&(1, "meet at the gate".to_owned()))
-    });
-    assert!(
-        guild_lines(&sim, 0).contains(&(1, "meet at the gate".to_owned())),
-        "the speaker sees its own line"
-    );
+    if chat {
+        say_guild(&mut sim, 0, "meet at the gate");
+        until(&mut sim, "the guild line in cell 2", &|s| {
+            guild_lines(s, 1).contains(&(1, "meet at the gate".to_owned()))
+        });
+        assert!(
+            guild_lines(&sim, 0).contains(&(1, "meet at the gate".to_owned())),
+            "the speaker sees its own line"
+        );
+    } else {
+        skipped += 1;
+    }
 
     // A rank change reaches the member in the other cell.
     let mut rank = Vec::new();
@@ -246,10 +266,14 @@ fn a_guild_spans_cells_survives_a_social_restart_and_every_cell_replays() {
     for _ in 0..40 {
         step(&mut sim);
     }
-    say_guild(&mut sim, 0, "still here");
-    until(&mut sim, "a guild line after the restart", &|s| {
-        guild_lines(s, 1).contains(&(1, "still here".to_owned()))
-    });
+    if chat {
+        say_guild(&mut sim, 0, "still here");
+        until(&mut sim, "a guild line after the restart", &|s| {
+            guild_lines(s, 1).contains(&(1, "still here".to_owned()))
+        });
+    } else {
+        skipped += 1;
+    }
     // 2 asks for its list after the restart and is told 1 is its friend.
     let lists_before = seen(&sim, 1, FRIEND_LIST).len();
     sim.bots[1].bot.feature(ExtensionKind(SHOW_FRIENDS), &[]);
@@ -276,5 +300,8 @@ fn a_guild_spans_cells_survives_a_social_restart_and_every_cell_replays() {
         let mut cell = world::cell(&t, i, 41, world::adapters(t.content), None).unwrap();
         let report = mantis_core::replay::replay(&mut cell, &mut reader).unwrap();
         assert!(report.ticks > 100, "cell {i}");
+    }
+    if skipped > 0 {
+        println!("guild: std.chat is not linked; {skipped} guild chat checks skipped");
     }
 }

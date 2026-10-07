@@ -4,6 +4,11 @@
 //! in debug builds. The hardware tier is recorded in
 //! `crates/testkit/scenarios/cell-500-100.toml`.
 //!
+//! Limits are per hardware tier (plan 17): `MANTIS_TIER` names a tier of
+//! `crates/testkit/scenarios/tiers.toml` (default `dev-desktop-2026`), whose
+//! `*_ms` and `*_us` keys are the limits. Every measured value is printed as
+//! a `MANTIS-METRIC` line whatever the tier. On the development tier:
+//!
 //! - cell tick, p99: under 4 ms;
 //! - per-client Outbound encode, p99: under 20 µs (each encode job is timed
 //!   by the worker set's job wrapper, on workers and inline alike), taken
@@ -66,6 +71,43 @@ impl OutboundSink for Bytes {
     }
 }
 
+/// The timing limits of the tier the tests run on.
+struct Limits {
+    tier: String,
+    cell_tick_p99_ms: f64,
+    per_client_encode_p99_us: f64,
+    script_loop_tick_p99_ms: f64,
+    inspector_tick_p99_ms: f64,
+}
+
+/// `MANTIS_TIER`'s limits (default `dev-desktop-2026`) from tiers.toml.
+fn limits() -> Result<Limits, String> {
+    let tier = std::env::var("MANTIS_TIER").unwrap_or_else(|_| "dev-desktop-2026".to_owned());
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../crates/testkit/scenarios/tiers.toml"
+    );
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+    let doc = mantis_core::module::toml::parse(&text).map_err(|e| format!("{path}: {e}"))?;
+    let table = doc
+        .table(&format!("tier.{tier}"))
+        .ok_or_else(|| format!("MANTIS_TIER={tier}: no [tier.{tier}] in {path}"))?;
+    let get = |key: &str| -> Result<f64, String> {
+        match table.get(key) {
+            Some(mantis_core::module::toml::Value::Float(f)) => f.parse().map_err(|_| format!("{key}: {f}")),
+            Some(mantis_core::module::toml::Value::Int(i)) => Ok(*i as f64),
+            _ => Err(format!("tier {tier} has no {key} limit in {path}")),
+        }
+    };
+    Ok(Limits {
+        cell_tick_p99_ms: get("cell_tick_p99_ms")?,
+        per_client_encode_p99_us: get("per_client_encode_p99_us")?,
+        script_loop_tick_p99_ms: get("script_loop_tick_p99_ms")?,
+        inspector_tick_p99_ms: get("inspector_tick_p99_ms")?,
+        tier,
+    })
+}
+
 /// Measurement windows of the encode row; its p99 is the least-loaded one.
 const WINDOWS: usize = 3;
 
@@ -87,6 +129,7 @@ fn p99(mut v: Vec<f64>) -> f64 {
 #[cfg_attr(debug_assertions, ignore = "timing budgets run in release builds")]
 fn cell_500_100_tick_and_encode_p99() {
     let _serial = serial();
+    let limits = limits().unwrap();
     let t = Tunables::defaults().unwrap();
     let mut crowd = Crowd::cell_500_100(&t, 7).unwrap();
     let threads = std::thread::available_parallelism().map_or(2, |n| n.get().saturating_sub(1).clamp(1, 4));
@@ -122,14 +165,22 @@ fn cell_500_100_tick_and_encode_p99() {
         .iter()
         .map(|ns| format!("{:.1}", *ns as f64 / 1000.0))
         .collect();
+    let encode_us = encode_p99_ns as f64 / 1000.0;
     eprintln!(
-        "budget: cell-500-100 on {threads} worker threads: tick p99 {tick_p99:.3} ms (mean {tick_mean:.3} ms; target < 4 ms); per-client encode p99 <= {:.1} us, least-loaded of windows [{}] us, 900 x {} jobs each (target < 20 us)",
-        encode_p99_ns as f64 / 1000.0,
+        "budget: cell-500-100 on {threads} worker threads, tier {}: tick p99 {tick_p99:.3} ms (mean {tick_mean:.3} ms; target < {} ms); per-client encode p99 <= {encode_us:.1} us, least-loaded of windows [{}] us, 900 x {} jobs each (target < {} us)",
+        limits.tier,
+        limits.cell_tick_p99_ms,
         all.join(", "),
-        crowd.clients()
+        crowd.clients(),
+        limits.per_client_encode_p99_us
     );
-    assert!(tick_p99 < 4.0);
-    assert!(encode_p99_ns < 20_000);
+    println!(
+        "MANTIS-METRIC cell_500_100 tier={} threads={threads} tick_p99_ms={tick_p99:.3} encode_p99_us={encode_us:.1} encode_windows_us=[{}]",
+        limits.tier,
+        all.join(",")
+    );
+    assert!(tick_p99 < limits.cell_tick_p99_ms);
+    assert!(encode_us < limits.per_client_encode_p99_us);
 }
 
 /// The script runtime's budget row (decision 0001): a server script that
@@ -146,6 +197,7 @@ fn cell_500_100_with_an_infinite_loop_script_meets_the_tick_budget() {
     use mantis_server::scripting::{ScriptModule, ScriptSource, Scripts};
 
     let _serial = serial();
+    let limits = limits().unwrap();
 
     let t = Tunables::defaults().unwrap();
     let scripts = ScriptModule::new(
@@ -187,11 +239,15 @@ fn cell_500_100_with_an_infinite_loop_script_meets_the_tick_budget() {
     let stats = crowd.cell.world().resource::<Scripts>().unwrap().stats;
     let tick_p99 = p99(ticks);
     eprintln!(
-        "budget: cell-500-100 with an infinite-loop script: tick p99 {tick_p99:.3} ms (target < 4 ms); budget stops {}",
-        stats.budget_exhausted
+        "budget: cell-500-100 with an infinite-loop script, tier {}: tick p99 {tick_p99:.3} ms (target < {} ms); budget stops {}",
+        limits.tier, limits.script_loop_tick_p99_ms, stats.budget_exhausted
+    );
+    println!(
+        "MANTIS-METRIC cell_500_100_script_loop tier={} tick_p99_ms={tick_p99:.3}",
+        limits.tier
     );
     assert!(stats.budget_exhausted >= 300, "the loop was stopped every tick");
-    assert!(tick_p99 < 4.0);
+    assert!(tick_p99 < limits.script_loop_tick_p99_ms);
 }
 
 /// The Ops inspector's cost (plan 13): the same `cell-500-100` timed and
@@ -208,6 +264,7 @@ fn the_inspector_does_not_move_the_cell_500_100_tick_row() {
     use toy_server::cluster::OsStopwatch;
 
     let _serial = serial();
+    let limits = limits().unwrap();
 
     let t = Tunables::defaults().unwrap();
     let mut off = Crowd::cell_500_100(&t, 7).unwrap();
@@ -257,6 +314,13 @@ fn the_inspector_does_not_move_the_cell_500_100_tick_row() {
         "budget: inspector cost on cell-500-100: tick p99 {p_on:.3} ms timed vs {p_off:.3} ms untimed; mean {m_on:.3} vs {m_off:.3} ms (+{:.1}%); report publish max {publish_max:.3} ms every 30 ticks (target: tick row unchanged, < 4 ms)",
         (m_on / m_off - 1.0) * 100.0
     );
-    assert!(p_on < 4.0, "the tick row holds with the inspector on");
+    println!(
+        "MANTIS-METRIC cell_500_100_inspector tier={} tick_p99_on_ms={p_on:.3} tick_p99_off_ms={p_off:.3} mean_on_ms={m_on:.3} mean_off_ms={m_off:.3}",
+        limits.tier
+    );
+    assert!(
+        p_on < limits.inspector_tick_p99_ms,
+        "the tick row holds with the inspector on"
+    );
     assert!(m_on < m_off * 1.05 + 0.02, "timing costs under 5% of a tick");
 }

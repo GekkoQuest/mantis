@@ -1,7 +1,6 @@
 panel id=toy_hud_panel style=toy_hud_panel {
   text id=toy_hud_title text="Session"
   text id=toy_hud_character bind="toy.hud.character"
-  text id=toy_hud_lines bind="toy.hud.lines"
   row id=toy_hud_ping_row gap=4 {
     button id=toy_hud_ping text="Ping" intent="toy.hud.ping"
     text id=toy_hud_pings bind="toy.hud.pings"

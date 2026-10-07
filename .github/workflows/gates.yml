@@ -54,6 +54,8 @@ jobs:
           toolchain: 1.98.1
       - uses: Swatinem/rust-cache@v2
       - name: Server budget tests
+        env:
+          MANTIS_TIER: ci-ubuntu-latest   # budget limits are per hardware tier (crates/testkit/scenarios/tiers.toml)
         run: |
           cargo test --release -p toy-server --test play --test budget_timing -- --include-ignored --nocapture
       - name: Exhaustive deterministic math sweep
