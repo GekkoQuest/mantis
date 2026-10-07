@@ -985,3 +985,18 @@ message LeaseState outbound {
     /// Unix milliseconds it lapses unless renewed.
     expires_ms: u64;
 }
+
+/// A gateway checks an entry token without redeeming it (the cell host
+/// does that), to learn where to send the session.
+message RouteToken inbound {
+    /// The token.
+    token: list<u8, 32>;
+}
+
+/// Where an entry token's session goes.
+message EntryRoute outbound {
+    /// The cell the token names.
+    cell: CellNo;
+    /// Its host's game address; empty when no host serves the cell now.
+    address: string<64>;
+}

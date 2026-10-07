@@ -19,7 +19,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 
-use mantis_adapter_contract::native::{ServerFrame, decode_server_frame, encode_inbound};
+use mantis_adapter_contract::native::{
+    FRAME_SNAPSHOT, ServerFrame, decode_server_frame, encode_inbound, snapshot_epoch,
+};
 use mantis_adapter_contract::{
     Channel, ConnectionId, Extension, ExtensionKind, ExtensionMessage, ExtensionRefusal, FeatureState, Hello,
     Inbound, Move, Outbound, PROTOCOL_VERSION, PermittedModules, RefuseReason, RemoteSample, SnapshotAck,
@@ -161,6 +163,9 @@ pub struct NetStats {
     pub reconnects: u64,
     /// Server messages this build does not know, ignored.
     pub unknown_messages: u64,
+    /// Snapshots dropped because they came from a host the session already left (stamped
+    /// with an epoch before the last `Transferred`).
+    pub stale_epoch: u64,
     /// Moves not sent because the session was not accepted yet (before `Welcome`, or
     /// while reconnecting).
     pub moves_unsent: u64,
@@ -179,6 +184,11 @@ pub struct NativeSession<T: Transport> {
     /// The first move sent on this connection (stamped on frames: prediction resumes from
     /// it after a reconnect).
     first_move: Option<mantis_core::kinematics::InputSeq>,
+    /// The epoch of the last `Transferred`: a snapshot the gateway stamped with an older
+    /// epoch is from a host the session already left, and is dropped.
+    wire_epoch: u32,
+    /// The newest resume ticket.
+    ticket: Option<ResumeTicket>,
     /// The client mods announced in `Hello`, kept for reconnects.
     hello_modules: Vec<mantis_adapter_contract::ModuleEntry>,
     scratch: WireFrame,
@@ -230,6 +240,8 @@ impl<T: Transport> NativeSession<T> {
             epoch: 0,
             connection: 0,
             first_move: None,
+            wire_epoch: 0,
+            ticket: None,
             hello_modules: Vec::new(),
             scratch: frame(),
             last_applied: None,
@@ -319,6 +331,17 @@ impl<T: Transport> NativeSession<T> {
         }
     }
 
+    /// The newest resume ticket the gateway issued (after `Welcome` and every
+    /// `Transferred`), if any.
+    pub fn resume_ticket(&self) -> Option<&ResumeTicket> {
+        self.ticket.as_ref()
+    }
+
+    /// Takes the resume ticket for a reconnect (it is single use).
+    pub fn take_resume_ticket(&mut self) -> Option<ResumeTicket> {
+        self.ticket.take()
+    }
+
     /// The `request` the last [`NativeSession::send_extension`] carried: every send gets
     /// the next non-zero number, which the server echoes in any refusal of that send.
     pub fn last_request(&self) -> u32 {
@@ -380,8 +403,9 @@ impl<T: Transport> NativeSession<T> {
     /// with `token` (a resume ticket, or a fresh entry token) and the same client mods as
     /// the first `Hello`. Everything per connection starts over: the baselines, the stale
     /// filter, the move repeat, the session state; the simulation sees a new epoch and a
-    /// new connection with the next frame and resets prediction to the authoritative
-    /// state, as at spawn.
+    /// new connection with the next frame and resumes prediction from the restored state
+    /// (`Predictor::resume`). The resume ticket the session holds is kept until the
+    /// server sends a new one.
     pub fn reconnect(&mut self, transport: T, token: &[u8]) {
         self.transport = transport;
         self.rebase();
@@ -479,11 +503,20 @@ impl<T: Transport> NativeSession<T> {
             epoch,
             connection,
             first_move,
+            wire_epoch,
+            ticket,
             ..
         } = self;
-        let (epoch, connection, first_move) = (*epoch, *connection, *first_move);
+        let (connection, first_move) = (*connection, *first_move);
         transport.poll(&mut |event| match event {
             TransportEvent::Frame { bytes, .. } => {
+                // A snapshot from a host the session already left (it overtook `Transferred`
+                // on the way): dropped before it can touch the stale filter or the ring.
+                if bytes.first() == Some(&FRAME_SNAPSHOT) && snapshot_epoch(bytes).unwrap_or(0) < *wire_epoch
+                {
+                    stats.stale_epoch += 1;
+                    return;
+                }
                 scratch.clear();
                 match decode_server_frame(bytes, &*ring, scratch) {
                     Ok(ServerFrame::Snapshot) => {
@@ -503,7 +536,7 @@ impl<T: Transport> NativeSession<T> {
                         }
                         match snapshots.acquire() {
                             Some(mut frame) => {
-                                frame.epoch = epoch;
+                                frame.epoch = *epoch;
                                 frame.connection = connection;
                                 frame.resume_from = first_move;
                                 stats.overflowed += u64::from(fill(&mut frame, scratch, clock.now()));
@@ -519,11 +552,19 @@ impl<T: Transport> NativeSession<T> {
                         };
                     }
                     Ok(ServerFrame::Message(Outbound::Refuse(r))) => *state = SessionState::Refused(r.reason),
+                    Ok(ServerFrame::Message(Outbound::Transferred(t))) => {
+                        // A cell hand-off: the next frames come from another host.
+                        ring.clear();
+                        (*last_applied, *wire_epoch) = (None, (*wire_epoch).max(t.epoch));
+                        pending_acks.clear();
+                        (*epoch, stats.rebases) = (epoch.wrapping_add(1), stats.rebases + 1);
+                    }
+                    Ok(ServerFrame::Message(Outbound::ResumeTicket(r))) => {
+                        *ticket = Some(ResumeTicket::of(&r, clock.now()));
+                    }
                     Ok(ServerFrame::Message(Outbound::SetPosition(_))) => stats.position_resets += 1,
                     Ok(ServerFrame::Message(Outbound::FeatureState(f))) => {
-                        if features.len() < features.capacity() {
-                            features.push(f);
-                        }
+                        let _ = push_bounded(features, f);
                     }
                     Ok(ServerFrame::Message(Outbound::PermittedModules(p))) => {
                         stats.permitted_updates += 1;
@@ -532,17 +573,11 @@ impl<T: Transport> NativeSession<T> {
                     }
                     Ok(ServerFrame::Message(Outbound::ExtensionMessage(m))) => {
                         stats.extension_messages += 1;
-                        if extensions.len() < extensions.capacity() {
-                            extensions.push(m);
-                        } else {
-                            stats.extension_messages_dropped += 1;
-                        }
+                        stats.extension_messages_dropped += u64::from(!push_bounded(extensions, m));
                     }
                     Ok(ServerFrame::Message(Outbound::ExtensionRefused(r))) => {
                         stats.extensions_refused += 1;
-                        if refusals.len() < refusals.capacity() {
-                            refusals.push((r.kind, r.request, r.reason));
-                        }
+                        let _ = push_bounded(refusals, (r.kind, r.request, r.reason));
                     }
                     // A message this build does not know (the contract enums are
                     // non-exhaustive): ignored and counted.
@@ -658,4 +693,47 @@ fn push_entity_changes(out: &mut Vec<crate::modules::EntityChange>, wire: &WireF
             out.push(crate::modules::EntityChange::Removed(*entity));
         }
     }
+}
+
+/// A resume ticket: presented in `Hello` to resume the session after a disconnect,
+/// single use, valid for `valid_for` after the connection dropped.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ResumeTicket {
+    token: [u8; 32],
+    len: u8,
+    /// How long the ticket stays valid after a disconnect.
+    pub valid_for: std::time::Duration,
+    /// When it arrived.
+    pub received_at: crate::time::HostInstant,
+}
+
+impl ResumeTicket {
+    fn of(m: &mantis_adapter_contract::ResumeTicket, now: crate::time::HostInstant) -> Self {
+        let mut token = [0u8; 32];
+        let mut len = 0u8;
+        for (dst, src) in token.iter_mut().zip(m.token.iter()) {
+            *dst = *src;
+            len += 1;
+        }
+        Self {
+            token,
+            len,
+            valid_for: std::time::Duration::from_millis(m.expires_ms),
+            received_at: now,
+        }
+    }
+
+    /// The token bytes.
+    pub fn token(&self) -> &[u8] {
+        self.token.get(..usize::from(self.len)).unwrap_or(&[])
+    }
+}
+
+/// Pushes `item` if `v` has room (the queues never grow). Returns whether it was kept.
+fn push_bounded<T>(v: &mut Vec<T>, item: T) -> bool {
+    let room = v.len() < v.capacity();
+    if room {
+        v.push(item);
+    }
+    room
 }

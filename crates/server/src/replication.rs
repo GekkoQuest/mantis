@@ -225,6 +225,21 @@ impl ClientRep {
         }
     }
 
+    /// Forgets everything the client was known to hold (it reconnected and
+    /// starts with nothing): no baseline, no known entity. The next
+    /// snapshot is whole and announces every entity in view again.
+    pub fn forget_client_view(&mut self) {
+        self.acked = None;
+        self.slot_acked = [false; FRAME_RING];
+        self.known.clear();
+        self.leaving.clear();
+        self.hint.fill(u16::MAX);
+        self.history.fill(History::default());
+        for f in &mut self.frames {
+            f.clear();
+        }
+    }
+
     /// The newest acknowledged snapshot tick.
     #[must_use]
     pub fn acked(&self) -> Option<Tick> {

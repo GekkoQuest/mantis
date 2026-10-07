@@ -264,7 +264,7 @@ pub fn allowed(session: Option<&CellSession>, intent: &CellIntent) -> Result<(),
             | CellIntent::SetModTier { .. }
             | CellIntent::ClockSlip { .. },
         )
-        | (Some(_), CellIntent::Throttled { .. }) => Ok(()),
+        | (Some(_), CellIntent::Throttled { .. } | CellIntent::Linked { .. }) => Ok(()),
         (
             Some(_),
             CellIntent::SetModule { .. }

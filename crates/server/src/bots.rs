@@ -20,7 +20,9 @@ use mantis_adapter_contract::core_types::{
     AimAngles, Angle16, BoundedArray, ContentHash, EntityId, InputSeq, MotionModifiers, MotionState,
     MoveButtons, MoveInput, Tick, Vec3,
 };
-use mantis_adapter_contract::native::{BaselineStore, ServerFrame, decode_server_frame, encode_inbound};
+use mantis_adapter_contract::native::{
+    BaselineStore, ServerFrame, decode_server_frame, encode_inbound, snapshot_epoch,
+};
 use mantis_adapter_contract::{
     Channel, ConnectionId, Extension, ExtensionKind, ExtensionRefusal, Hello, Inbound, LocalAvatar, Move,
     MoveClaim, MovementMode, Outbound, PROTOCOL_VERSION, RefuseReason, SnapshotAck, SnapshotFrame, Transport,
@@ -73,6 +75,20 @@ pub enum BotEvent {
         /// Why.
         reason: ExtensionRefusal,
     },
+    /// The session continues on another host (a gateway's hand-off).
+    Transferred {
+        /// The cell now serving it.
+        cell: u64,
+        /// The hand-off count.
+        epoch: u32,
+        /// The new host's tick.
+        tick: Tick,
+    },
+    /// A ticket to resume the session over a new connection.
+    Ticket([u8; 32]),
+    /// A frame that did not decode (a snapshot delta against a frame this
+    /// client does not hold, for one).
+    Undecodable,
     /// A snapshot.
     Snapshot {
         /// Its tick.
@@ -98,6 +114,9 @@ pub trait BotWire: Send {
     /// True when the client currently knows `id` as a remote entity (it
     /// entered view and has not left it).
     fn sees(&self, id: EntityId) -> bool;
+    /// The connection was replaced (a resume): forget every baseline and
+    /// known entity. Protocols without baselines need nothing.
+    fn reconnected(&mut self) {}
 }
 
 /// The native protocol's client half. The mode is normally Predictive; a
@@ -107,6 +126,9 @@ pub struct NativeWire {
     ring: Vec<SnapshotFrame>,
     scratch: SnapshotFrame,
     known: BTreeSet<EntityId>,
+    /// The hand-off epoch of the last `Transferred`: snapshots stamped with
+    /// an older one (or none) are the host's before, and dropped.
+    epoch: u32,
 }
 
 impl NativeWire {
@@ -120,7 +142,15 @@ impl NativeWire {
                 .collect(),
             scratch: SnapshotFrame::with_capacity(64, 256, 64, 64),
             known: BTreeSet::new(),
+            epoch: 0,
         }
+    }
+
+    fn forget(&mut self) {
+        for f in &mut self.ring {
+            f.clear();
+        }
+        self.known.clear();
     }
 }
 
@@ -144,6 +174,13 @@ impl BotWire for NativeWire {
     }
 
     fn decode(&mut self, bytes: &[u8], events: &mut dyn FnMut(BotEvent)) {
+        if self.epoch > 0
+            && snapshot_epoch(bytes).unwrap_or(0) < self.epoch
+            && bytes.first() == Some(&mantis_adapter_contract::native::FRAME_SNAPSHOT)
+        {
+            // A snapshot of the host before the last hand-off.
+            return;
+        }
         self.scratch.clear();
         let frame = decode_server_frame(bytes, &self.ring[..], &mut self.scratch);
         match frame {
@@ -194,13 +231,35 @@ impl BotWire for NativeWire {
             Ok(ServerFrame::Message(Outbound::SetPosition(p))) => {
                 events(BotEvent::Corrected { position: p.position });
             }
-            // Undecodable, or a message a newer contract adds: ignored.
-            Ok(_) | Err(_) => {}
+            Ok(ServerFrame::Message(Outbound::Transferred(t))) => {
+                // The new host counts its own ticks and shares no baseline.
+                self.forget();
+                self.epoch = t.epoch;
+                events(BotEvent::Transferred {
+                    cell: t.cell,
+                    epoch: t.epoch,
+                    tick: t.tick,
+                });
+            }
+            Ok(ServerFrame::Message(Outbound::ResumeTicket(r))) => {
+                let mut ticket = [0u8; 32];
+                for (slot, b) in ticket.iter_mut().zip(r.token.iter()) {
+                    *slot = *b;
+                }
+                events(BotEvent::Ticket(ticket));
+            }
+            Err(_) => events(BotEvent::Undecodable),
+            // A message a newer contract adds: ignored.
+            Ok(_) => {}
         }
     }
 
     fn sees(&self, id: EntityId) -> bool {
         self.known.contains(&id)
+    }
+
+    fn reconnected(&mut self) {
+        self.forget();
     }
 }
 
@@ -301,6 +360,15 @@ pub struct BotStats {
     pub last_remotes: usize,
     /// For a watched entity: whether the client knew it, per snapshot.
     pub watched: Vec<bool>,
+    /// Hand-offs to another host, in order: (cell, epoch, the new host's
+    /// tick).
+    pub transfers: Vec<(u64, u32, Tick)>,
+    /// The latest resume ticket.
+    pub ticket: Option<[u8; 32]>,
+    /// Resumes over a new connection.
+    pub resumes: u64,
+    /// Frames that did not decode.
+    pub undecodable: u64,
 }
 
 /// A headless client.
@@ -377,6 +445,30 @@ impl Bot {
     pub fn with_token(mut self, token: &[u8]) -> Self {
         self.token = token.to_vec();
         self
+    }
+
+    /// Resumes the session over `transport` (a new connection to the same
+    /// gateway) with the latest resume ticket: every baseline and the
+    /// prediction start over. False, and nothing sent, without a ticket.
+    pub fn resume(&mut self, transport: Box<dyn Transport>) -> bool {
+        let Some(ticket) = self.stats.ticket.take() else {
+            return false;
+        };
+        self.transport = transport;
+        self.wire.reconnected();
+        self.welcomed = false;
+        self.synced = false;
+        self.history.clear();
+        self.stats.resumes += 1;
+        let hello = Inbound::Hello(Hello {
+            protocol: PROTOCOL_VERSION,
+            capabilities: 0,
+            content: self.cfg.content,
+            modules: BoundedArray::new(),
+            token: BoundedArray::from_slice(&ticket).unwrap_or_default(),
+        });
+        self.send(&hello);
+        true
     }
 
     /// Closes the connection, as a client quitting does: the host ends
@@ -466,6 +558,15 @@ impl Bot {
                 self.avatar = avatar;
             }
             BotEvent::Refused(r) => self.stats.refused = Some(r),
+            BotEvent::Transferred { cell, epoch, tick } => {
+                // The avatar continues on another host: placed again by the
+                // next snapshot, its inputs acknowledged from scratch.
+                self.stats.transfers.push((cell, epoch, tick));
+                self.synced = false;
+                self.history.clear();
+            }
+            BotEvent::Ticket(t) => self.stats.ticket = Some(t),
+            BotEvent::Undecodable => self.stats.undecodable += 1,
             BotEvent::Permitted(p) => {
                 let keys = p.modules.iter().map(|m| m.as_str().to_owned()).collect();
                 self.stats.permitted.push((p.tier, keys));
@@ -514,6 +615,7 @@ impl Bot {
                     // The first sight of the avatar places the bot.
                     Some(l) if !self.synced => {
                         self.synced = true;
+                        self.avatar = Some(l.id);
                         self.state = l.state;
                         self.history.clear();
                     }

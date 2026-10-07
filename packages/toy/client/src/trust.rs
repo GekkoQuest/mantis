@@ -15,7 +15,6 @@
 //! A refused server is reported with its cause ([`notice`]): an unknown issuer, the wrong
 //! name, an expired or not-yet-valid certificate.
 
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use mantis_net::NetError;
@@ -93,18 +92,19 @@ impl TrustArgs {
         }
     }
 
-    /// Reads the files and builds the trust for a server at `addr`.
+    /// Reads the files and builds the trust for the server `host` (the host part of
+    /// `--server`, the default server name).
     ///
     /// # Errors
     /// A file that cannot be read, or a bundle with no certificate, in words.
-    pub fn load(&self, addr: SocketAddr) -> Result<ServerTrust, String> {
+    pub fn load(&self, host: &str) -> Result<ServerTrust, String> {
         let read =
             |p: &Path, flag: &str| std::fs::read(p).map_err(|e| format!("{flag} {}: {e}", p.display()));
         match self {
             Self::Pinned(path) => Ok(ServerTrust::Pinned(read(path, "--cert")?)),
             Self::Bundle { bundle, server_name } => {
                 let pem = read(bundle, "--ca-bundle")?;
-                let name = server_name.clone().unwrap_or_else(|| addr.ip().to_string());
+                let name = server_name.clone().unwrap_or_else(|| host.to_owned());
                 ServerTrust::from_pem_bundle(&pem, &name)
                     .map_err(|e| format!("--ca-bundle {}: {e}", bundle.display()))
             }
@@ -113,7 +113,7 @@ impl TrustArgs {
                     Some(p) => read(p, "--ca-bundle")?,
                     None => Vec::new(),
                 };
-                let name = server_name.clone().unwrap_or_else(|| addr.ip().to_string());
+                let name = server_name.clone().unwrap_or_else(|| host.to_owned());
                 ServerTrust::public_with_pem(&pem, &name).map_err(|e| format!("--public-roots: {e}"))
             }
         }

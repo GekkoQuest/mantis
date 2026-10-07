@@ -70,7 +70,7 @@ fn a_ca_bundle_verifies_the_game_listener_across_a_certificate_rotation() -> Tes
         },
         "unused.der",
     )?
-    .load(addr)?;
+    .load(toy_client::gateway::Gateway::parse(&addr.to_string())?.host())?;
     let clock: Arc<dyn HostClock> = Arc::new(mantis_client::platform::MonotonicClock::new());
     let mut client = ToyClient::connect_trusted(&runtime, addr, &trust, Arc::clone(&clock), HeadlessSink)?;
     client.start(b"trusted");

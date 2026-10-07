@@ -188,6 +188,16 @@ impl RemoteTracks {
         }
     }
 
+    /// Forgets every track (a new host names its entities afresh).
+    fn clear(&mut self) {
+        for (_, i) in self.index.drain(..) {
+            if let Some(s) = self.slots.get_mut(i) {
+                *s = None;
+            }
+            self.free.push(i);
+        }
+    }
+
     fn evict_older_than(&mut self, cutoff: HostInstant) {
         for i in 0..self.slots.len() {
             let stale = matches!(self.slots.get(i), Some(Some(t)) if t.last_arrival < cutoff);
@@ -275,6 +285,9 @@ pub struct ClientSimStats {
     pub rebases: u64,
     /// Reconnects: prediction was reset to the authoritative state.
     pub reconnects: u64,
+    /// Avatars adopted under a new entity id at a hand-off or a resume, keeping
+    /// prediction (not counted in `resets`).
+    pub avatars_adopted: u64,
 }
 
 /// The client simulation for one world session.
@@ -301,6 +314,8 @@ pub struct ClientSim<M: MotionStep, O: IntentSink> {
     epoch: Option<(u32, u32)>,
     /// A new connection was seen; prediction resumes at its next authoritative state.
     resume_pending: bool,
+    /// A new host since the last authoritative state: a new avatar id is the same avatar.
+    rebase_pending: bool,
     /// The first input sent on the newest connection (from its frames).
     resume_from: Option<InputSeq>,
     stats: ClientSimStats,
@@ -381,6 +396,7 @@ impl<M: MotionStep, O: IntentSink> ClientSim<M, O> {
             last_server_tick: None,
             epoch: None,
             resume_pending: false,
+            rebase_pending: false,
             resume_from: None,
             stats: ClientSimStats::default(),
             #[cfg(debug_assertions)]
@@ -546,6 +562,7 @@ impl<M: MotionStep, O: IntentSink> ClientSim<M, O> {
         let max_extrapolation = self.config.max_remote_extrapolation;
         let mut newest_local = None;
         let mut new_connection = false;
+        let mut rebased = false;
         let (epoch, resume_from, last_server_tick, stats, timeline, jitter, remotes, markers) = (
             &mut self.epoch,
             &mut self.resume_from,
@@ -572,6 +589,10 @@ impl<M: MotionStep, O: IntentSink> ClientSim<M, O> {
                 if epoch.is_some() {
                     *last_server_tick = None;
                     timeline.rebase();
+                    // The new host (or connection) sends every entity again, under its own
+                    // ids: the old tracks would linger as ghosts until they time out.
+                    remotes.clear();
+                    rebased = true;
                     stats.rebases = stats.rebases.saturating_add(1);
                     new_connection |= epoch.is_some_and(|(_, c)| c != this.1);
                 }
@@ -619,6 +640,9 @@ impl<M: MotionStep, O: IntentSink> ClientSim<M, O> {
         });
         if new_connection {
             self.resume_pending = true;
+        }
+        if rebased {
+            self.rebase_pending = true;
         }
         newest_local
     }
@@ -695,6 +719,12 @@ impl<M: MotionStep, O: IntentSink> TickHandler for ClientSim<M, O> {
             // Future predictions integrate with the authoritative modifiers; replays use
             // the modifiers each input was originally predicted with.
             self.mods = auth.mods;
+            if std::mem::take(&mut self.rebase_pending) && self.local.is_some_and(|l| l != auth.id) {
+                // A new host names the same avatar afresh: adopt the id and keep predicting
+                // (the host carried the last applied input, so acknowledgements continue).
+                self.local = Some(auth.id);
+                self.stats.avatars_adopted = self.stats.avatars_adopted.saturating_add(1);
+            }
             if self.resume_pending && self.local == Some(auth.id) {
                 // A resumed connection: the server restored this state and applies inputs
                 // again from the first one sent on the new connection.

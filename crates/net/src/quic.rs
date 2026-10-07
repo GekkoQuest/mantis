@@ -579,6 +579,10 @@ fn transport_config() -> quinn::TransportConfig {
     t
 }
 
+/// How long a closing connection waits for its peer to read the frames
+/// queued before the close.
+const CLOSE_LINGER: std::time::Duration = std::time::Duration::from_millis(500);
+
 async fn writer_task(
     conn: Connection,
     mut send: SendStream,
@@ -592,6 +596,25 @@ async fn writer_task(
     loop {
         queue.notify.notified().await;
         if queue.closing.load(Ordering::Acquire) {
+            // What was queued before the close still goes (a refusal, then
+            // the disconnect): the reliable frames are written and the
+            // stream finished, and the peer has a moment to read them.
+            loop {
+                let Some(out) = lock(&queue.frames).pop_front() else {
+                    break;
+                };
+                if out.channel == Channel::Reliable {
+                    let len = u32::try_from(out.bytes.len()).unwrap_or(u32::MAX);
+                    header.copy_from_slice(&len.to_le_bytes());
+                    if send.write_all(&header).await.is_err() || send.write_all(&out.bytes).await.is_err() {
+                        break;
+                    }
+                }
+                shared.pool.give_back(out.bytes);
+            }
+            if send.finish().is_ok() {
+                let _ = tokio::time::timeout(CLOSE_LINGER, send.stopped()).await;
+            }
             conn.close(0u32.into(), b"closed");
             shared.disconnected(id, DisconnectReason::Local);
             return;
@@ -665,6 +688,136 @@ async fn datagram_task(conn: Connection, shared: Arc<Shared>, id: ConnectionId) 
             let buf = shared.pool.copy_of(payload);
             shared.push(NetEvent::Frame(id, Channel::Unreliable, buf));
         }
+    }
+}
+
+/// A client configuration trusting servers as `trust` says, and where its
+/// verifier records why it refused one.
+type TrustSlot = Arc<std::sync::Mutex<Option<TrustFailure>>>;
+
+fn client_config(trust: &ServerTrust) -> Result<(quinn::ClientConfig, TrustSlot), NetError> {
+    let roots = trust.root_store()?;
+    let inner = rustls::client::WebPkiServerVerifier::builder_with_provider(Arc::new(roots), provider())
+        .build()
+        .map_err(|e| NetError::Tls(e.to_string()))?;
+    let failure: TrustSlot = Arc::default();
+    let verifier = Arc::new(Classifying {
+        inner,
+        expected: trust.server_name().to_owned(),
+        failure: Arc::clone(&failure),
+    });
+    let mut crypto = rustls::ClientConfig::builder_with_provider(provider())
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(|e| NetError::Tls(e.to_string()))?
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
+        .with_no_client_auth();
+    crypto.alpn_protocols = vec![ALPN.to_vec()];
+    let quic = quinn::crypto::rustls::QuicClientConfig::try_from(crypto)
+        .map_err(|e| NetError::Tls(e.to_string()))?;
+    let mut config = quinn::ClientConfig::new(Arc::new(quic));
+    config.transport_config(Arc::new(transport_config()));
+    Ok((config, failure))
+}
+
+/// Many client connections from one endpoint, each opened on demand without
+/// blocking ([`crate::gateway::Dialer`]): a gateway's connections to cell
+/// hosts. A connection that cannot be made is reported `Disconnected`.
+pub struct QuicDialer {
+    shared: Arc<Shared>,
+    poller: Poller,
+    endpoint: quinn::Endpoint,
+    handle: tokio::runtime::Handle,
+    server_name: String,
+    next: u64,
+}
+
+impl QuicDialer {
+    /// A dialer trusting hosts as `trust` says (a cluster CA naming every
+    /// host by one name, or a pinned development certificate).
+    ///
+    /// # Errors
+    /// [`NetError`] for TLS or socket failures.
+    pub fn new(runtime: &NetRuntime, trust: &ServerTrust) -> Result<Self, NetError> {
+        let (config, _) = client_config(trust)?;
+        let endpoint = {
+            let _guard = runtime.handle().enter();
+            let bind: SocketAddr = "0.0.0.0:0"
+                .parse()
+                .map_err(|_| NetError::Connect("bind address".to_owned()))?;
+            let mut endpoint = quinn::Endpoint::client(bind).map_err(|e| NetError::Io(e.kind()))?;
+            endpoint.set_default_client_config(config);
+            endpoint
+        };
+        Ok(Self {
+            shared: Shared::new(),
+            poller: Poller::new(),
+            endpoint,
+            handle: runtime.handle().clone(),
+            server_name: trust.server_name().to_owned(),
+            next: 1,
+        })
+    }
+}
+
+impl crate::gateway::Dialer for QuicDialer {
+    fn dial(&mut self, address: &str) -> Option<ConnectionId> {
+        let addr: SocketAddr = address.parse().ok()?;
+        let id = ConnectionId(self.next);
+        self.next += 1;
+        let (endpoint, name, sh) = (
+            self.endpoint.clone(),
+            self.server_name.clone(),
+            Arc::clone(&self.shared),
+        );
+        self.handle.spawn(async move {
+            let opened = async {
+                let conn = endpoint.connect(addr, &name).ok()?.await.ok()?;
+                let (mut send, recv) = conn.open_bi().await.ok()?;
+                send.write_all(&PREAMBLE).await.ok()?;
+                Some((conn, send, recv))
+            }
+            .await;
+            let Some((conn, send, recv)) = opened else {
+                sh.push(NetEvent::Disconnected(id, DisconnectReason::Io));
+                return;
+            };
+            let queue = SendQueue::new();
+            sh.connected(id, Arc::clone(&queue));
+            tokio::spawn(datagram_task(conn.clone(), Arc::clone(&sh), id));
+            tokio::spawn(writer_task(conn, send, queue, Arc::clone(&sh), id));
+            reader_task(recv, sh, id, false).await;
+        });
+        Some(id)
+    }
+}
+
+impl Drop for QuicDialer {
+    fn drop(&mut self) {
+        self.shared.shutdown.store(true, Ordering::Release);
+        self.endpoint.close(0u32.into(), b"shutdown");
+    }
+}
+
+impl Transport for QuicDialer {
+    fn poll(&mut self, sink: &mut dyn FnMut(TransportEvent<'_>)) {
+        self.poller.poll(&self.shared, sink);
+    }
+
+    fn send(&mut self, conn: ConnectionId, channel: Channel, bytes: &[u8]) -> Result<(), TransportError> {
+        self.shared.send(conn, channel, bytes, MAX_UNRELIABLE)
+    }
+
+    fn disconnect(&mut self, conn: ConnectionId) {
+        self.shared.close(conn);
+    }
+
+    fn kind(&self) -> TransportKind {
+        TransportKind::Quic
+    }
+
+    fn max_unreliable_payload(&self) -> usize {
+        MAX_UNRELIABLE
     }
 }
 
@@ -793,27 +946,7 @@ impl QuicClient {
         addr: SocketAddr,
         trust: &ServerTrust,
     ) -> Result<Self, NetError> {
-        let roots = trust.root_store()?;
-        let inner = rustls::client::WebPkiServerVerifier::builder_with_provider(Arc::new(roots), provider())
-            .build()
-            .map_err(|e| NetError::Tls(e.to_string()))?;
-        let failure: Arc<std::sync::Mutex<Option<TrustFailure>>> = Arc::default();
-        let verifier = Arc::new(Classifying {
-            inner,
-            expected: trust.server_name().to_owned(),
-            failure: Arc::clone(&failure),
-        });
-        let mut crypto = rustls::ClientConfig::builder_with_provider(provider())
-            .with_protocol_versions(&[&rustls::version::TLS13])
-            .map_err(|e| NetError::Tls(e.to_string()))?
-            .dangerous()
-            .with_custom_certificate_verifier(verifier)
-            .with_no_client_auth();
-        crypto.alpn_protocols = vec![ALPN.to_vec()];
-        let quic = quinn::crypto::rustls::QuicClientConfig::try_from(crypto)
-            .map_err(|e| NetError::Tls(e.to_string()))?;
-        let mut config = quinn::ClientConfig::new(Arc::new(quic));
-        config.transport_config(Arc::new(transport_config()));
+        let (config, failure) = client_config(trust)?;
         let bind: SocketAddr = if addr.is_ipv6() { "[::]:0" } else { "0.0.0.0:0" }
             .parse()
             .map_err(|_| NetError::Connect("bind address".to_owned()))?;

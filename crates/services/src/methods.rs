@@ -106,6 +106,9 @@ method!(/// Delete one of an account's characters.
     RemoveCharacter: DeleteCharacter -> Empty, callers [Gateway, Ops]);
 method!(/// A cell host reports where a character left or arrived.
     PlaceCharacter: CharacterPlaced -> Empty, callers [Cell]);
+method!(/// A gateway learns where an entry token's session goes, without
+    /// redeeming the token.
+    RouteEntry: RouteToken -> EntryRoute, callers [Gateway]);
 method!(/// A role instance takes or renews its role's lease (role failover).
     Lease: AcquireLease -> LeaseState, callers [Account, Realm, Social, Matchmaking, Ops]);
 
@@ -189,6 +192,12 @@ impl m::Validators for Checks {
         Ok(())
     }
     fn validate_redeem(&self, _msg: &m::Redeem) -> Result<(), ValidationError> {
+        Ok(())
+    }
+    fn validate_route_token(&self, msg: &m::RouteToken) -> Result<(), ValidationError> {
+        if msg.token.len() != 32 {
+            return Err(ValidationError("an entry token is 32 bytes"));
+        }
         Ok(())
     }
     fn validate_redeem_on_host(&self, msg: &m::RedeemOnHost) -> Result<(), ValidationError> {
@@ -420,7 +429,7 @@ pub fn server_of(id: u16) -> Option<Role> {
     }
     serving!(Account: RegisterAccount, LoginAccount, VerifySession, BanAccount, Maintenance, ChangeAccountPassword);
     serving!(Realm: RegisterCellHost, Withdraw, ListAccountCharacters, NewCharacter, Select, RedeemToken,
-        RedeemForHost, Transfer, NewInstance, RealmRun, RemoveCharacter, PlaceCharacter);
+        RedeemForHost, Transfer, NewInstance, RealmRun, RemoveCharacter, PlaceCharacter, RouteEntry);
     serving!(Social: PublishLine, Presence, Poll, RelayOp, Restored, Projection, NewGuild, EnterGuild);
     serving!(Persist: Push, Ledger, StoreLiveValue, ReadLiveValues, AuditOpen, AuditClose, AuditTrail, WriteGuilds, LoadGuilds, WriteFriends,
         LoadFriends, WriteAccounts, LoadAccounts, WriteCharacters, LoadCharacters, Lease);
@@ -452,6 +461,7 @@ pub fn matrix() -> Vec<(&'static str, u16, &'static [Role])> {
         row::<Transfer>(),
         row::<RedeemToken>(),
         row::<RedeemForHost>(),
+        row::<RouteEntry>(),
         row::<PublishLine>(),
         row::<Presence>(),
         row::<Poll>(),

@@ -203,6 +203,8 @@ pub struct HostStats {
     pub rate_limited: u64,
     /// Sessions ended for exceeding the rate limits.
     pub limit_kicks: u64,
+    /// Sessions sent a hand-off to another host.
+    pub handed_off: u64,
 }
 
 /// The network host.
@@ -351,6 +353,46 @@ impl Host {
             l.transport.disconnect(conn);
         }
         self.stats.kicked += 1;
+        true
+    }
+
+    /// Hands `session` to another cell host: it is sent `to` (a gateway
+    /// presents the token there, switches its client over, and closes this
+    /// connection, which ends the session here; a client connected
+    /// directly reconnects itself). Meanwhile its avatar comes to rest, as
+    /// for a dropped client ([`CellIntent::Linked`]); a gateway whose
+    /// hand-off failed says `Linked { up: true }` and the session plays on
+    /// here. False when the session is not in the world, or its protocol
+    /// has no form for a hand-off.
+    pub fn hand_off(
+        &mut self,
+        session: SessionId,
+        to: &mantis_adapter_contract::HandOff,
+        zone: &mut Zone,
+    ) -> bool {
+        let Some(&(li, conn)) = self
+            .sessions
+            .iter()
+            .find(|(_, s)| s.id == session && s.phase == Phase::InWorld)
+            .map(|(k, _)| k)
+        else {
+            return false;
+        };
+        let Some(l) = self.listeners.get_mut(li) else {
+            return false;
+        };
+        self.scratch.clear();
+        if l.adapter
+            .encode_outbound(&Outbound::HandOff(*to), &mut self.scratch)
+            .is_err()
+            || l.transport.send(conn, Channel::Reliable, &self.scratch).is_err()
+        {
+            return false;
+        }
+        if let Some(c) = zone.route(session).and_then(|r| zone.cell_mut(r)) {
+            let _ = c.inbox().push(session, CellIntent::Linked { up: false });
+        }
+        self.stats.handed_off += 1;
         true
     }
 
@@ -607,6 +649,15 @@ impl Host {
                 }
             }
             (Phase::InWorld, Inbound::Extension(x)) => self.extension(li, conn, id, &x, zone),
+            // A gateway's word on its client's connection (a client sending
+            // it gains nothing: its own inputs start over).
+            (Phase::InWorld, Inbound::Linked(l)) => {
+                if let Some(c) = zone.route(id).and_then(|r| zone.cell_mut(r))
+                    && !c.inbox().push(id, CellIntent::Linked { up: l.up })
+                {
+                    self.stats.inbox_full += 1;
+                }
+            }
             _ => self.stats.out_of_phase += 1,
         }
     }

@@ -350,6 +350,28 @@ impl RealmService {
         self.redeem_on(&req.token, &[req.cell.0])
     }
 
+    /// Where `token`'s session goes, without consuming it: its cell, and
+    /// that cell's host address (empty while no host serves it).
+    fn route(&self, req: &m::RouteToken) -> Result<m::EntryRoute, RpcError> {
+        let bytes: Vec<u8> = req.token.iter().copied().collect();
+        let token: [u8; 32] = bytes.try_into().map_err(|_| refused("bad token"))?;
+        let state = self.lock();
+        let grant = state
+            .tokens
+            .get(&token)
+            .filter(|g| g.expires_ms >= self.clock.now_ms())
+            .ok_or_else(|| refused("bad token"))?;
+        let address = state
+            .cells
+            .get(&grant.cell)
+            .map(|c| c.address.clone())
+            .unwrap_or_default();
+        Ok(m::EntryRoute {
+            cell: m::CellNo(grant.cell),
+            address: WireString::new(&address).unwrap_or_default(),
+        })
+    }
+
     /// Consumes `token` if it names one of `cells` and has not expired.
     fn redeem_on(&self, token: &BoundedArray<u8, 32>, cells: &[u64]) -> Result<m::Redeemed, RpcError> {
         let bytes: Vec<u8> = token.iter().copied().collect();
@@ -445,6 +467,8 @@ impl RealmService {
         });
         let me = self.clone();
         r.serve::<methods::RedeemToken>(move |_, req| me.redeem(&req));
+        let me = self.clone();
+        r.serve::<methods::RouteEntry>(move |_, req| me.route(&req));
         let me = self.clone();
         r.serve::<methods::RedeemForHost>(move |_, req| {
             let cells: Vec<u64> = req.cells.iter().map(|c| c.0).collect();

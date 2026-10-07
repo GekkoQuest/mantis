@@ -487,6 +487,9 @@ pub struct Cell {
     /// Outcomes not yet drained, with the tick each was made at.
     outcomes: BoundedVec<(Tick, ModuleOutcome)>,
     feature_news: BoundedVec<SessionId>,
+    /// Sessions whose client came back this tick ([`CellIntent::Linked`]),
+    /// to tell their gateway from which tick the snapshots are new. Output.
+    relinked: BoundedVec<SessionId>,
     feature_broadcast: bool,
     /// Diagnostics for the Ops inspector: the clock (when timed), graph
     /// evaluation and per-client encode times, and the last inbox depth.
@@ -591,6 +594,7 @@ impl Cell {
             commands_pending: 0,
             outcomes: BoundedVec::with_capacity(cfg.inbox_capacity),
             feature_news: BoundedVec::with_capacity(cfg.max_clients),
+            relinked: BoundedVec::with_capacity(cfg.max_clients),
             feature_broadcast: false,
             stopwatch: None,
             graph_timing: Timing::default(),
@@ -1126,6 +1130,7 @@ impl Cell {
                 s.cheats = s.cheats.saturating_add(count);
                 Ok(())
             }
+            CellIntent::Linked { up } => self.linked(session, up),
             CellIntent::ScriptReload { name, source } => self.script_reload(name.as_str(), source),
         }
     }
@@ -1143,6 +1148,35 @@ impl Cell {
         s.claims
             .push((position, client_time_ms))
             .map_err(|_| "too many claims")
+    }
+
+    /// A gateway's word on `session`'s client ([`CellIntent::Linked`]).
+    fn linked(&mut self, session: SessionId, up: bool) -> Result<(), &'static str> {
+        let s = self.sessions_mut()?.map.get_mut(&session).ok_or("no session")?;
+        if s.mode == mantis_adapter_contract::MovementMode::Predictive {
+            s.inputs.clear();
+            s.synth_mask = 0;
+            if up {
+                // The next input starts the stream, as for a new session.
+                s.last_seq = None;
+            } else {
+                // Nothing held: the avatar comes to rest.
+                s.last_input.buttons = mantis_core::kinematics::MoveButtons::default();
+            }
+        }
+        // A client back over a new connection holds no baseline and knows no
+        // entity: its next snapshot is whole, it is told the modules again,
+        // and its gateway learns from which tick snapshots are new.
+        if up
+            && let Some(slot) = self.slots.get(&session)
+            && let Some(c) = self.rep.clients.get(*slot)
+            && let Some(rep) = lock(c).as_mut()
+        {
+            rep.forget_client_view();
+            let _ = self.relinked.push(session);
+            let _ = self.feature_news.push(session);
+        }
+        Ok(())
     }
 
     /// The cell's clock slipped `ticks` behind wall time: Validated clock
@@ -1292,6 +1326,38 @@ impl Cell {
         } else {
             Err("unknown module")
         }
+    }
+
+    /// Tells the gateway of each session whose client came back this tick
+    /// that its snapshots are new from this tick on. Allocation-free.
+    fn send_relinked(&mut self, sink: &mut dyn OutboundSink) {
+        let msg = Outbound::Relinked(mantis_adapter_contract::Relinked {
+            tick: self.clock.tick(),
+        });
+        for session in self.relinked.iter() {
+            let Some(client) = self
+                .slots
+                .get(session)
+                .and_then(|slot| self.rep.clients.get(*slot))
+            else {
+                continue;
+            };
+            let (adapter, conn) = match lock(client).as_ref() {
+                Some(c) => (c.adapter, c.conn),
+                None => continue,
+            };
+            let Some(a) = self.rep.adapters.get(adapter) else {
+                continue;
+            };
+            self.scratch.clear();
+            if sent(
+                a.encode_outbound(&msg, &mut self.scratch),
+                &mut self.encode_refused,
+            ) {
+                sink.send(adapter, conn, Channel::Reliable, &self.scratch);
+            }
+        }
+        self.relinked.clear();
     }
 
     /// Tells newly joined sessions (or everyone, after a switch) which
@@ -1685,6 +1751,7 @@ impl Cell {
             }
         }
         sessions.refusals.clear();
+        self.send_relinked(sink);
         self.send_feature_states(sink);
         let Some(outbox) = self.world.resources.get_mut::<crate::modules::Outbox>() else {
             return;

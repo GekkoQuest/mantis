@@ -364,6 +364,98 @@ impl Transport for SimClient {
     }
 }
 
+/// A gateway's connections to simulated cell hosts
+/// ([`mantis_net::gateway::Dialer`]): each address names a host's
+/// [`SimNet`], reached over a link with the given conditions. A host
+/// closing a connection is not seen here (the simulated network does not
+/// tell clients); the gateway closing one is seen by the host.
+pub struct SimDialer {
+    hosts: BTreeMap<String, (SimNet, LinkConfig)>,
+    conns: BTreeMap<u64, SimClient>,
+    connected: VecDeque<u64>,
+    next: u64,
+}
+
+impl SimDialer {
+    /// No hosts yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            hosts: BTreeMap::new(),
+            conns: BTreeMap::new(),
+            connected: VecDeque::new(),
+            next: 1,
+        }
+    }
+
+    /// Makes `address` reach the host listening on `net`, over links with
+    /// `cfg` conditions.
+    pub fn add_host(&mut self, address: &str, net: &SimNet, cfg: LinkConfig) {
+        self.hosts.insert(address.to_owned(), (net.clone(), cfg));
+    }
+}
+
+impl Default for SimDialer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl mantis_net::gateway::Dialer for SimDialer {
+    fn dial(&mut self, address: &str) -> Option<ConnectionId> {
+        let (net, cfg) = self.hosts.get(address)?;
+        let client = net.connect(*cfg);
+        let id = self.next;
+        self.next += 1;
+        self.conns.insert(id, client);
+        self.connected.push_back(id);
+        Some(ConnectionId(id))
+    }
+}
+
+impl Transport for SimDialer {
+    fn poll(&mut self, sink: &mut dyn FnMut(TransportEvent<'_>)) {
+        while let Some(id) = self.connected.pop_front() {
+            sink(TransportEvent::Connected(ConnectionId(id)));
+        }
+        for (id, client) in &mut self.conns {
+            client.poll(&mut |e| {
+                if let TransportEvent::Frame { channel, bytes, .. } = e {
+                    sink(TransportEvent::Frame {
+                        conn: ConnectionId(*id),
+                        channel,
+                        bytes,
+                    });
+                }
+            });
+        }
+    }
+
+    fn send(&mut self, conn: ConnectionId, channel: Channel, bytes: &[u8]) -> Result<(), TransportError> {
+        self.conns
+            .get_mut(&conn.0)
+            .ok_or(TransportError::UnknownConnection(conn))?
+            .send(ConnectionId(0), channel, bytes)
+    }
+
+    fn disconnect(&mut self, conn: ConnectionId) {
+        if let Some(mut client) = self.conns.remove(&conn.0) {
+            client.disconnect(ConnectionId(0));
+        }
+    }
+
+    fn kind(&self) -> TransportKind {
+        TransportKind::Quic
+    }
+
+    fn max_unreliable_payload(&self) -> usize {
+        self.hosts
+            .values()
+            .next()
+            .map_or(1100, |(net, _)| lock(&net.state).max_unreliable)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

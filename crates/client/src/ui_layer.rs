@@ -11,12 +11,16 @@
 //! screens join the module layout (recomposed whenever the set of running mods changes).
 //! An intent from a mod's widget goes to [`crate::mods::ModHost::on_widget_intent`] and
 //! never to the modules or the host directly.
+//!
+//! The connection status ([`UiLayer::set_connection`]) shows as a notice at the bottom
+//! of the module layout while the session is reconnecting or was refused.
 
 use mantis_render::renderer::Renderer;
 use mantis_ui::{Handled, Modifiers, PointerButton, Ui, UiEvent, UiIntent, UiKey};
 
 use crate::input::device::{ButtonSource, KeyCode, MouseButton, RawInput, WheelDirection};
 use crate::mods::{ModHost, ModRoute};
+use crate::reconnect::{ReconnectStatus, SharedStatus};
 use crate::threads::render_thread::PlatformEvent;
 
 /// Client modules wired into the UI.
@@ -39,6 +43,18 @@ pub struct UiLayer {
     composed: u64,
     modifiers: Modifiers,
     intents: Vec<UiIntent>,
+    /// The connection status shown, and the version last published.
+    connection: Option<(std::sync::Arc<SharedStatus>, u64)>,
+}
+
+/// Publishes `client.connection.has_notice` and `client.connection.notice` (the panel
+/// [`crate::modules::ClientModules::compose`] adds).
+fn publish_connection(status: &ReconnectStatus, props: &mut mantis_ui::Properties) {
+    let notice = status.notice();
+    let id = props.intern("client.connection.has_notice");
+    let _ = props.set_bool(id, notice.is_some());
+    let id = props.intern("client.connection.notice");
+    let _ = props.set_text(id, notice.as_deref().unwrap_or(""));
 }
 
 fn ui_key(key: KeyCode) -> UiKey {
@@ -82,6 +98,7 @@ impl UiLayer {
             composed: 0,
             modifiers: Modifiers::default(),
             intents: Vec::with_capacity(32),
+            connection: None,
         }
     }
 
@@ -103,6 +120,8 @@ impl UiLayer {
         let (layout, theme) = registry.compose(open);
         let mut ui = Ui::new(fonts, &layout, Some(&theme))?;
         registry.start(ui.properties_mut());
+        // An unset flag reads as visible: the connection panel starts hidden.
+        publish_connection(&ReconnectStatus::Live, ui.properties_mut());
         let mut layer = Self::new(ui);
         layer.modules = Some(Modules {
             registry,
@@ -125,6 +144,14 @@ impl UiLayer {
         mods.publish(self.ui.properties_mut());
         self.mods = Some(mods);
         self.recompose()
+    }
+
+    /// Shows `status` (set by the thread that drives the session): a notice while it
+    /// is reconnecting or was refused.
+    pub fn set_connection(&mut self, status: std::sync::Arc<SharedStatus>) {
+        let version = status.version();
+        publish_connection(&status.get(), self.ui.properties_mut());
+        self.connection = Some((status, version));
     }
 
     /// The client mods, if any.
@@ -159,6 +186,13 @@ impl UiLayer {
     /// headless callers call it directly.
     pub fn update(&mut self) {
         let props = self.ui.properties_mut();
+        if let Some((status, shown)) = self.connection.as_mut() {
+            let version = status.version();
+            if version != *shown {
+                *shown = version;
+                publish_connection(&status.get(), props);
+            }
+        }
         let mut permitted = None;
         if let Some(m) = self.modules.as_mut() {
             m.link.pump(&mut m.registry, props);

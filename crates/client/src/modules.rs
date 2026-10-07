@@ -924,6 +924,8 @@ impl ClientModules {
 
     /// One layout holding the `open` screens (by key, in order) under a full-size root,
     /// and the theme source of every screen, for `Ui::reload`. Unknown keys are skipped.
+    /// The connection notice panel closes the layout (shown while
+    /// `client.connection.has_notice`; [`crate::ui_layer::UiLayer::set_connection`]).
     pub fn compose(&self, open: &[&str]) -> (String, String) {
         self.compose_with(open, "", "")
     }
@@ -943,6 +945,7 @@ impl ClientModules {
             }
         }
         layout.push_str(extra_layout);
+        layout.push_str(CONNECTION_PANEL);
         layout.push_str("}\n");
         for s in &self.screens {
             if let Some(t) = s.theme {
@@ -953,6 +956,12 @@ impl ClientModules {
         (layout, theme)
     }
 }
+
+/// The connection notice: reconnecting, or why the server refused.
+const CONNECTION_PANEL: &str = r#"panel id=client_connection_notice direction=column visible="client.connection.has_notice" {
+  text id=client_connection_text bind="client.connection.notice"
+}
+"#;
 
 /// A module event crossing from the network thread to the render thread.
 #[derive(Clone, Copy, Debug)]

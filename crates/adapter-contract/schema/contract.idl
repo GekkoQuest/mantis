@@ -283,3 +283,13 @@ message HandOff outbound {
     /// The entry token the host there redeems.
     token: list<u8, 32>;
 }
+
+/// From a cell host, after a gateway's `Linked { up: true }`: from `tick`
+/// on, the session's snapshots are built for the new connection (whole,
+/// every entity entered again). A gateway relays none of the session's
+/// snapshots between the resume and this, and none for an earlier tick
+/// after it.
+message Relinked outbound {
+    /// The first tick built for the new connection.
+    tick: tick;
+}

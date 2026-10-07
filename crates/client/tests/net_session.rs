@@ -7,23 +7,26 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::Duration;
 
 use mantis_adapter_contract::native::{FRAME_SNAPSHOT, encode_outbound_frame, encode_snapshot};
 use mantis_adapter_contract::{
-    AppearanceId, Channel, ConnectionId, Inbound, LocalAvatar, ModuleEntry, MovementMode, Outbound,
-    RemoteSample, SnapshotFrame, Transport, TransportError, TransportEvent, TransportKind, Welcome,
+    AppearanceId, Channel, ConnectionId, DisconnectReason, Inbound, LocalAvatar, ModuleEntry, MovementMode,
+    Outbound, RefuseReason, RemoteSample, SnapshotFrame, Transport, TransportError, TransportEvent,
+    TransportKind, Welcome,
 };
 use mantis_client::net::{NativeSession, NetConfig, SessionState, move_channel};
+use mantis_client::reconnect::{ReconnectPolicy, ReconnectStatus, ReconnectStep, Reconnector};
 use mantis_client::sim::IntentSink;
 use mantis_client::snapshot::snapshot_channel;
-use mantis_client::time::{HostClock, ManualClock};
+use mantis_client::time::{HostClock, HostInstant, ManualClock};
 use mantis_core::content::ContentHash;
 use mantis_core::ecs::EntityId;
 use mantis_core::graph::{GraphId, GraphInstanceId, MarkerId, MarkerKind, NodeKey, TimelineMarker};
 use mantis_core::kinematics::{AimAngles, Angle16, InputSeq, MotionState, MoveButtons, MoveInput};
 use mantis_core::math::Vec3;
 use mantis_core::time::Tick;
-use mantis_core::wire::WireString;
+use mantis_core::wire::{BoundedArray, WireString};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -31,6 +34,8 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 struct Scripted {
     inbound: VecDeque<Vec<u8>>,
     sent: Vec<(Channel, Vec<u8>)>,
+    /// Report the connection dropped once the queued frames are delivered.
+    drop: bool,
 }
 
 impl Transport for Scripted {
@@ -40,6 +45,12 @@ impl Transport for Scripted {
                 conn: ConnectionId(0),
                 channel: Channel::Unreliable,
                 bytes: &bytes,
+            });
+        }
+        if std::mem::take(&mut self.drop) {
+            sink(TransportEvent::Disconnected {
+                conn: ConnectionId(0),
+                reason: DisconnectReason::TimedOut,
             });
         }
     }
@@ -442,4 +453,289 @@ fn move_input(seq: u32) -> MoveInput {
         yaw: Angle16(0),
         aim: AimAngles::default(),
     }
+}
+
+fn stamped(frame: &SnapshotFrame, baseline: Option<&SnapshotFrame>, epoch: u32) -> Result<Vec<u8>, String> {
+    let plain = wire(frame, baseline);
+    let mut out = Vec::new();
+    if mantis_adapter_contract::native::stamp_epoch(&plain, epoch, &mut out) {
+        Ok(out)
+    } else {
+        Err("not stampable".to_owned())
+    }
+}
+
+fn outbound(msg: &Outbound) -> Vec<u8> {
+    let mut out = Vec::new();
+    encode_outbound_frame(msg, &mut out);
+    out
+}
+
+#[test]
+fn transferred_rebases_and_frames_from_a_left_host_are_dropped() -> TestResult {
+    let clock = Arc::new(ManualClock::new());
+    let (snap_tx, mut inbox) = snapshot_channel::<MotionState>(8, 8);
+    let (_outbox, moves) = move_channel(16);
+    let mut session = NativeSession::new(
+        Scripted::default(),
+        Arc::clone(&clock) as Arc<dyn HostClock>,
+        NetConfig::new(ContentHash::ZERO),
+        snap_tx,
+        moves,
+    );
+    session.start(b"entry");
+    let old = snapshot(1000, 1.0);
+    let token = BoundedArray::from_slice(&[7u8; 32]).ok_or("ticket")?;
+    let t = session.transport_mut();
+    t.inbound.push_back(welcome_frame());
+    t.inbound.push_back(outbound(&Outbound::ResumeTicket(
+        mantis_adapter_contract::ResumeTicket {
+            token,
+            expires_ms: 60_000,
+        },
+    )));
+    t.inbound.push_back(wire(&old, None));
+    // The hand-off. A straggler from the old host (unstamped) arrives after
+    // `Transferred` and is dropped; the new host's frames are stamped with epoch 1 and
+    // start at its own, lower tick.
+    t.inbound.push_back(outbound(&Outbound::Transferred(
+        mantis_adapter_contract::Transferred {
+            cell: 2,
+            epoch: 1,
+            tick: Tick(40),
+        },
+    )));
+    t.inbound.push_back(wire(&snapshot(1001, 2.0), None));
+    let first = snapshot(41, 3.0);
+    t.inbound.push_back(stamped(&first, None, 1)?);
+    t.inbound.push_back(stamped(&snapshot(42, 4.0), Some(&first), 1)?);
+    session.step();
+    let stats = session.stats();
+    assert_eq!(
+        (stats.stale_epoch, stats.rebases, stats.undecodable),
+        (1, 1, 0),
+        "{stats:?}"
+    );
+    let mut seen = Vec::new();
+    let _ = inbox.drain(|f| seen.push((f.server_tick.0, f.epoch)));
+    assert_eq!(seen, [(1000, 0), (41, 1), (42, 1)]);
+    // The old host's tick was still pending when `Transferred` arrived; the new host
+    // counts ticks of its own, so that ack is dropped rather than sent to it.
+    assert_eq!(sent_acks(session.transport_mut()), [41, 42]);
+    let ticket = session.resume_ticket().ok_or("no ticket")?;
+    assert_eq!(ticket.token(), &[7u8; 32][..]);
+    assert_eq!(ticket.valid_for, std::time::Duration::from_secs(60));
+    Ok(())
+}
+
+fn ticket_frame(byte: u8, expires_ms: u64) -> Result<Vec<u8>, String> {
+    let token = BoundedArray::from_slice(&[byte; 32]).ok_or("ticket")?;
+    Ok(outbound(&Outbound::ResumeTicket(
+        mantis_adapter_contract::ResumeTicket { token, expires_ms },
+    )))
+}
+
+fn refuse_frame(reason: RefuseReason) -> Vec<u8> {
+    outbound(&Outbound::Refuse(mantis_adapter_contract::Refuse { reason }))
+}
+
+type Session = NativeSession<Scripted>;
+
+fn new_session(clock: &Arc<ManualClock>) -> Session {
+    let (snap_tx, _inbox) = snapshot_channel::<MotionState>(8, 8);
+    let (_outbox, moves) = move_channel(16);
+    NativeSession::new(
+        Scripted::default(),
+        Arc::clone(clock) as Arc<dyn HostClock>,
+        NetConfig::new(ContentHash::ZERO),
+        snap_tx,
+        moves,
+    )
+}
+
+/// A session welcomed with a resume ticket of `[7; 32]` valid for `expires_ms`, and a
+/// reconnector that saw it accepted.
+fn accepted(clock: &Arc<ManualClock>, expires_ms: u64) -> Result<(Session, Reconnector), String> {
+    let mut session = new_session(clock);
+    let mut rc = Reconnector::new(ReconnectPolicy::default(), b"launcher");
+    session.start(b"launcher");
+    if rc.step(clock.now(), &mut session) != ReconnectStep::Nothing {
+        return Err("connected before the first answer".to_owned());
+    }
+    let t = session.transport_mut();
+    t.inbound.push_back(welcome_frame());
+    t.inbound.push_back(ticket_frame(7, expires_ms)?);
+    session.step();
+    if rc.step(clock.now(), &mut session) != ReconnectStep::Nothing || rc.status() != ReconnectStatus::Live {
+        return Err("not live after the welcome".to_owned());
+    }
+    Ok((session, rc))
+}
+
+fn after(clock: &ManualClock, ms: u64) -> HostInstant {
+    clock.advance(Duration::from_millis(ms));
+    clock.now()
+}
+
+/// Waits `ms`, expects a connect exactly then, and performs it; returns the token the
+/// new connection's `Hello` carried.
+fn connect_after(
+    clock: &ManualClock,
+    ms: u64,
+    session: &mut Session,
+    rc: &mut Reconnector,
+) -> Result<Vec<u8>, String> {
+    if rc.step(after(clock, ms.saturating_sub(1)), session) != ReconnectStep::Nothing {
+        return Err(format!("connected before {ms} ms"));
+    }
+    match rc.step(after(clock, 1), session) {
+        ReconnectStep::Connect { token } => {
+            session.reconnect(Scripted::default(), &token);
+            let sent = hello_token(session.transport_mut()).ok_or("no hello")?;
+            if sent == token {
+                Ok(token)
+            } else {
+                Err("the hello carried another token".to_owned())
+            }
+        }
+        ReconnectStep::Nothing => Err(format!("no connect after {ms} ms")),
+    }
+}
+
+/// Delivers `frame` (or a drop) and lets the reconnector see the outcome.
+fn answer(
+    clock: &ManualClock,
+    session: &mut Session,
+    rc: &mut Reconnector,
+    frame: Option<Vec<u8>>,
+) -> Result<(), String> {
+    match frame {
+        Some(f) => session.transport_mut().inbound.push_back(f),
+        None => session.transport_mut().drop = true,
+    }
+    session.step();
+    if rc.step(clock.now(), session) == ReconnectStep::Nothing {
+        Ok(())
+    } else {
+        Err("connected without a wait".to_owned())
+    }
+}
+
+#[test]
+fn a_dropped_session_reconnects_with_its_ticket_and_retries_refusals_with_backoff() -> TestResult {
+    let clock = Arc::new(ManualClock::new());
+    let (mut session, mut rc) = accepted(&clock, 60_000)?;
+    let ticket = vec![7u8; 32];
+
+    // The connection drops: reconnecting, first wait 250 ms, the ticket as the token.
+    answer(&clock, &mut session, &mut rc, None)?;
+    let dropped = clock.now();
+    assert_eq!(
+        rc.status(),
+        ReconnectStatus::Reconnecting {
+            attempt: 1,
+            since: dropped
+        }
+    );
+    assert_eq!(connect_after(&clock, 250, &mut session, &mut rc)?, ticket);
+    assert_eq!(session.state(), SessionState::Connecting);
+
+    // Standby (no host serves the cell yet): the same ticket again after 500 ms.
+    answer(
+        &clock,
+        &mut session,
+        &mut rc,
+        Some(refuse_frame(RefuseReason::Standby)),
+    )?;
+    assert_eq!(
+        rc.status(),
+        ReconnectStatus::Reconnecting {
+            attempt: 2,
+            since: dropped
+        }
+    );
+    assert_eq!(connect_after(&clock, 500, &mut session, &mut rc)?, ticket);
+
+    // A stale epoch retires the ticket: the next attempt uses the launcher token.
+    answer(
+        &clock,
+        &mut session,
+        &mut rc,
+        Some(refuse_frame(RefuseReason::StaleEpoch)),
+    )?;
+    assert_eq!(connect_after(&clock, 1000, &mut session, &mut rc)?, b"launcher");
+
+    // No answer within 5 s is a failed attempt (wait 2 s); so is a drop while
+    // connecting (wait 4 s); the wait stays capped at 4 s from then on.
+    assert_eq!(rc.step(after(&clock, 5000), &mut session), ReconnectStep::Nothing);
+    assert_eq!(rc.step(after(&clock, 1), &mut session), ReconnectStep::Nothing);
+    assert_eq!(connect_after(&clock, 2000, &mut session, &mut rc)?, b"launcher");
+    answer(&clock, &mut session, &mut rc, None)?;
+    connect_after(&clock, 4000, &mut session, &mut rc)?;
+    answer(
+        &clock,
+        &mut session,
+        &mut rc,
+        Some(refuse_frame(RefuseReason::Full)),
+    )?;
+    assert_eq!(
+        rc.status(),
+        ReconnectStatus::Reconnecting {
+            attempt: 6,
+            since: dropped
+        }
+    );
+    connect_after(&clock, 4000, &mut session, &mut rc)?;
+
+    // Accepted again: live, one reconnect; the session counted six new connections.
+    answer(&clock, &mut session, &mut rc, Some(welcome_frame()))?;
+    assert_eq!(rc.status(), ReconnectStatus::Live);
+    assert_eq!(rc.reconnects(), 1);
+    assert_eq!(session.stats().reconnects, 6);
+    Ok(())
+}
+
+#[test]
+fn an_expired_ticket_falls_back_to_the_launcher_token_and_a_mismatch_is_final() -> TestResult {
+    let clock = Arc::new(ManualClock::new());
+    let (mut session, mut rc) = accepted(&clock, 200)?;
+    answer(&clock, &mut session, &mut rc, None)?;
+    // The ticket was valid for 200 ms after the drop; the first attempt is at 250 ms.
+    assert_eq!(connect_after(&clock, 250, &mut session, &mut rc)?, b"launcher");
+
+    answer(
+        &clock,
+        &mut session,
+        &mut rc,
+        Some(refuse_frame(RefuseReason::VersionMismatch)),
+    )?;
+    assert_eq!(
+        rc.status(),
+        ReconnectStatus::Failed(RefuseReason::VersionMismatch)
+    );
+    assert_eq!(
+        rc.step(after(&clock, 60_000), &mut session),
+        ReconnectStep::Nothing
+    );
+    Ok(())
+}
+
+#[test]
+fn a_refused_first_connect_is_not_retried() -> TestResult {
+    let clock = Arc::new(ManualClock::new());
+    let mut session = new_session(&clock);
+    let mut rc = Reconnector::new(ReconnectPolicy::default(), b"launcher");
+    session.start(b"launcher");
+    answer(
+        &clock,
+        &mut session,
+        &mut rc,
+        Some(refuse_frame(RefuseReason::Standby)),
+    )?;
+    for _ in 0..10 {
+        assert_eq!(rc.step(after(&clock, 1000), &mut session), ReconnectStep::Nothing);
+    }
+    assert_eq!(rc.status(), ReconnectStatus::Live);
+    assert_eq!(session.state(), SessionState::Refused(RefuseReason::Standby));
+    Ok(())
 }

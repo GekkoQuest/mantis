@@ -300,6 +300,8 @@ fn a_hand_off_and_a_reconnect_restart_the_timeline_and_never_drop_frames() -> Te
     rig.server.downlink.clear();
     rig.server.tick = Tick(5);
     rig.epoch += 1;
+    // The new host names the avatar afresh: the same avatar, adopted, not respawned.
+    rig.avatar = mantis_core::ecs::EntityId::new(9, 1);
     for _ in 0..90 {
         rig.run_tick(2);
     }
@@ -316,6 +318,8 @@ fn a_hand_off_and_a_reconnect_restart_the_timeline_and_never_drop_frames() -> Te
         sim.predictor().stats()
     );
     assert_eq!(stats.resets, 1, "only the spawn");
+    assert_eq!(stats.avatars_adopted, 1, "{stats:?}");
+    assert_eq!(sim.local(), Some(rig.avatar));
     // A reconnect: a new connection, the host at its own tick 1 again. Whatever was in
     // flight on the dropped connection, either way, is lost.
     rig.server.downlink.clear();

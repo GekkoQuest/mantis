@@ -796,3 +796,37 @@ fn a_lowered_tier_is_never_lost_on_a_full_link() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn the_connection_notice_shows_while_reconnecting_or_refused_and_hides_when_live() -> TestResult {
+    use mantis_adapter_contract::RefuseReason;
+    use mantis_client::reconnect::{ReconnectStatus, SharedStatus};
+    let mut c = Client::new(Vec::new(), &[])?;
+    assert_eq!(c.prop("client.connection.has_notice"), Some(Value::Bool(false)));
+    let status = Arc::new(SharedStatus::new());
+    c.layer.set_connection(Arc::clone(&status));
+
+    status.set(ReconnectStatus::Reconnecting {
+        attempt: 2,
+        since: mantis_client::time::HostInstant::ZERO,
+    });
+    c.frame();
+    assert_eq!(c.prop("client.connection.has_notice"), Some(Value::Bool(true)));
+    assert_eq!(
+        c.layer.ui().text_of("client_connection_text"),
+        Some("Connection lost: reconnecting\u{2026} (attempt 2)")
+    );
+
+    status.set(ReconnectStatus::Failed(RefuseReason::VersionMismatch));
+    c.frame();
+    let text = c.layer.ui().text_of("client_connection_text").unwrap_or("");
+    assert!(
+        text.starts_with("Connection refused: this client's protocol version"),
+        "{text}"
+    );
+
+    status.set(ReconnectStatus::Live);
+    c.frame();
+    assert_eq!(c.prop("client.connection.has_notice"), Some(Value::Bool(false)));
+    Ok(())
+}

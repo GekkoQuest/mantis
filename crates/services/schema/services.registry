@@ -84,3 +84,5 @@
 83 CharacterPlaced
 84 AcquireLease
 85 LeaseState
+86 RouteToken
+87 EntryRoute

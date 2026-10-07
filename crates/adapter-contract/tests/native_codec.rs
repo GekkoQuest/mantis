@@ -9,8 +9,8 @@
 use mantis_adapter_contract::core_types::*;
 use mantis_adapter_contract::native::{
     BASELINE_WINDOW_TICKS, BaselineStore, FRAME_MESSAGE, FRAME_SNAPSHOT, NativeAdapter, NoBaseline,
-    ServerFrame, decode_server_frame, decode_snapshot, encode_inbound, encode_snapshot,
-    encode_snapshot_based, peek_snapshot_ticks,
+    ServerFrame, decode_server_frame, decode_snapshot, encode_inbound, encode_outbound_frame,
+    encode_snapshot, encode_snapshot_based, peek_snapshot_ticks, snapshot_epoch, stamp_epoch,
 };
 use mantis_adapter_contract::{
     AppearanceId, Inbound, LocalAvatar, MovementMode, Outbound, RemoteBases, RemoteSample, SetPosition,
@@ -363,4 +363,106 @@ fn a_remote_missing_from_the_baseline_deltas_against_its_own_acknowledged_frame(
     let mut out = SnapshotFrame::with_capacity(64, 64, 64, 64);
     decode_snapshot(&near, &[client_old][..], &mut out).unwrap();
     assert_eq!(out.remotes.len(), 40);
+}
+
+#[test]
+fn a_gateway_stamps_its_hand_off_epoch_and_clients_read_it() {
+    let adapter = NativeAdapter::new("test.native");
+    // A host's frame with a long baseline lag (a multi-byte varint before
+    // the flags), delta-encoded against an acknowledged frame.
+    let base = frame(100, &[sample(1, 100, 1.0), sample(2, 100, 2.0)]);
+    let f = frame(300, &[sample(1, 300, 1.5), sample(2, 299, 2.5)]);
+    let mut host = Vec::new();
+    adapter.encode_snapshot(&f, Some(&base), &mut host).unwrap();
+    assert_eq!(snapshot_epoch(&host), None, "a host never stamps");
+
+    for epoch in [1u32, 127, 128, 300_000, u32::MAX] {
+        let mut stamped = Vec::with_capacity(64);
+        assert!(stamp_epoch(&host, epoch, &mut stamped));
+        assert_eq!(snapshot_epoch(&stamped), Some(epoch));
+        // The stamped frame decodes to the same snapshot.
+        let mut a = SnapshotFrame::with_capacity(8, 64, 8, 8);
+        let mut b = SnapshotFrame::with_capacity(8, 64, 8, 8);
+        decode_server_frame(&host, std::slice::from_ref(&base), &mut a).unwrap();
+        decode_server_frame(&stamped, std::slice::from_ref(&base), &mut b).unwrap();
+        assert_eq!(a.header, b.header);
+        assert_eq!(
+            a.remotes.iter().copied().collect::<Vec<_>>(),
+            b.remotes.iter().copied().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            peek_snapshot_ticks(&stamped[1..]).unwrap(),
+            (Tick(300), Some(Tick(100)))
+        );
+        // Stamped once only.
+        let mut twice = Vec::new();
+        assert!(!stamp_epoch(&stamped, epoch, &mut twice));
+        assert!(twice.is_empty());
+    }
+
+    // Message frames and malformed prefixes are left alone.
+    let mut msg = Vec::new();
+    encode_outbound_frame(
+        &Outbound::Transferred(mantis_adapter_contract::Transferred {
+            cell: 7,
+            epoch: 1,
+            tick: Tick(9),
+        }),
+        &mut msg,
+    );
+    let mut out = Vec::new();
+    assert!(!stamp_epoch(&msg, 1, &mut out));
+    assert_eq!(snapshot_epoch(&msg), None);
+    for bad in [
+        &[FRAME_SNAPSHOT][..],
+        &[FRAME_SNAPSHOT, 1, 0, 0, 0, 0, 0, 0, 0, 0x80],
+        &[],
+    ] {
+        assert!(!stamp_epoch(bad, 1, &mut out));
+        assert_eq!(snapshot_epoch(bad), None);
+    }
+    // An unknown flag bit is still refused.
+    let mut unknown = host.clone();
+    let lag_len = unknown[9..].iter().position(|b| b & 0x80 == 0).unwrap() + 1;
+    unknown[9 + lag_len] |= 0x10;
+    let mut sink = SnapshotFrame::with_capacity(8, 64, 8, 8);
+    assert!(decode_server_frame(&unknown, std::slice::from_ref(&base), &mut sink).is_err());
+}
+
+#[test]
+fn hand_off_messages_round_trip() {
+    let mut sink = SnapshotFrame::with_capacity(1, 1, 1, 1);
+    let messages = [
+        Outbound::Transferred(mantis_adapter_contract::Transferred {
+            cell: 12,
+            epoch: 3,
+            tick: Tick(40),
+        }),
+        Outbound::ResumeTicket(mantis_adapter_contract::ResumeTicket {
+            token: BoundedArray::from_slice(&[7; 32]).unwrap(),
+            expires_ms: 60_000,
+        }),
+        Outbound::HandOff(mantis_adapter_contract::HandOff {
+            cell: 12,
+            address: WireString::new("10.0.0.2:7400").unwrap(),
+            token: BoundedArray::from_slice(&[9; 32]).unwrap(),
+        }),
+    ];
+    for m in messages {
+        let mut bytes = Vec::new();
+        encode_outbound_frame(&m, &mut bytes);
+        assert!(matches!(
+            decode_server_frame(&bytes, &NoBaseline, &mut sink),
+            Ok(ServerFrame::Message(got)) if got == m
+        ));
+    }
+    let adapter = NativeAdapter::new("test.native");
+    for up in [false, true] {
+        let linked = Inbound::Linked(mantis_adapter_contract::Linked { up });
+        let mut bytes = Vec::new();
+        encode_inbound(&linked, &mut bytes);
+        let mut got = Vec::new();
+        adapter.decode(&bytes, &mut |m| got.push(m)).unwrap();
+        assert_eq!(got, vec![linked]);
+    }
 }

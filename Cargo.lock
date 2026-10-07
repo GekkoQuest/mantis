@@ -1406,6 +1406,7 @@ dependencies = [
  "axum",
  "mantis-adapter-contract",
  "mantis-core",
+ "mantis-net",
  "mantis-testkit",
  "rcgen",
  "ring",

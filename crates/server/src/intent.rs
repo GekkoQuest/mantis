@@ -82,7 +82,7 @@ pub(crate) fn get_opt_i64(d: &mut Decoder<'_>) -> Result<Option<i64>, DecodeErro
 /// written by a binary with other encodings is refused by its header, never
 /// misread. Bump it with any encoding change; the fingerprint test fails
 /// until you do.
-pub const LOG_SCHEMA_VERSION: u32 = 2;
+pub const LOG_SCHEMA_VERSION: u32 = 3;
 
 /// One inbox item.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -195,6 +195,18 @@ pub enum CellIntent {
     Throttled {
         /// Messages refused.
         count: u32,
+    },
+    /// A gateway told the host its client's connection dropped (`up`
+    /// false) or came back with a resume ticket (`up` true), or the host
+    /// handed the session to another host. Down: buffered inputs are
+    /// dropped and the avatar repeats an idle input (no button held), so it
+    /// comes to rest. Up: the input stream starts over, as for a new
+    /// session: the next `Move` defines the seq, with no wait for the seqs
+    /// lost with the old connection (snapshots carry no `ack` until then).
+    /// Predictive sessions only; only the host creates it.
+    Linked {
+        /// The client is connected.
+        up: bool,
     },
     /// Moves a character's avatar to `position` (matchmaking placing a
     /// group in an instance, or bringing it back). The client is corrected
@@ -364,6 +376,10 @@ impl Wire for CellIntent {
                 tier.encode(e);
             }
             Self::ClockSlip { ticks } => tag_u32(e, 18, *ticks),
+            Self::Linked { up } => {
+                e.u8(19);
+                e.bool(*up);
+            }
             Self::Relocate { character, position } => {
                 e.u8(15);
                 e.u64(*character);
@@ -423,6 +439,7 @@ impl Wire for CellIntent {
                 tier: mantis_adapter_contract::ModTier::decode(d)?,
             },
             18 => Self::ClockSlip { ticks: d.u32()? },
+            19 => Self::Linked { up: d.bool()? },
             15 => Self::Relocate {
                 character: d.u64()?,
                 position: Vec3::decode(d)?,
@@ -481,6 +498,8 @@ mod tests {
         };
         let all = [
             CellIntent::ClockSlip { ticks: 15 },
+            CellIntent::Linked { up: false },
+            CellIntent::Linked { up: true },
             CellIntent::Join {
                 repl: ReplicationId(EntityId::new(1, 0)),
                 spawn: Vec3::X,
@@ -525,7 +544,7 @@ mod tests {
     }
 
     /// The schema version the fingerprint below was recorded at.
-    const LOG_SCHEMA_VERSION_OF_FINGERPRINT: u32 = 2;
+    const LOG_SCHEMA_VERSION_OF_FINGERPRINT: u32 = 3;
     /// The intents' encodings at that version.
-    const LOG_FINGERPRINT: u64 = 0x71d8_7258_30a2_d188;
+    const LOG_FINGERPRINT: u64 = 0x7228_4b09_6017_98c3;
 }

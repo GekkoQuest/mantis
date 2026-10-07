@@ -11,6 +11,10 @@
 # presents its entry token. Against a cluster running mutual TLS, -TlsCa, -TlsCert and
 # -TlsKey (PEM files) give the bots a gateway certificate. Without -Login the bots
 # present no entry token, so the server must run without -VerifyTokens.
+#
+# -Gateway ADDR sends every native bot to a cluster's gateway (`cluster.ps1 -Gateway`)
+# whatever its placement; pin the gateway's certificate with -Cert (its -GatewayCertOut)
+# or verify it with -Ca. The gateway routes by entry token, so use -Login with it.
 param(
     [ValidateSet('honest', 'idle', 'speedhack')][string]$Profile = 'honest',
     [uint64]$Count = 8,
@@ -24,6 +28,7 @@ param(
     [string]$Key = 'packages/toy/cooked/keys/dev.pub',
     [uint64]$Seed = 1,
     [string]$Login = '',
+    [string]$Gateway = '',
     [string]$TlsCa = '',
     [string]$TlsCert = '',
     [string]$TlsKey = '',
@@ -41,6 +46,10 @@ if ($Legacy) {
     $a += @('--quic', $Quic, '--cert', $Cert)
 }
 if ($Login) { $a += @('--login', $Login) }
+if ($Gateway) {
+    if ($Legacy) { throw '-Gateway is for native bots: the legacy protocol connects to a cell host directly' }
+    $a += @('--gateway', $Gateway)
+}
 $tls = @($TlsCa, $TlsCert, $TlsKey) | Where-Object { $_ }
 if ($tls.Count -eq 3) {
     $a += @('--tls-ca', $TlsCa, '--tls-cert', $TlsCert, '--tls-key', $TlsKey)

@@ -4,13 +4,16 @@
 //! hash and movement tunables, parsed from the same `package.toml` the server reads, so
 //! prediction runs the server's exact parameters), the control scheme, and a
 //! [`ToyClient`] that drives a world session and a native protocol session over any
-//! `Transport`. Production connects over QUIC ([`ToyClient::connect_quic`]); tests drive
-//! the same code over the simulated network.
+//! `Transport`. Production connects over QUIC to the gateway
+//! ([`ToyClient::connect_trusted`]) and reconnects through it after a drop
+//! ([`ToyClient::enable_reconnect`], [`gateway`]); tests drive the same code over the
+//! simulated network.
 
 #![forbid(unsafe_code)]
 
 pub mod controls;
 pub mod editor;
+pub mod gateway;
 pub mod modules;
 pub mod package;
 pub mod town;
@@ -119,6 +122,9 @@ pub struct ToyClient<T: Transport, S: FrameSink> {
     pub events: Option<SyncSender<PlatformEvent>>,
     /// The shared clock.
     pub clock: Arc<dyn HostClock>,
+    /// Reconnecting through the gateway after a drop ([`ToyClient::enable_reconnect`]);
+    /// [`ToyClient::step`] drives it.
+    pub redial: Option<gateway::Redial<T>>,
 }
 
 impl<T: Transport, S: FrameSink> core::fmt::Debug for ToyClient<T, S> {
@@ -246,6 +252,7 @@ impl<T: Transport, S: FrameSink> ToyClient<T, S> {
             net,
             events: None,
             clock,
+            redial: None,
         })
     }
 
@@ -305,11 +312,22 @@ impl<T: Transport, S: FrameSink> ToyClient<T, S> {
         self.net.start_with_modules(token, &self.hello_mods);
     }
 
-    /// One step on the caller's thread: receive, apply the server's permitted list to the
+    /// Reconnects after a dropped connection: `dial` opens a new connection to the
+    /// gateway, and the session resumes with its ticket (or `launcher_token` once the
+    /// ticket expired). The status is [`gateway::Redial::status`]; a module UI shows it
+    /// once given it ([`mantis_client::ui_layer::UiLayer::set_connection`]).
+    pub fn enable_reconnect(&mut self, launcher_token: &[u8], dial: gateway::Dial<T>) {
+        self.redial = Some(gateway::Redial::new(launcher_token, dial));
+    }
+
+    /// One step on the caller's thread: receive (and reconnect after a drop), apply the server's permitted list to the
     /// mods and run them (while no UI took them), run every due simulation tick, send the
     /// moves it produced, and render `frames` frames.
     pub fn step(&mut self, frames: u32) {
         self.net.step();
+        if let Some(r) = self.redial.as_mut() {
+            r.step(self.clock.now(), &mut self.net);
+        }
         self.module_net.pump(&mut self.net);
         if let Some((registry, link)) = self.modules.as_mut() {
             link.pump(registry, &mut self.module_props);

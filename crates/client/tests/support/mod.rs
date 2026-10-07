@@ -201,6 +201,8 @@ pub struct Rig {
     /// network session does); `track_first` records the next one sent.
     pub resume_from: Option<mantis_client::core_api::InputSeq>,
     pub track_first: bool,
+    /// The avatar id the server names (a new host may name it afresh).
+    pub avatar: EntityId,
 }
 
 pub fn ground() -> Arc<FlatGround> {
@@ -273,6 +275,7 @@ impl Rig {
             connection: 0,
             resume_from: None,
             track_first: false,
+            avatar: AVATAR,
         })
     }
 
@@ -300,7 +303,7 @@ impl Rig {
             frame.connection = self.connection;
             frame.resume_from = self.resume_from;
             frame.ack = ack;
-            frame.local = Some((AVATAR, state));
+            frame.local = Some((self.avatar, state));
             frame.local_mods = mods;
             let _ = frame.push_remote(RemoteState {
                 id: NPC,

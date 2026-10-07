@@ -1090,6 +1090,41 @@ impl ::mantis_core::wire::Message for HandOff {
     const NAME: &'static str = "HandOff";
 }
 
+/// From a cell host, after a gateway's `Linked { up: true }`: from `tick`
+/// on, the session's snapshots are built for the new connection (whole,
+/// every entity entered again). A gateway relays none of the session's
+/// snapshots between the resume and this, and none for an earlier tick
+/// after it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Relinked {
+    /// The first tick built for the new connection.
+    pub tick: ::mantis_core::time::Tick,
+}
+
+impl ::mantis_core::wire::Wire for Relinked {
+    fn encode(&self, e: &mut ::mantis_core::wire::Encoder<'_>) {
+        ::mantis_core::wire::Wire::encode(&self.tick, e);
+    }
+    fn decode(d: &mut ::mantis_core::wire::Decoder<'_>) -> Result<Self, ::mantis_core::wire::DecodeError> {
+        Ok(Self {
+            tick: ::mantis_core::wire::Wire::decode(d)?,
+        })
+    }
+}
+
+impl ::mantis_core::wire::FuzzSample for Relinked {
+    fn fuzz_sample(rng: &mut ::mantis_core::rng::Rng) -> Self {
+        Self {
+            tick: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+        }
+    }
+}
+
+impl ::mantis_core::wire::Message for Relinked {
+    const ID: ::mantis_core::wire::MessageId = ::mantis_core::wire::MessageId(21);
+    const NAME: &'static str = "Relinked";
+}
+
 /// Every client to server message of this schema.
 #[derive(Clone, Copy, PartialEq, Debug)]
 #[allow(clippy::large_enum_variant)] // inline, allocation-free values; transient on network threads
@@ -1295,6 +1330,8 @@ pub enum Outbound {
     ResumeTicket(ResumeTicket),
     /// See [`HandOff`].
     HandOff(HandOff),
+    /// See [`Relinked`].
+    Relinked(Relinked),
 }
 
 impl Outbound {
@@ -1312,6 +1349,7 @@ impl Outbound {
             Self::Transferred(_) => <Transferred as ::mantis_core::wire::Message>::ID,
             Self::ResumeTicket(_) => <ResumeTicket as ::mantis_core::wire::Message>::ID,
             Self::HandOff(_) => <HandOff as ::mantis_core::wire::Message>::ID,
+            Self::Relinked(_) => <Relinked as ::mantis_core::wire::Message>::ID,
         }
     }
 
@@ -1328,6 +1366,7 @@ impl Outbound {
             Self::Transferred(m) => ::mantis_core::wire::encode_into(m, out),
             Self::ResumeTicket(m) => ::mantis_core::wire::encode_into(m, out),
             Self::HandOff(m) => ::mantis_core::wire::encode_into(m, out),
+            Self::Relinked(m) => ::mantis_core::wire::encode_into(m, out),
         }
     }
 }
@@ -1352,6 +1391,7 @@ pub fn decode_outbound(
         18 => Outbound::Transferred(::mantis_core::wire::decode_message(bytes)?),
         19 => Outbound::ResumeTicket(::mantis_core::wire::decode_message(bytes)?),
         20 => Outbound::HandOff(::mantis_core::wire::decode_message(bytes)?),
+        21 => Outbound::Relinked(::mantis_core::wire::decode_message(bytes)?),
         _ => return Err(::mantis_core::wire::WireError::UnknownMessage(id)),
     })
 }

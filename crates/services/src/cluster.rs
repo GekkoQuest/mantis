@@ -840,6 +840,81 @@ impl TokenVerifier {
     }
 }
 
+/// The gateway's routes through the realm ([`mantis_net::gateway::Routes`]):
+/// each entry token is checked in the background, without being redeemed,
+/// for the cell it names and that cell's host address. A token the realm
+/// does not know (or that expired) is refused `BadToken`; a cell no host
+/// serves now, or a realm that does not answer, `Standby` (retry shortly).
+pub struct EntryRoutes {
+    handle: tokio::runtime::Handle,
+    realm: Arc<RpcClient>,
+    tx: std::sync::mpsc::Sender<(u64, mantis_net::gateway::Route)>,
+    rx: std::sync::mpsc::Receiver<(u64, mantis_net::gateway::Route)>,
+}
+
+impl EntryRoutes {
+    /// Routes through the realm at `realm` (every instance), calling as the
+    /// gateway with identity `tls` (`None`: plaintext).
+    ///
+    /// # Errors
+    /// The identity is not a gateway's, or does not make a configuration.
+    pub fn new(
+        handle: &tokio::runtime::Handle,
+        realm: Endpoint,
+        key: Vec<u8>,
+        tls: Option<TlsHandle>,
+    ) -> Result<Self, IdentityError> {
+        let client = RpcClient::with_endpoint(realm, Role::Gateway, key, tls, Role::Realm)?;
+        let (tx, rx) = std::sync::mpsc::channel();
+        Ok(Self {
+            handle: handle.clone(),
+            realm: Arc::new(client),
+            tx,
+            rx,
+        })
+    }
+}
+
+impl mantis_net::gateway::Routes for EntryRoutes {
+    fn begin(&mut self, ticket: u64, token: &[u8]) {
+        use mantis_adapter_contract::RefuseReason;
+        use mantis_net::gateway::Route;
+        let (realm, tx) = (Arc::clone(&self.realm), self.tx.clone());
+        let Some(token) = BoundedArray::from_slice(token).filter(|t| t.len() == 32) else {
+            let _ = tx.send((ticket, Route::Refuse(RefuseReason::BadToken)));
+            return;
+        };
+        self.handle.spawn(async move {
+            let route = match realm
+                .call::<methods::RouteEntry>(&m::RouteToken { token }, RPC_TIMEOUT)
+                .await
+            {
+                Ok(r) if r.address.as_str().is_empty() => Route::Refuse(RefuseReason::Standby),
+                Ok(r) => Route::Host {
+                    cell: r.cell.0,
+                    address: r.address.as_str().to_owned(),
+                },
+                Err(RpcError::Refused(_)) => Route::Refuse(RefuseReason::BadToken),
+                Err(_) => Route::Refuse(RefuseReason::Standby),
+            };
+            let _ = tx.send((ticket, route));
+        });
+    }
+
+    fn ready(&mut self, out: &mut Vec<(u64, mantis_net::gateway::Route)>) {
+        out.extend(self.rx.try_iter());
+    }
+}
+
+/// Resume tickets for a gateway, from the OS's secure random source.
+#[must_use]
+pub fn secure_tickets() -> mantis_net::gateway::TicketSource {
+    let rng = SystemRandom::new();
+    Box::new(move |t: &mut [u8; 32]| {
+        let _ = rng.fill(t);
+    })
+}
+
 // ---- the cell host's link ---------------------------------------------------
 
 /// One outcome from a cell, as the host hands it over.

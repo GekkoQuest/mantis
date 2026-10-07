@@ -283,6 +283,21 @@ fn a_killed_active_instance_is_replaced_by_its_standby_and_nothing_is_lost() {
             answered.as_millis(),
             limit.as_millis()
         );
+        // Tracked, not limited: how long the role's callers wait after the
+        // standby is active (a caller whose last connection was to the
+        // killed instance learns it on its next call; one that must open a
+        // new connection to it first pays the OS's refusal time, about 2 s
+        // on Windows loopback, a few microseconds on Linux).
+        println!(
+            "MANTIS-METRIC deploy_failover_first_answer_ms role={} value={} caller={}",
+            mantis_deploy::matrix::name(role),
+            answered.as_millis(),
+            if role == Role::Social {
+                "cell-link-relay"
+            } else {
+                "gateway-client"
+            }
+        );
         assert!(took <= limit, "{role:?} takeover took {took:?}, limit {limit:?}");
         assert!(
             total <= limit * 2,

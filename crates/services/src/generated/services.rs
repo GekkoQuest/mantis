@@ -3921,6 +3921,74 @@ impl ::mantis_core::wire::Message for LeaseState {
     const NAME: &'static str = "LeaseState";
 }
 
+/// A gateway checks an entry token without redeeming it (the cell host
+/// does that), to learn where to send the session.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct RouteToken {
+    /// The token.
+    pub token: ::mantis_core::wire::BoundedArray<u8, 32>,
+}
+
+impl ::mantis_core::wire::Wire for RouteToken {
+    fn encode(&self, e: &mut ::mantis_core::wire::Encoder<'_>) {
+        ::mantis_core::wire::Wire::encode(&self.token, e);
+    }
+    fn decode(d: &mut ::mantis_core::wire::Decoder<'_>) -> Result<Self, ::mantis_core::wire::DecodeError> {
+        Ok(Self {
+            token: ::mantis_core::wire::Wire::decode(d)?,
+        })
+    }
+}
+
+impl ::mantis_core::wire::FuzzSample for RouteToken {
+    fn fuzz_sample(rng: &mut ::mantis_core::rng::Rng) -> Self {
+        Self {
+            token: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+        }
+    }
+}
+
+impl ::mantis_core::wire::Message for RouteToken {
+    const ID: ::mantis_core::wire::MessageId = ::mantis_core::wire::MessageId(86);
+    const NAME: &'static str = "RouteToken";
+}
+
+/// Where an entry token's session goes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct EntryRoute {
+    /// The cell the token names.
+    pub cell: CellNo,
+    /// Its host's game address; empty when no host serves the cell now.
+    pub address: ::mantis_core::wire::WireString<64>,
+}
+
+impl ::mantis_core::wire::Wire for EntryRoute {
+    fn encode(&self, e: &mut ::mantis_core::wire::Encoder<'_>) {
+        ::mantis_core::wire::Wire::encode(&self.cell, e);
+        ::mantis_core::wire::Wire::encode(&self.address, e);
+    }
+    fn decode(d: &mut ::mantis_core::wire::Decoder<'_>) -> Result<Self, ::mantis_core::wire::DecodeError> {
+        Ok(Self {
+            cell: ::mantis_core::wire::Wire::decode(d)?,
+            address: ::mantis_core::wire::Wire::decode(d)?,
+        })
+    }
+}
+
+impl ::mantis_core::wire::FuzzSample for EntryRoute {
+    fn fuzz_sample(rng: &mut ::mantis_core::rng::Rng) -> Self {
+        Self {
+            cell: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            address: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+        }
+    }
+}
+
+impl ::mantis_core::wire::Message for EntryRoute {
+    const ID: ::mantis_core::wire::MessageId = ::mantis_core::wire::MessageId(87);
+    const NAME: &'static str = "EntryRoute";
+}
+
 /// Every client to server message of this schema.
 #[derive(Clone, Copy, PartialEq, Debug)]
 #[allow(clippy::large_enum_variant)] // inline, allocation-free values; transient on network threads
@@ -4028,6 +4096,8 @@ pub enum Inbound {
     CharacterPlaced(CharacterPlaced),
     /// See [`AcquireLease`].
     AcquireLease(AcquireLease),
+    /// See [`RouteToken`].
+    RouteToken(RouteToken),
 }
 
 impl Inbound {
@@ -4086,6 +4156,7 @@ impl Inbound {
             Self::DeleteCharacter(_) => <DeleteCharacter as ::mantis_core::wire::Message>::ID,
             Self::CharacterPlaced(_) => <CharacterPlaced as ::mantis_core::wire::Message>::ID,
             Self::AcquireLease(_) => <AcquireLease as ::mantis_core::wire::Message>::ID,
+            Self::RouteToken(_) => <RouteToken as ::mantis_core::wire::Message>::ID,
         }
     }
 
@@ -4143,6 +4214,7 @@ impl Inbound {
             Self::DeleteCharacter(m) => ::mantis_core::wire::encode_into(m, out),
             Self::CharacterPlaced(m) => ::mantis_core::wire::encode_into(m, out),
             Self::AcquireLease(m) => ::mantis_core::wire::encode_into(m, out),
+            Self::RouteToken(m) => ::mantis_core::wire::encode_into(m, out),
         }
     }
 }
@@ -4405,6 +4477,11 @@ pub trait Validators {
     /// # Errors
     /// The reason the message is refused.
     fn validate_acquire_lease(&self, msg: &AcquireLease) -> Result<(), ::mantis_core::wire::ValidationError>;
+    /// Validates a decoded [`RouteToken`].
+    ///
+    /// # Errors
+    /// The reason the message is refused.
+    fn validate_route_token(&self, msg: &RouteToken) -> Result<(), ::mantis_core::wire::ValidationError>;
 }
 
 impl Inbound {
@@ -4466,6 +4543,7 @@ impl Inbound {
             Self::DeleteCharacter(m) => ("DeleteCharacter", validators.validate_delete_character(m)),
             Self::CharacterPlaced(m) => ("CharacterPlaced", validators.validate_character_placed(m)),
             Self::AcquireLease(m) => ("AcquireLease", validators.validate_acquire_lease(m)),
+            Self::RouteToken(m) => ("RouteToken", validators.validate_route_token(m)),
         };
         result.map_err(|reason| ::mantis_core::wire::WireError::Rejected { message, reason })
     }
@@ -4533,6 +4611,7 @@ pub fn parse_inbound(
         82 => Inbound::DeleteCharacter(::mantis_core::wire::decode_message(bytes)?),
         83 => Inbound::CharacterPlaced(::mantis_core::wire::decode_message(bytes)?),
         84 => Inbound::AcquireLease(::mantis_core::wire::decode_message(bytes)?),
+        86 => Inbound::RouteToken(::mantis_core::wire::decode_message(bytes)?),
         _ => return Err(::mantis_core::wire::WireError::UnknownMessage(id)),
     })
 }
@@ -4625,6 +4704,8 @@ pub enum Outbound {
     CharacterRows(CharacterRows),
     /// See [`LeaseState`].
     LeaseState(LeaseState),
+    /// See [`EntryRoute`].
+    EntryRoute(EntryRoute),
 }
 
 impl Outbound {
@@ -4666,6 +4747,7 @@ impl Outbound {
             Self::AccountRows(_) => <AccountRows as ::mantis_core::wire::Message>::ID,
             Self::CharacterRows(_) => <CharacterRows as ::mantis_core::wire::Message>::ID,
             Self::LeaseState(_) => <LeaseState as ::mantis_core::wire::Message>::ID,
+            Self::EntryRoute(_) => <EntryRoute as ::mantis_core::wire::Message>::ID,
         }
     }
 
@@ -4706,6 +4788,7 @@ impl Outbound {
             Self::AccountRows(m) => ::mantis_core::wire::encode_into(m, out),
             Self::CharacterRows(m) => ::mantis_core::wire::encode_into(m, out),
             Self::LeaseState(m) => ::mantis_core::wire::encode_into(m, out),
+            Self::EntryRoute(m) => ::mantis_core::wire::encode_into(m, out),
         }
     }
 }
@@ -4754,6 +4837,7 @@ pub fn decode_outbound(
         77 => Outbound::AccountRows(::mantis_core::wire::decode_message(bytes)?),
         80 => Outbound::CharacterRows(::mantis_core::wire::decode_message(bytes)?),
         85 => Outbound::LeaseState(::mantis_core::wire::decode_message(bytes)?),
+        87 => Outbound::EntryRoute(::mantis_core::wire::decode_message(bytes)?),
         _ => return Err(::mantis_core::wire::WireError::UnknownMessage(id)),
     })
 }

@@ -32,9 +32,9 @@ pub use adapter::{AdapterError, EntityIdRange, WireAdapter};
 pub use generated::contract::{
     AbilityId, AppearanceId, Cast, Choose, Extension, ExtensionKind, ExtensionMessage, ExtensionRefusal,
     ExtensionRefused, FeatureState, Goodbye, HandOff, Hello, Inbound, Interact, Linked, ModTier, ModuleEntry,
-    Move, MoveClaim, MovementMode, Outbound, PermittedModules, PromptId, Refuse, RefuseReason, ResumeTicket,
-    SetPosition, SnapshotAck, Transferred, Validators, Welcome, decode_inbound, decode_outbound,
-    parse_inbound,
+    Move, MoveClaim, MovementMode, Outbound, PermittedModules, PromptId, Refuse, RefuseReason, Relinked,
+    ResumeTicket, SetPosition, SnapshotAck, Transferred, Validators, Welcome, decode_inbound,
+    decode_outbound, parse_inbound,
 };
 pub use snapshot::{
     LocalAvatar, NoRemoteBases, RemoteBases, RemoteSample, SnapshotFrame, SnapshotHeader, SnapshotVisitor,

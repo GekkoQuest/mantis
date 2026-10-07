@@ -10,6 +10,7 @@
 
 pub mod cluster;
 pub mod content;
+pub mod front;
 pub mod login;
 pub mod modules;
 pub mod node;

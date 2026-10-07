@@ -6,12 +6,18 @@
 //!            [--editor [--content DIR] [--ops ADDR --ops-cert FILE --ops-token-file FILE --ops-cell N]]
 //! ```
 //!
-//! Connects to a toy server over QUIC and verifies it: with `--ca-bundle`, its chain
-//! against the bundle's CAs and its name against `--server-name` (default: the host of
-//! `--server`); with `--public-roots` (a build with the `public-roots` feature), against
-//! the public root set plus any `--ca-bundle`;//! `--server`); with `--cert` (the development default, `toy-dev-cert.der`), the exact
-//! self-signed leaf the server wrote with `toy-server serve --cert-out FILE`. A refused
-//! server is reported with the reason (`toy_client::trust`). Then it opens a window and
+//! Connects over QUIC to the gateway at `--server HOST:PORT` (a name or an IP; default
+//! `127.0.0.1:7777`) and verifies it: with `--ca-bundle`, its chain against the bundle's
+//! CAs and its name against `--server-name` (default: the host of `--server`); with
+//! `--public-roots` (a build with the `public-roots` feature), against the public root
+//! set plus any `--ca-bundle`; with `--cert` (the development default,
+//! `toy-dev-cert.der`), the exact self-signed leaf the server wrote with
+//! `toy-server serve --cert-out FILE`. A refused server is reported with the reason
+//! (`toy_client::trust`). `--token` is the launcher's entry token. Hand-offs between cell
+//! hosts happen behind the gateway on the same connection; after a dropped connection
+//! the client resolves `--server` again, reconnects with its resume ticket (or the entry
+//! token), and resumes play; while it does, "reconnecting…" is shown on screen (with
+//! `--font`) and printed (`toy_client::gateway`). Then it opens a window and
 //! plays: W, A, S, D
 //! move, Space jumps, Left Shift walks, the mouse looks. With `--font`, the package's
 //! module screens (party and the other std modules) are drawn with that font; the
@@ -168,12 +174,15 @@ fn attach_ui<T: mantis_adapter_contract::Transport>(
             .set_mods(mods)
             .map_err(|e| PlatformError::Start(format!("mod screens: {e}")))?;
     }
+    if let Some(r) = client.redial.as_ref() {
+        layer.set_connection(Arc::clone(r.status()));
+    }
     client.render.sink_mut().set_ui(Some(layer));
     Ok(())
 }
 
 /// Who to trust for the game listener, from the flags (`toy_client::trust`).
-fn trust(args: &Args, addr: std::net::SocketAddr) -> Result<mantis_net::quic::ServerTrust, String> {
+fn trust(args: &Args, host: &str) -> Result<mantis_net::quic::ServerTrust, String> {
     toy_client::trust::TrustArgs::from_flags(
         toy_client::trust::TrustFlags {
             public_roots: args.0.iter().any(|a| a == "--public-roots"),
@@ -183,15 +192,56 @@ fn trust(args: &Args, addr: std::net::SocketAddr) -> Result<mantis_net::quic::Se
         },
         "toy-dev-cert.der",
     )?
-    .load(addr)
+    .load(host)
+}
+
+/// Dials the gateway again for a reconnect: resolves its name now and verifies it with
+/// the same trust as the first connect.
+fn redial(
+    runtime: Arc<NetRuntime>,
+    gateway: toy_client::gateway::Gateway,
+    trust: mantis_net::quic::ServerTrust,
+) -> toy_client::gateway::Dial<QuicClient> {
+    Box::new(move || {
+        let addr = gateway.resolve()?;
+        QuicClient::connect_trusted(&runtime, addr, &trust).map_err(|e| toy_client::trust::notice(&e, &trust))
+    })
+}
+
+/// The network thread: steps the session, reconnects after a drop (printing each status
+/// change), and pumps the module link, until `stop`.
+fn net_loop(
+    net: &mut mantis_client::net::NativeSession<QuicClient>,
+    module_net: &mut mantis_client::modules::ModuleNetLink,
+    mut redial: Option<&mut toy_client::gateway::Redial<QuicClient>>,
+    clock: &dyn HostClock,
+    stop: &AtomicBool,
+) {
+    let mut shown = None;
+    while !stop.load(Ordering::Acquire) {
+        net.step();
+        if let Some(r) = redial.as_deref_mut() {
+            r.step(clock.now(), net);
+            let status = r.current();
+            if shown != Some(status) {
+                shown = Some(status);
+                match (status.notice(), r.last_error()) {
+                    (Some(n), Some(e)) => eprintln!("toy-client: {n} (last dial: {e})"),
+                    (Some(n), None) => eprintln!("toy-client: {n}"),
+                    (None, _) if r.reconnects() > 0 => eprintln!("toy-client: reconnected"),
+                    (None, _) => {}
+                }
+            }
+        }
+        module_net.pump(net);
+        std::thread::sleep(Duration::from_millis(2));
+    }
 }
 
 fn start(args: &Args) -> Result<(), String> {
     let server = args.value("--server").unwrap_or("127.0.0.1:7777");
-    let addr = server
-        .parse()
-        .map_err(|_| format!("--server: not an address: {server}"))?;
-    let trust = trust(args, addr)?;
+    let gateway = toy_client::gateway::Gateway::parse(server)?;
+    let trust = trust(args, gateway.host())?;
     let token = args.value("--token").unwrap_or("player").as_bytes().to_vec();
     let fonts = fonts(args.value("--font"))?;
     let no_world = args.0.iter().any(|a| a == "--no-world");
@@ -218,13 +268,14 @@ fn start(args: &Args) -> Result<(), String> {
     let mods_dir = args
         .value("--mods")
         .map_or_else(toy_client::package::package_mods_dir, std::path::PathBuf::from);
-    let runtime = NetRuntime::new(2).map_err(|e| format!("{e:?}"))?;
+    let runtime = Arc::new(NetRuntime::new(2).map_err(|e| format!("{e:?}"))?);
     let config = PlatformConfig {
         title: "toy".to_owned(),
         ..PlatformConfig::default()
     };
     run(config, move |target, events| {
         let clock: Arc<dyn HostClock> = Arc::new(MonotonicClock::new());
+        let addr = gateway.resolve().map_err(PlatformError::Start)?;
         let transport = QuicClient::connect_trusted(&runtime, addr, &trust)
             .map_err(|e| PlatformError::Start(toy_client::trust::notice(&e, &trust)))?;
         // The window's sink starts without a UI; the module screens join it once the
@@ -242,12 +293,17 @@ fn start(args: &Args) -> Result<(), String> {
         }
         let mut client = ToyClient::new_for_content(transport, Arc::clone(&clock), sink, events, content)
             .map_err(|e| PlatformError::Start(e.to_string()))?;
+        client.enable_reconnect(
+            &token,
+            redial(Arc::clone(&runtime), gateway.clone(), trust.clone()),
+        );
         if let Some(editor) = editor.take() {
             attach_editor(&mut client, &editor, editor_fonts.take(), &clock)?;
         }
         if let Some(fonts) = fonts {
             attach_ui(&mut client, fonts, &mods_dir)?;
         }
+        let mut redial = client.redial.take();
         let hello_mods = core::mem::take(&mut client.hello_mods);
         let ToyClient {
             sim,
@@ -259,16 +315,19 @@ fn start(args: &Args) -> Result<(), String> {
         net.start_with_modules(&token, &hello_mods);
         let stop = Arc::new(AtomicBool::new(false));
         let stop_net = Arc::clone(&stop);
+        let net_clock = Arc::clone(&clock);
         let net_thread = std::thread::Builder::new()
             .name("toy-net".into())
             .spawn(move || {
                 // The runtime lives as long as the connection.
                 let _runtime = runtime;
-                while !stop_net.load(Ordering::Acquire) {
-                    net.step();
-                    module_net.pump(&mut net);
-                    std::thread::sleep(Duration::from_millis(2));
-                }
+                net_loop(
+                    &mut net,
+                    &mut module_net,
+                    redial.as_mut(),
+                    net_clock.as_ref(),
+                    &stop_net,
+                );
             })
             .map_err(|e| PlatformError::Start(e.to_string()))?;
         let sim = SimThread::spawn(sim, Arc::clone(&clock), Duration::from_millis(4))

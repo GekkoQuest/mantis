@@ -248,3 +248,38 @@ async fn a_call_passes_a_standby_and_follows_the_active_instance() {
     .unwrap();
     assert_eq!(epoch(&alone).await, Err(RpcError::Standby));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dead_instance_costs_a_new_connection_a_bounded_connect_only() {
+    // A port nothing listens on (a refused loopback connect takes about
+    // two seconds on Windows).
+    let dead = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let live = RpcServer::bind("127.0.0.1:0".parse().unwrap(), KEY.to_vec(), answering(5))
+        .await
+        .unwrap();
+    let client = RpcClient::with_endpoint(
+        Endpoint::instances(&[dead, live.addr()]),
+        Role::Cell,
+        KEY.to_vec(),
+        None,
+        Role::Realm,
+    )
+    .unwrap();
+    let started = std::time::Instant::now();
+    assert_eq!(epoch(&client).await, Ok(5));
+    let took = started.elapsed();
+    println!(
+        "a fresh client over a dead first instance answered in {} ms (connect bound {} ms)",
+        took.as_millis(),
+        mantis_services::host::rpc::INSTANCE_CONNECT_TIMEOUT.as_millis()
+    );
+    assert!(took < Duration::from_millis(1500), "{took:?}");
+    assert_eq!(
+        client.endpoint().preferred(),
+        1,
+        "the next call starts at the live one"
+    );
+}

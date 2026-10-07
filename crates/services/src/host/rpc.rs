@@ -206,6 +206,12 @@ impl Endpoint {
 /// How long a TLS handshake may take before the connection is dropped.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long one instance of several may take to accept a TCP connection
+/// before the call moves on to the next. A refused loopback connect takes
+/// about two seconds on Windows (the SYN is retried after the reset); a
+/// killed instance must not cost a failover that.
+pub const INSTANCE_CONNECT_TIMEOUT: Duration = Duration::from_millis(250);
+
 /// Largest frame.
 pub const MAX_FRAME: usize = 1 << 20;
 
@@ -991,7 +997,8 @@ impl RpcClient {
         let stamp = self.stamp(at);
         let mut delay = Duration::from_millis(10);
         // One instance of several: one try, then the call moves on.
-        let tries = if self.endpoint.targets().len() > 1 { 1 } else { 4 };
+        let several = self.endpoint.targets().len() > 1;
+        let tries = if several { 1 } else { 4 };
         for _ in 0..tries {
             let Some((addrs, name)) = self.endpoint.resolve(at).await else {
                 tokio::time::sleep(delay).await;
@@ -999,7 +1006,17 @@ impl RpcClient {
                 continue;
             };
             for addr in addrs {
-                let Ok(stream) = TcpStream::connect(addr).await else {
+                // One instance of several: a bounded connect, then the call
+                // moves on (and the endpoint prefers the next instance).
+                let stream = if several {
+                    tokio::time::timeout(INSTANCE_CONNECT_TIMEOUT, TcpStream::connect(addr))
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                } else {
+                    TcpStream::connect(addr).await.ok()
+                };
+                let Some(stream) = stream else {
                     continue;
                 };
                 let _ = stream.set_nodelay(true);

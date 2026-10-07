@@ -239,7 +239,7 @@ fn game_listener(
     args: &Args,
     runtime: &NetRuntime,
     quic_addr: SocketAddr,
-) -> Result<(QuicServer, Option<CertWatcher>), String> {
+) -> Result<(QuicServer, Option<CertWatcher>, ServerCertificate), String> {
     let files = match (args.value("--game-cert"), args.value("--game-key")) {
         (Some(c), Some(k)) => Some((PathBuf::from(c), PathBuf::from(k))),
         (None, None) => None,
@@ -257,7 +257,52 @@ fn game_listener(
     }
     let quic = QuicServer::bind(runtime, quic_addr, &cert).map_err(|e| format!("{e:?}"))?;
     let watcher = files.map(|(c, k)| CertWatcher::new(c, k, quic.reloader(), Duration::from_secs(1)));
-    Ok((quic, watcher))
+    Ok((quic, watcher, cert))
+}
+
+/// The cluster's gateway (`--gateway ADDR`): its certificate from
+/// `--gateway-cert` / `--gateway-key` (watched), or a development
+/// certificate written to `--gateway-cert-out`. It trusts the cell host's
+/// game certificate `host`.
+fn start_front(
+    args: &Args,
+    runtime: &NetRuntime,
+    cluster: &LocalCluster,
+    host: &ServerCertificate,
+) -> Result<Option<toy_server::front::Front>, String> {
+    let Some(listen) = args.value("--gateway") else {
+        return Ok(None);
+    };
+    let listen: SocketAddr = listen.parse().map_err(|_| "--gateway: not an address")?;
+    let files = match (args.value("--gateway-cert"), args.value("--gateway-key")) {
+        (Some(c), Some(k)) => Some((PathBuf::from(c), PathBuf::from(k))),
+        (None, None) => None,
+        _ => return Err("--gateway-cert and --gateway-key go together".to_owned()),
+    };
+    let cert = match &files {
+        Some((c, k)) => {
+            let read = |p: &Path| std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()));
+            ServerCertificate::from_pem(&read(c)?, &read(k)?).map_err(|e| e.to_string())?
+        }
+        None => ServerCertificate::localhost().map_err(|e| format!("{e:?}"))?,
+    };
+    if let Some(path) = args.value("--gateway-cert-out") {
+        std::fs::write(path, &cert.cert_der).map_err(|e| format!("{path}: {e}"))?;
+    }
+    let front = toy_server::front::start(
+        runtime,
+        &cluster.handle(),
+        toy_server::front::FrontSettings {
+            listen,
+            cert,
+            hosts: mantis_net::quic::ServerTrust::Pinned(host.cert_der.clone()),
+            realm: cluster.endpoint(Role::Realm).ok_or("no realm role")?,
+            key: cluster.key.clone(),
+        },
+        files,
+    )?;
+    println!("toy-server: gateway on {}", front.addr);
+    Ok(Some(front))
 }
 
 fn serve(args: &Args, with_cluster: bool) -> Result<(), String> {
@@ -275,7 +320,7 @@ fn serve(args: &Args, with_cluster: bool) -> Result<(), String> {
     let seed = args.number("--seed", 1)?;
     let max_ticks = args.number("--ticks", u64::MAX)?;
     let runtime = NetRuntime::new(2).map_err(|e| format!("{e:?}"))?;
-    let (quic, mut watcher) = game_listener(args, &runtime, quic_addr)?;
+    let (quic, mut watcher, game_cert) = game_listener(args, &runtime, quic_addr)?;
     let tcp = TcpServer::bind(&runtime, tcp_addr).map_err(|e| format!("{e:?}"))?;
     println!(
         "toy-server: native (QUIC) on {}, legacy (TCP) on {}",
@@ -293,6 +338,11 @@ fn serve(args: &Args, with_cluster: bool) -> Result<(), String> {
         None
     };
     let link = cluster.as_ref().map(|c| link_cells(c, game)).transpose()?;
+    let front = match cluster.as_ref() {
+        Some(c) => start_front(args, &runtime, c, &game_cert)?,
+        None if args.value("--gateway").is_some() => return Err("--gateway runs with `cluster`".to_owned()),
+        None => None,
+    };
     let mut host = world::host(&t, Box::new(quic), Box::new(tcp));
     if let (Some(cluster), true) = (cluster.as_ref(), args.has_flag("--verify-tokens")) {
         let realm = cluster.addr(Role::Realm).ok_or("no realm role")?;
@@ -336,32 +386,45 @@ fn serve(args: &Args, with_cluster: bool) -> Result<(), String> {
         }
         ticks += 1;
         if ticks.is_multiple_of(u64::from(t.tick_rate.hz()) * 10) {
-            let refused: u64 = zone
-                .cells()
-                .iter()
-                .map(mantis_server::cell::Cell::encode_refusals)
-                .sum();
-            println!(
-                "tick {ticks}: {} in world, {:?}, cell encode refusals {refused}",
-                host.sessions_in_world(),
-                host.stats
-            );
+            report(ticks, &host, &zone);
         }
-        if let Some(result) = watcher.as_mut().and_then(CertWatcher::poll) {
-            match result {
-                Ok(()) => println!("toy-server: the game certificate was reloaded"),
-                Err(e) => eprintln!(
-                    "toy-server: the game certificate files changed but do not load ({e}); the old chain stays"
-                ),
-            }
-        }
+        watch_game_cert(watcher.as_mut());
         toy_server::cluster::pace(&mut next, period, &mut host, &mut zone);
         if ticks.is_multiple_of(SNAPSHOT_EVERY) {
             write_snapshots(args, &zone, &t)?;
         }
     }
+    if let Some(f) = &front {
+        println!("toy-server: gateway {:?}", f.thread.stats());
+    }
     // A clean shutdown always ends in a snapshot (decision 0007).
     write_snapshots(args, &zone, &t)
+}
+
+/// The serving host's periodic status line.
+fn report(ticks: u64, host: &mantis_server::host::Host, zone: &mantis_server::zone::Zone) {
+    let refused: u64 = zone
+        .cells()
+        .iter()
+        .map(mantis_server::cell::Cell::encode_refusals)
+        .sum();
+    println!(
+        "tick {ticks}: {} in world, {:?}, cell encode refusals {refused}",
+        host.sessions_in_world(),
+        host.stats
+    );
+}
+
+/// Reloads the game certificate when its files changed.
+fn watch_game_cert(watcher: Option<&mut CertWatcher>) {
+    if let Some(result) = watcher.and_then(CertWatcher::poll) {
+        match result {
+            Ok(()) => println!("toy-server: the game certificate was reloaded"),
+            Err(e) => eprintln!(
+                "toy-server: the game certificate files changed but do not load ({e}); the old chain stays"
+            ),
+        }
+    }
 }
 
 /// Ticks between snapshots of a serving zone.
@@ -543,6 +606,25 @@ impl BotTrust {
     }
 }
 
+/// How native bots trust the listener: a pinned development certificate,
+/// or a CA bundle checked for the address each bot dials.
+fn bot_trust(args: &Args, legacy: bool) -> Result<BotTrust, String> {
+    Ok(match (legacy, args.value("--cert"), args.value("--ca")) {
+        (true, _, _) => BotTrust::Pinned(Vec::new()),
+        (false, Some(_), Some(_)) => return Err("--cert and --ca are alternatives".to_owned()),
+        (false, Some(path), None) => {
+            BotTrust::Pinned(std::fs::read(path).map_err(|e| format!("{path}: {e}"))?)
+        }
+        (false, None, Some(path)) => BotTrust::Ca(std::fs::read(path).map_err(|e| format!("{path}: {e}"))?),
+        (false, None, None) => {
+            return Err(
+                "--cert FILE (written by serve --cert-out) or --ca FILE (a CA bundle) is required for QUIC"
+                    .to_owned(),
+            );
+        }
+    })
+}
+
 /// Headless bots against a running server (`bots`).
 fn bots(args: &Args) -> Result<(), String> {
     let t = cooked_tunables(args)?;
@@ -561,27 +643,18 @@ fn bots(args: &Args) -> Result<(), String> {
         .map(str::parse::<SocketAddr>)
         .transpose()
         .map_err(|_| "--tcp: not an address")?;
-    // How native bots trust the listener: a pinned development
-    // certificate, or a CA bundle checked for the address each bot dials.
-    let trust = match (legacy, args.value("--cert"), args.value("--ca")) {
-        (Some(_), _, _) => BotTrust::Pinned(Vec::new()),
-        (None, Some(_), Some(_)) => return Err("--cert and --ca are alternatives".to_owned()),
-        (None, Some(path), None) => {
-            BotTrust::Pinned(std::fs::read(path).map_err(|e| format!("{path}: {e}"))?)
-        }
-        (None, None, Some(path)) => BotTrust::Ca(std::fs::read(path).map_err(|e| format!("{path}: {e}"))?),
-        (None, None, None) => {
-            return Err(
-                "--cert FILE (written by serve --cert-out) or --ca FILE (a CA bundle) is required for QUIC"
-                    .to_owned(),
-            );
-        }
-    };
+    let trust = bot_trust(args, legacy.is_some())?;
     let quic: SocketAddr = args
         .value("--quic")
         .unwrap_or("127.0.0.1:7400")
         .parse()
         .map_err(|_| "--quic: not an address")?;
+    // Behind a gateway, every native bot dials it, whatever its placement.
+    let front = args
+        .value("--gateway")
+        .map(str::parse::<SocketAddr>)
+        .transpose()
+        .map_err(|_| "--gateway: not an address")?;
     let login = gateway_login(args)?;
     let mut bots = Vec::new();
     let mut logged_in = 0usize;
@@ -596,10 +669,12 @@ fn bots(args: &Args) -> Result<(), String> {
             None => None,
         };
         // A logged-in native bot joins the cell the realm placed it in.
-        let quic = entry
-            .as_ref()
-            .and_then(|e| e.address.parse::<SocketAddr>().ok())
-            .unwrap_or(quic);
+        let quic = front.unwrap_or_else(|| {
+            entry
+                .as_ref()
+                .and_then(|e| e.address.parse::<SocketAddr>().ok())
+                .unwrap_or(quic)
+        });
         let (wire, transport): (
             Box<dyn mantis_server::bots::BotWire>,
             Box<dyn mantis_adapter_contract::Transport>,
@@ -632,7 +707,13 @@ fn bots(args: &Args) -> Result<(), String> {
     }
     println!(
         "toy-server bots: {count} {profile:?} bot(s) to {} for {seconds} s{}",
-        legacy.map_or_else(|| format!("{quic} (QUIC)"), |a| format!("{a} (TCP)")),
+        legacy.map_or_else(
+            || front.map_or_else(
+                || format!("{quic} (QUIC)"),
+                |g| format!("the gateway at {g} (QUIC)")
+            ),
+            |a| format!("{a} (TCP)")
+        ),
         if login.is_some() {
             format!(", {logged_in} logged in through the account and realm roles")
         } else {
@@ -662,6 +743,10 @@ fn drive_bots(bots: &mut [mantis_server::bots::Bot], tick_hz: u32, seconds: u64)
                 "after {} s: {welcomed} in world, {refused} refused, {snapshots} snapshots, {corrections} corrections",
                 tick / hz
             );
+            let reasons: Vec<_> = bots.iter().filter_map(|b| b.stats.refused).collect();
+            if !reasons.is_empty() {
+                println!("refused: {reasons:?}");
+            }
         }
         next += period;
         let now = Instant::now();

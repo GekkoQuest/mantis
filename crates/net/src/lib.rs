@@ -5,6 +5,8 @@
 //! - [`tcp`]: the transport for legacy-shaped adapters.
 //! - [`handshake`]: version, capability, content-hash, module, and token
 //!   negotiation for a `Hello`.
+//! - [`gateway`]: the one game address clients connect to, relaying each
+//!   session to the cell host serving it, across hand-offs and reconnects.
 //!
 //! Both transports implement `mantis_adapter_contract::Transport`: a
 //! synchronous polling facade whose network I/O runs on a [`NetRuntime`], so
@@ -14,6 +16,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod gateway;
 pub mod handshake;
 pub mod quic;
 mod shared;

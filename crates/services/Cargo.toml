@@ -7,6 +7,10 @@ publish = false
 
 [dependencies]
 mantis-core = { path = "../core" }
+# The gateway's routes (`cluster::EntryRoutes` implements
+# `mantis_net::gateway::Routes`) and its refusal reasons.
+mantis-net = { path = "../net" }
+mantis-adapter-contract = { path = "../adapter-contract" }
 tokio = { workspace = true }
 ring = { workspace = true }
 tokio-postgres = { workspace = true }
@@ -18,8 +22,6 @@ x509-parser = { workspace = true }
 
 [dev-dependencies]
 mantis-testkit = { path = "../testkit" }
-# Game-protocol frames, to prove none reaches an Ops handler.
-mantis-adapter-contract = { path = "../adapter-contract" }
 
 [lints]
 workspace = true

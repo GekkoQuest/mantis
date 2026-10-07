@@ -46,6 +46,7 @@ pub mod net;
 pub mod platform;
 pub mod predict;
 pub mod presentation;
+pub mod reconnect;
 pub mod recording;
 pub mod render_world;
 pub mod scope;
