@@ -68,6 +68,9 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     steps:
+      # The replay binary resolves the toy package's cooked content at a path compiled in from its
+      # source checkout, so the compare job needs the same commit checked out at the same path.
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: soak-x86_64
