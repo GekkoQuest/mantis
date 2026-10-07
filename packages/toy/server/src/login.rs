@@ -8,29 +8,39 @@
 //! the bot presents in its handshake. The calls go to the account and realm
 //! roles as the `gateway` role, proving the cluster key, over mutual TLS
 //! with a gateway certificate when the cluster runs it.
+//!
+//! Each role is an endpoint: `host:port` (an IP or a name, resolved at
+//! every connect), or several, comma-separated, one per instance of a
+//! failover role. A login that meets a failover (an instance gone, a
+//! standby answering) starts over until [`LOGIN_PATIENCE`] passes: a
+//! registration made before the cut answers "name taken" and is reused,
+//! and a character created before it is listed and selected.
 
-use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use mantis_core::wire::WireString;
 use mantis_services::generated::services as m;
-use mantis_services::host::rpc::{RpcClient, RpcError};
+use mantis_services::host::rpc::{Endpoint, RpcClient, RpcError};
 use mantis_services::host::{RPC_TIMEOUT, Role};
 use mantis_services::methods;
-use mantis_services::tls::TlsIdentity;
+use mantis_services::tls::{TlsHandle, TlsIdentity};
 
 /// The toy's one character kind.
 pub const TOY_KIND: u32 = 1;
+
+/// How long one login keeps starting over while a role fails over.
+pub const LOGIN_PATIENCE: Duration = Duration::from_secs(30);
 
 /// Where the gateway flow goes: the account and realm roles, and the
 /// cluster key. Written by `toy-server cluster --login-out`, read by
 /// `toy-server bots --login`, as `key = value` lines.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct LoginTargets {
-    /// The account role's RPC address.
-    pub account: SocketAddr,
-    /// The realm role's RPC address.
-    pub realm: SocketAddr,
+    /// The account role: `host:port`, or every instance, comma-separated.
+    pub account: String,
+    /// The realm role: `host:port`, or every instance, comma-separated.
+    pub realm: String,
     /// The cluster key.
     pub key: Vec<u8>,
 }
@@ -86,8 +96,9 @@ impl LoginTargets {
                 .map(|(k, v)| (k.trim(), v.trim()))
                 .ok_or_else(|| format!("line {}: expected key = value", n + 1))?;
             let addr = |v: &str| {
-                v.parse::<SocketAddr>()
-                    .map_err(|_| format!("{k}: not an address"))
+                Endpoint::new(v)
+                    .map(|_| v.to_owned())
+                    .map_err(|e| format!("{k}: {e}"))
             };
             let slot_taken = match k {
                 "account" => account.replace(addr(v)?).is_some(),
@@ -139,14 +150,44 @@ impl Gateway {
     /// # Errors
     /// The identity is not a gateway's, or does not make a configuration.
     pub fn new(targets: &LoginTargets, tls: Option<&Arc<TlsIdentity>>) -> Result<Self, String> {
-        let client = |addr, server| {
-            RpcClient::with_tls(addr, Role::Gateway, targets.key.clone(), tls.cloned(), server)
-                .map_err(|e| e.to_string())
+        let client = |target: &str, server| {
+            let endpoint = Endpoint::new(target)?;
+            RpcClient::with_endpoint(
+                endpoint,
+                Role::Gateway,
+                targets.key.clone(),
+                tls.cloned().map(TlsHandle::from),
+                server,
+            )
+            .map_err(|e| e.to_string())
         };
         Ok(Self {
-            account: client(targets.account, Role::Account)?,
-            realm: client(targets.realm, Role::Realm)?,
+            account: client(&targets.account, Role::Account)?,
+            realm: client(&targets.realm, Role::Realm)?,
         })
+    }
+
+    /// [`Gateway::enter_once`], started over while a role fails over (a
+    /// refusal is final; anything else is retried until [`LOGIN_PATIENCE`]).
+    ///
+    /// # Errors
+    /// A refusal, or the last failure when patience ran out.
+    pub async fn enter(&self, name: &str, password: &str) -> Result<Entry, String> {
+        let started = std::time::Instant::now();
+        let mut delay = Duration::from_millis(20);
+        loop {
+            match self.enter_once(name, password).await {
+                Ok(entry) => return Ok(entry),
+                Err((e, false)) => return Err(e),
+                Err((e, true)) => {
+                    if started.elapsed() >= LOGIN_PATIENCE {
+                        return Err(e);
+                    }
+                    tokio::time::sleep(delay).await;
+                    delay = (delay * 2).min(Duration::from_millis(500));
+                }
+            }
+        }
     }
 
     /// Registers `name` (or reuses it), logs in, and selects its first
@@ -154,11 +195,19 @@ impl Gateway {
     ///
     /// # Errors
     /// Which step failed and why (a wrong password for an existing name, a
-    /// role unreachable, the realm without a cell).
-    pub async fn enter(&self, name: &str, password: &str) -> Result<Entry, String> {
-        let name_w = WireString::<32>::new(name).ok_or("the name is longer than 32 bytes")?;
-        let password_w = WireString::<64>::new(password).ok_or("the password is longer than 64 bytes")?;
-        let step = |what: &'static str| move |e: RpcError| format!("{name}: {what}: {e}");
+    /// role unreachable, the realm without a cell), and whether starting
+    /// over may succeed (anything but a refusal).
+    pub async fn enter_once(&self, name: &str, password: &str) -> Result<Entry, (String, bool)> {
+        let final_ = |e: &str| (e.to_owned(), false);
+        let name_w = WireString::<32>::new(name).ok_or_else(|| final_("the name is longer than 32 bytes"))?;
+        let password_w =
+            WireString::<64>::new(password).ok_or_else(|| final_("the password is longer than 64 bytes"))?;
+        let step = |what: &'static str| {
+            move |e: RpcError| {
+                let again = !matches!(e, RpcError::Refused(_));
+                (format!("{name}: {what}: {e}"), again)
+            }
+        };
         let register = m::Register {
             name: name_w,
             password: password_w,
@@ -225,14 +274,17 @@ mod tests {
     #[test]
     fn login_targets_round_trip_and_refuse_anything_else() {
         let t = LoginTargets {
-            account: "127.0.0.1:5001"
-                .parse()
-                .unwrap_or_else(|_| SocketAddr::from(([0; 4], 0))),
-            realm: "127.0.0.1:5002"
-                .parse()
-                .unwrap_or_else(|_| SocketAddr::from(([0; 4], 0))),
+            account: "127.0.0.1:5001".to_owned(),
+            realm: "127.0.0.1:5002".to_owned(),
             key: vec![0, 1, 0xab, 0xff],
         };
+        // Names, and every instance of a failover role.
+        let named = LoginTargets {
+            account: "account-1.cluster:7501,account-2.cluster:7501".to_owned(),
+            realm: "realm.cluster:7502".to_owned(),
+            key: vec![9],
+        };
+        assert_eq!(LoginTargets::parse(&named.render()), Ok(named.clone()));
         assert_eq!(LoginTargets::parse(&t.render()), Ok(t.clone()));
         let with_comment = format!("# from toy-server cluster\n\n{}", t.render());
         assert_eq!(LoginTargets::parse(&with_comment), Ok(t.clone()));

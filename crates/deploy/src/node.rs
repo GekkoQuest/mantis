@@ -207,8 +207,10 @@ fn follow_registry(
                             role,
                             &name,
                             &format!(
-                                "the registry moves this node to rpc {} health {}: its own listeners                                          move only with a restart",
-                                me.rpc, me.health
+                                "the registry moves this node to {} {} health {}: its own listeners move only with a restart",
+                                crate::registry::listener_key(role),
+                                me.rpc,
+                                me.health
                             ),
                         );
                     }
@@ -242,8 +244,12 @@ impl Node {
                 matrix::name(config.role)
             ));
         }
+        let listener = match config.role {
+            Role::Gateway => "listen_game",
+            _ => "listen_rpc",
+        };
         for (what, listen, listed) in [
-            ("listen_rpc", config.listen_rpc, &me.rpc),
+            (listener, config.listen_rpc, &me.rpc),
             ("listen_health", config.listen_health, &me.health),
         ] {
             if listen.port() != listed.port() {
@@ -297,10 +303,14 @@ impl Node {
             config.role,
             &me.name,
             &format!(
-                "registry {} serial {} verified; certificate {} verified; rpc {} (mutual TLS), health {}",
+                "registry {} serial {} verified; certificate {} verified; {} {}, health {}",
                 registry.cluster,
                 registry.serial,
                 crate::pki::identity(&registry.cluster, config.role, &me.name),
+                match config.role {
+                    Role::Gateway => "game (QUIC, clients)",
+                    _ => "rpc (mutual TLS)",
+                },
                 config.listen_rpc,
                 health.addr()
             ),

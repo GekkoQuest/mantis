@@ -559,3 +559,254 @@ impl TwoHosts {
         assert!(done(self), "{what}: not within 600 ticks");
     }
 }
+
+// ---- entry tokens behind the gateway ---------------------------------------------
+
+/// A cell host verifying tokens with the cluster's realm, the gateway in
+/// front of it, and bots through the gateway, stepped on the wall clock.
+struct Redeeming {
+    gateway: mantis_net::gateway::Gateway,
+    host: mantis_server::host::Host,
+    zone: mantis_server::zone::Zone,
+    bots: Vec<Bot>,
+    started: std::time::Instant,
+}
+
+impl Redeeming {
+    fn step(&mut self) {
+        self.gateway
+            .poll(u64::try_from(self.started.elapsed().as_millis()).unwrap());
+        self.host.poll(&mut self.zone);
+        self.zone.step(&mut self.host, None).unwrap();
+        for b in &mut self.bots {
+            b.step();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    fn until(&mut self, what: &str, done: &dyn Fn(&Self) -> bool) {
+        for _ in 0..2000 {
+            if done(self) {
+                return;
+            }
+            self.step();
+        }
+        assert!(done(self), "{what}: not within 2000 steps");
+    }
+}
+
+#[test]
+fn an_entry_token_admits_once_behind_the_gateway_and_a_replay_is_refused_at_the_host() {
+    use mantis_net::NetRuntime;
+    use mantis_net::gateway::{Gateway, GatewayConfig};
+    use mantis_net::quic::{QuicClient, QuicDialer, QuicServer, ServerCertificate, ServerTrust};
+    use mantis_net::tcp::TcpServer;
+    use mantis_services::cluster::{
+        CellLink, CellLinkConfig, ClusterConfig, EntryRoutes, LocalCluster, TokenVerifier, secure_tickets,
+    };
+    use mantis_services::host::Role;
+
+    let tun = Tunables::defaults().unwrap();
+    let cluster = LocalCluster::start(&ClusterConfig::local()).unwrap();
+    let handle = cluster.handle();
+    let runtime = NetRuntime::new(2).unwrap();
+    let local = "127.0.0.1:0".parse().unwrap();
+    let host_cert = ServerCertificate::localhost().unwrap();
+    let quic = QuicServer::bind(&runtime, local, &host_cert).unwrap();
+    let game = quic.local_addr();
+    let mut host = world::host(
+        &tun,
+        Box::new(quic),
+        Box::new(TcpServer::bind(&runtime, local).unwrap()),
+    );
+    let cells: Vec<u64> = (1..=world::regions().len() as u64).collect();
+    // The host redeems with the realm, as a deployed cell host does.
+    let verifier = TokenVerifier::new(
+        &handle,
+        cluster.addr(Role::Realm).unwrap(),
+        cluster.key.clone(),
+        &cells,
+    );
+    host.set_admission(
+        Box::new(toy_server::cluster::RealmAdmission(verifier)),
+        mantis_server::host::AdmissionLimits::DEFAULT,
+    );
+    let _link = CellLink::start(
+        &handle,
+        &CellLinkConfig {
+            key: cluster.key.clone(),
+            persist: cluster.endpoint(Role::Persist).unwrap(),
+            ops: cluster.endpoint(Role::Ops).unwrap(),
+            social: cluster.endpoint(Role::Social).unwrap(),
+            matchmaking: cluster.endpoint(Role::Matchmaking).unwrap(),
+            realm: cluster.endpoint(Role::Realm).unwrap(),
+            world: 0,
+            live_key: cluster.ops().public_key(),
+            cells: world::regions()
+                .into_iter()
+                .zip(1u64..)
+                .map(|(r, id)| (id, game.to_string(), r))
+                .collect(),
+            poll: std::time::Duration::from_millis(20),
+            instances: Vec::new(),
+            inspector: local,
+            tls: None,
+        },
+    )
+    .unwrap();
+    // The gateway routes through the realm without redeeming.
+    let front_cert = ServerCertificate::localhost().unwrap();
+    let clients = QuicServer::bind(&runtime, local, &front_cert).unwrap();
+    let front = clients.local_addr();
+    let gateway = Gateway::new(
+        Box::new(clients),
+        Box::new(QuicDialer::new(&runtime, &ServerTrust::Pinned(host_cert.cert_der.clone())).unwrap()),
+        Box::new(
+            EntryRoutes::new(
+                &handle,
+                cluster.endpoint(Role::Realm).unwrap(),
+                cluster.key.clone(),
+                None,
+            )
+            .unwrap(),
+        ),
+        secure_tickets(),
+        GatewayConfig::DEFAULT,
+    );
+    // One login: one entry token.
+    let login = toy_server::login::Gateway::new(
+        &toy_server::login::LoginTargets {
+            account: cluster.addr(Role::Account).unwrap().to_string(),
+            realm: cluster.addr(Role::Realm).unwrap().to_string(),
+            key: cluster.key.clone(),
+        },
+        None,
+    )
+    .unwrap();
+    let mut entry = None;
+    for _ in 0..200 {
+        // The link registers the cells with the realm in the background.
+        if let Ok(e) = handle.block_on(login.enter("replay-1", "replay password")) {
+            entry = Some(e);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let entry = entry.expect("the realm placed the character");
+    let bot = |n: u64| {
+        let client = QuicClient::connect(&runtime, front, &front_cert.cert_der).unwrap();
+        let mut b = Bot::new(
+            Box::new(NativeWire::default()),
+            Box::new(client),
+            world::ground(),
+            bot_config(&tun, 11, n, Profile::Idle),
+            mantis_core::math::Vec3::ZERO,
+        )
+        .unwrap()
+        .with_token(&entry.token);
+        b.start();
+        b
+    };
+    let mut w = Redeeming {
+        gateway,
+        host,
+        zone: world::zone_with_instances(&tun, 11, 0, |_| None).unwrap(),
+        bots: vec![bot(0)],
+        started: std::time::Instant::now(),
+    };
+    w.until("the token admits its first holder", &|w| w.bots[0].welcomed());
+    assert_eq!(w.host.stats.joined, 1);
+
+    // The same token on a later connection: redeemed, so the realm no
+    // longer routes it, and the gateway refuses it.
+    w.bots.push(bot(1));
+    w.until("the replay refused", &|w| w.bots[1].stats.refused.is_some());
+    assert_eq!(w.bots[1].stats.refused, Some(RefuseReason::BadToken));
+    assert!(!w.bots[1].welcomed());
+    assert_eq!(w.host.stats.joined, 1, "admitted once");
+    assert!(w.bots[0].welcomed(), "the first holder plays on");
+
+    // Two connections present one fresh token at once: both route (the
+    // gateway's check does not consume it) and reach the host, which
+    // redeems it once: one is admitted, the other refused there.
+    let again = handle
+        .block_on(login.enter("replay-2", "replay password"))
+        .unwrap();
+    let pair = |n: u64| {
+        let client = QuicClient::connect(&runtime, front, &front_cert.cert_der).unwrap();
+        let mut b = Bot::new(
+            Box::new(NativeWire::default()),
+            Box::new(client),
+            world::ground(),
+            bot_config(&tun, 11, n, Profile::Idle),
+            mantis_core::math::Vec3::ZERO,
+        )
+        .unwrap()
+        .with_token(&again.token);
+        b.start();
+        b
+    };
+    let refused_at_host = w.host.stats.refused_handshakes;
+    let refused_at_gateway = w.gateway.stats.refused;
+    w.bots.push(pair(2));
+    w.bots.push(pair(3));
+    w.until("both answered", &|w| {
+        w.bots[2..]
+            .iter()
+            .all(|b| b.welcomed() || b.stats.refused.is_some())
+    });
+    let admitted = w.bots[2..].iter().filter(|b| b.welcomed()).count();
+    let refused: Vec<_> = w.bots[2..].iter().filter_map(|b| b.stats.refused).collect();
+    assert_eq!((admitted, refused), (1, vec![RefuseReason::BadToken]));
+    assert_eq!(w.host.stats.joined, 2, "the fresh token admitted once");
+    assert_eq!(
+        (
+            w.host.stats.refused_handshakes - refused_at_host,
+            w.gateway.stats.refused - refused_at_gateway
+        ),
+        (1, 0),
+        "refused by the host's redemption, not the gateway's check"
+    );
+}
+
+#[test]
+fn a_host_that_cannot_reach_the_realm_admits_nobody() {
+    use mantis_services::cluster::TokenVerifier;
+    let tun = Tunables::defaults().unwrap();
+    let mut sim = Sim::new(tun, 21, |_| None).unwrap();
+    // A realm address nothing listens on.
+    let dead = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let verifier = TokenVerifier::new(runtime.handle(), dead, b"key".to_vec(), &[1, 2]);
+    sim.host.set_admission(
+        Box::new(toy_server::cluster::RealmAdmission(verifier)),
+        mantis_server::host::AdmissionLimits::DEFAULT,
+    );
+    for _ in 0..3 {
+        sim.add_bot_with_token(
+            toy_server::sim::Side::Native,
+            Profile::Idle,
+            LinkConfig::PERFECT,
+            Some(&[7; 32]),
+        )
+        .unwrap();
+    }
+    let start = std::time::Instant::now();
+    while sim.bots.iter().any(|b| b.bot.stats.refused.is_none()) {
+        assert!(start.elapsed() < std::time::Duration::from_secs(30), "no verdict");
+        sim.step().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    for b in &sim.bots {
+        assert_eq!(b.bot.stats.refused, Some(RefuseReason::BadToken));
+        assert!(!b.bot.welcomed());
+    }
+    assert_eq!(sim.host.stats.joined, 0, "fail closed: nobody admitted");
+}

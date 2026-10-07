@@ -69,6 +69,14 @@ pub fn free_ports(n: usize) -> Vec<u16> {
     out
 }
 
+/// The configuration key of an instance's listener.
+fn listen_key(role: Role) -> &'static str {
+    match role {
+        Role::Gateway => "listen_game",
+        _ => "listen_rpc",
+    }
+}
+
 fn at(port: u16) -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], port))
 }
@@ -85,6 +93,13 @@ pub fn addr(t: &mantis_deploy::target::Target) -> SocketAddr {
 
 /// The test clusters' name (in the registry and every certificate).
 pub const CLUSTER: &str = "test";
+
+/// The gateway's instance name.
+pub const GATEWAY: &str = "gateway-1";
+
+/// The name every cell host's game certificate carries, which the gateway
+/// checks (`[gateway] hosts_name`).
+pub const HOSTS_NAME: &str = "cells.test.mantis";
 
 /// The persistence writer's store for a test cluster.
 #[derive(Clone, Debug)]
@@ -106,7 +121,8 @@ pub struct CellSpec {
     pub package: String,
     /// The game listener presents a chain from the cluster CA (files
     /// `keys/game-<name>.crt` and `.key`, trust `keys/ca.crt`) instead of
-    /// the package's development certificate.
+    /// the package's development certificate. It names the host's address
+    /// and [`HOSTS_NAME`], so a gateway reaches it.
     pub game_tls: bool,
 }
 
@@ -142,6 +158,10 @@ pub struct Cluster {
     pub dashboard: SocketAddr,
     /// Each cell host's game address (QUIC) and a second game port (TCP).
     pub game: BTreeMap<String, (SocketAddr, SocketAddr)>,
+    /// The gateway's game address (QUIC), when the cluster has one
+    /// ([`GATEWAY`]: its client certificate `keys/gateway-front.crt` and
+    /// `.key` from the cluster CA, for 127.0.0.1).
+    pub gateway: Option<SocketAddr>,
     configs: BTreeMap<String, PathBuf>,
     procs: BTreeMap<String, Proc>,
     output: BTreeMap<String, Arc<Mutex<String>>>,
@@ -171,6 +191,22 @@ impl Cluster {
     /// [`Cluster::new`], with a second instance (`<role>-2`, a standby
     /// while the first holds the lease) of each of `standbys`.
     pub fn with_standbys(label: &str, store: &TestStore, cell_hosts: &[CellSpec], standbys: &[Role]) -> Self {
+        Self::build(label, store, cell_hosts, standbys, false)
+    }
+
+    /// [`Cluster::new`], with a gateway ([`GATEWAY`]) in front of the cell
+    /// hosts.
+    pub fn with_gateway(label: &str, store: &TestStore, cell_hosts: &[CellSpec]) -> Self {
+        Self::build(label, store, cell_hosts, &[], true)
+    }
+
+    fn build(
+        label: &str,
+        store: &TestStore,
+        cell_hosts: &[CellSpec],
+        standbys: &[Role],
+        with_gateway: bool,
+    ) -> Self {
         let dir =
             Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("deploy-{label}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -188,8 +224,10 @@ impl Cluster {
             Role::Matchmaking,
             Role::Ops,
         ];
-        let mut ports =
-            free_ports((services.len() + standbys.len()) * 2 + cell_hosts.len() * 4 + 1).into_iter();
+        let mut ports = free_ports(
+            (services.len() + standbys.len()) * 2 + cell_hosts.len() * 4 + 1 + usize::from(with_gateway) * 2,
+        )
+        .into_iter();
         let mut next = || ports.next().unwrap();
         let mut instances = Vec::new();
         for role in services {
@@ -225,6 +263,18 @@ impl Cluster {
             game.insert(c.name.to_owned(), (at(next()), at(next())));
         }
         let dashboard = at(next());
+        let gateway = with_gateway.then(|| {
+            let game = at(next());
+            instances.push(Instance {
+                name: GATEWAY.to_owned(),
+                role: Role::Gateway,
+                rpc: game.into(),
+                health: target(next()),
+                cells: Vec::new(),
+                lease_owner: None,
+            });
+            game
+        });
         let ca = keys::read_ca(&key_dir).unwrap();
         let registry = Registry {
             serial: 1,
@@ -243,7 +293,7 @@ impl Cluster {
             let mut text = format!(
                 "[node]\nrole = \"{}\"\ninstance = \"{}\"\nregistry = \"registry.toml\"\n\
                  deploy_key = \"keys/{}\"\ncluster_key = \"keys/{}\"\ntls_cert = \"keys/{}\"\n\
-                 tls_key = \"keys/{}\"\nlisten_rpc = \"{}\"\n\
+                 tls_key = \"keys/{}\"\n{} = \"{}\"\n\
                  listen_health = \"{}\"\nready_timeout_s = 60\ndrain_grace_ms = 10000\n\
                  registry_refresh_s = 1\nlease_ttl_ms = {LEASE_TTL_MS}\n",
                 matrix::name(i.role),
@@ -252,6 +302,7 @@ impl Cluster {
                 keys::files::CLUSTER,
                 keys::files::cert(&i.name),
                 keys::files::key(&i.name),
+                listen_key(i.role),
                 i.rpc,
                 i.health
             );
@@ -273,6 +324,7 @@ impl Cluster {
                         .flat_map(|(q, t): &(SocketAddr, SocketAddr)| {
                             [q.port().to_string(), t.port().to_string()]
                         })
+                        .chain(gateway.map(|g| g.port().to_string()))
                         .collect();
                     let _ = write!(
                         text,
@@ -300,7 +352,7 @@ impl Cluster {
                         let leaf = pki::issue_server(
                             &ca,
                             "game",
-                            &[quic.ip().to_string()],
+                            &[quic.ip().to_string(), HOSTS_NAME.to_owned()],
                             pki::Validity::starting_now(std::time::SystemTime::now(), 7),
                         )
                         .unwrap();
@@ -318,7 +370,25 @@ impl Cluster {
                         let _ = write!(text, "\n[package]\n{}", spec.package);
                     }
                 }
-                Role::Account | Role::Realm | Role::Social | Role::Gateway => {}
+                Role::Gateway => {
+                    let ca = keys::read_ca(&key_dir).unwrap();
+                    let leaf = pki::issue_server(
+                        &ca,
+                        "gateway",
+                        &[addr(&i.rpc).ip().to_string()],
+                        pki::Validity::starting_now(std::time::SystemTime::now(), 7),
+                    )
+                    .unwrap();
+                    std::fs::write(key_dir.join("gateway-front.crt"), &leaf.cert_pem).unwrap();
+                    std::fs::write(key_dir.join("gateway-front.key"), &leaf.key_pem).unwrap();
+                    let _ = write!(
+                        text,
+                        "\n[gateway]\ncert = \"keys/gateway-front.crt\"\nkey = \"keys/gateway-front.key\"\n\
+                         ca = \"keys/{}\"\nhosts_name = \"{HOSTS_NAME}\"\nresume_s = 5\n",
+                        keys::files::CA
+                    );
+                }
+                Role::Account | Role::Realm | Role::Social => {}
             }
             let path = dir.join(format!("{}.toml", i.name));
             std::fs::write(&path, text).unwrap();
@@ -331,6 +401,7 @@ impl Cluster {
             token,
             dashboard,
             game,
+            gateway,
             configs,
             procs: BTreeMap::new(),
             output: BTreeMap::new(),
@@ -357,10 +428,11 @@ impl Cluster {
             }
             let config = self.config(&next.name);
             let text = std::fs::read_to_string(&config).unwrap();
+            let key = listen_key(next.role);
             let text = text
                 .replace(
-                    &format!("listen_rpc = \"{}\"", was.rpc),
-                    &format!("listen_rpc = \"{}\"", next.rpc),
+                    &format!("{key} = \"{}\"", was.rpc),
+                    &format!("{key} = \"{}\"", next.rpc),
                 )
                 .replace(
                     &format!("listen_health = \"{}\"", was.health),
@@ -402,6 +474,59 @@ impl Cluster {
             to_i.role,
         )
         .unwrap()
+    }
+
+    /// The arguments that make `toy-server bots` log in, as the gateway's
+    /// login flow does: the login targets (every account and realm
+    /// instance, and the cluster key) in `login.txt`, and a gateway
+    /// certificate (`keys/bots-login.crt`, issued here from the cluster CA)
+    /// to call them with. Cell hosts redeem every entry token, so a bot
+    /// without one is refused.
+    pub fn bot_login_args(&self) -> Vec<std::ffi::OsString> {
+        let k = self.dir.join("keys");
+        let list = |role: Role| {
+            self.registry
+                .of(role)
+                .iter()
+                .map(|i| i.rpc.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        std::fs::write(
+            self.dir.join("login.txt"),
+            format!(
+                "account = {}\nrealm = {}\ncluster_key = {}\n",
+                list(Role::Account),
+                list(Role::Realm),
+                keys::hex(&self.key)
+            ),
+        )
+        .unwrap();
+        if !k.join("bots-login.crt").is_file() {
+            let ca = keys::read_ca(&k).unwrap();
+            let leaf = pki::issue(
+                &ca,
+                CLUSTER,
+                Role::Gateway,
+                "bots-login",
+                &[],
+                pki::Validity::starting_now(std::time::SystemTime::now(), 7),
+            )
+            .unwrap();
+            std::fs::write(k.join("bots-login.crt"), &leaf.cert_pem).unwrap();
+            std::fs::write(k.join("bots-login.key"), &leaf.key_pem).unwrap();
+        }
+        [
+            "--login".into(),
+            self.dir.join("login.txt").into_os_string(),
+            "--tls-ca".into(),
+            k.join(keys::files::CA).into_os_string(),
+            "--tls-cert".into(),
+            k.join("bots-login.crt").into_os_string(),
+            "--tls-key".into(),
+            k.join("bots-login.key").into_os_string(),
+        ]
+        .into()
     }
 
     /// The registry entry of `name`.

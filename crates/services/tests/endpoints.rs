@@ -283,3 +283,48 @@ async fn a_dead_instance_costs_a_new_connection_a_bounded_connect_only() {
         "the next call starts at the live one"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_calls_over_a_standby_never_cut_each_other() {
+    // A standby first, the active second: every call starts at the standby
+    // or the active, concurrently. Calls to one instance must never close
+    // another's connection under a call in flight.
+    let standby = SeatSlot::default();
+    let active = SeatSlot::default();
+    active.fill(answering(4), Fence::held(1));
+    let a = RpcServer::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        KEY.to_vec(),
+        Router::seated(standby),
+    )
+    .await
+    .unwrap();
+    let b = RpcServer::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        KEY.to_vec(),
+        Router::seated(active),
+    )
+    .await
+    .unwrap();
+    let client = Arc::new(
+        RpcClient::with_endpoint(
+            Endpoint::instances(&[a.addr(), b.addr()]),
+            Role::Cell,
+            KEY.to_vec(),
+            None,
+            Role::Realm,
+        )
+        .unwrap(),
+    );
+    for _ in 0..4 {
+        let calls: Vec<_> = (0..32)
+            .map(|_| {
+                let c = Arc::clone(&client);
+                tokio::spawn(async move { epoch(&c).await })
+            })
+            .collect();
+        for call in calls {
+            assert_eq!(call.await.unwrap(), Ok(4));
+        }
+    }
+}

@@ -69,3 +69,9 @@ role = "cell-host"
 rpc = "10.77.0.20:7520"
 health = "10.77.0.20:7620"
 cells = [1, 2, 3]
+
+# The game's front door: clients dial its published port.
+[instance.gateway-1]
+role = "gateway"
+game = "127.0.0.1:7400"
+health = "10.77.0.30:7630"

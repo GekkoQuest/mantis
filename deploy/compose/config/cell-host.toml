@@ -15,13 +15,14 @@ ready_timeout_s = 300
 drain_grace_ms = 20000
 
 [cell_host]
-# What the realm hands to clients: the port the host publishes on loopback.
-advertise = "127.0.0.1:7400"
+# Where the gateway reaches the game listener: this host's address on the game network.
+# Native clients never dial it (it is not published); the gateway does, for every session.
+advertise = "10.78.0.20:7400"
 state = "/var/lib/mantis/state"
 poll_ms = 100
 snapshot_every_ticks = 150
-# The game listener's chain from the cluster CA (a private deployment: clients trust the
-# cluster CA bundle). Rotated in place by scripts/deploy-local.ps1 -Renew.
+# The game listener's chain from the cluster CA, for its game-network address and the name
+# the gateway checks (`[gateway] hosts_name`). Rotated in place by scripts/deploy-local.ps1 -Renew.
 game_cert = "/run/secrets/game_cert"
 game_key = "/run/secrets/game_key"
 game_ca = "/run/secrets/game_ca"

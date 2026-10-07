@@ -9,6 +9,13 @@
 # addresses. On real machines `wan` is the network between them and the names are DNS
 # records; the nodes and their configuration are the same.
 #
+# The gateway (the game's front door) runs here too: native clients dial 127.0.0.1:7400/udp,
+# published from its own `edge` network; it reaches the realm by name and each cell host at
+# the `wan` address the host advertises (10.88.0.10, 10.88.0.11). On real machines it sits at
+# the edge of the network, on a machine of its own; its node and configuration are the same.
+# `wan` has a subnet (10.88.0.0/24) for those addresses. Bots (profile `bots`,
+# scripts/deploy-bots.ps1 -Multihost) log in through every account and realm instance by name.
+#
 # The registry is served over HTTPS by `mantisd registry serve` (registry.svc.mantis:8443),
 # pinned by every node to the cluster CA, and re-read every 5 s: publishing a new signed
 # registry (a higher serial) into deploy/local/multihost/published moves the cluster without
@@ -154,6 +161,51 @@ services:
     ports:
       - "127.0.0.1:7480:7480/tcp"
 
+  # The game's front door: native clients dial 127.0.0.1:7400/udp. Entry tokens are checked
+  # with the realm; sessions are relayed to the cell host serving them, over `wan`.
+  gateway:
+    <<: *node
+    image: mantis/gateway:dev
+    secrets:
+      - cluster_key
+      - { source: gateway-1_crt, target: tls_cert }
+      - { source: gateway-1_key, target: tls_key }
+      - { source: gateway_front_crt, target: gateway_cert }
+      - { source: gateway_front_key, target: gateway_key }
+    volumes:
+      - ./config/gateway-1.toml:/etc/mantis/node.toml:ro
+      - ../local/multihost/keys/deploy.pub:/etc/mantis/deploy.pub:ro
+      - ../local/multihost/keys/ca.crt:/etc/mantis/ca.crt:ro
+    networks:
+      wan: { aliases: [gateway.svc.mantis], ipv4_address: 10.88.0.30 }
+      edge: { gw_priority: 1 }
+    ports:
+      - "127.0.0.1:7400:7400/udp"
+
+  # Headless bots (scripts/deploy-bots.ps1 -Multihost): they log in through the account and
+  # realm roles (every instance, by name) and dial only the gateway, all over `wan` (-Legacy:
+  # the legacy adapter, straight to host a). Nothing published.
+  bots:
+    profiles: ["bots"]
+    image: mantis/cell-host:dev
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    healthcheck: { disable: true }
+    entrypoint: ["toy-server", "bots", "--cooked", "/content/toy", "--gateway", "10.88.0.30:7400",
+      "--ca", "/etc/mantis/ca.crt", "--login", "/run/secrets/login", "--tls-ca", "/etc/mantis/ca.crt",
+      "--tls-cert", "/run/secrets/tls_cert", "--tls-key", "/run/secrets/tls_key"]
+    command: ["--count", "8", "--seconds", "30"]
+    secrets:
+      - { source: bots_login, target: login }
+      - { source: gateway-1_crt, target: tls_cert }
+      - { source: gateway-1_key, target: tls_key }
+    volumes:
+      - ../local/multihost/keys/ca.crt:/etc/mantis/ca.crt:ro
+      - ../../packages/toy/cooked:/content/toy:ro
+    # No fixed address: several bot runs may play at once (they start after the cluster).
+    networks: [wan]
+
   # Standbys of every failover role, on the same "machine" here; on real machines each
   # would sit on another one, which changes only the names in the registry.
   account-2:
@@ -238,6 +290,8 @@ networks:
     name: mantis_wan
   db:
     internal: true
+  # The gateway's client-facing network: its published port arrives here.
+  edge: {}
   ops:
     ipam: { config: [{ subnet: 10.89.0.0/24 }] }
 
@@ -251,6 +305,13 @@ secrets:
   pg_password: { file: ../local/multihost/secrets/pg_password }
   pg_conn: { file: ../local/multihost/secrets/pg.conn }
   registry_crt: { file: ../local/multihost/certs/registry.crt }
+  # The gateway's mutual-TLS identity (from the registry), its client-facing chain (mantisd
+  # certs --server gateway: 127.0.0.1 and its wan address), and the bots' login targets.
+  gateway-1_crt: { file: ../local/multihost/certs/gateway-1.crt }
+  gateway-1_key: { file: ../local/multihost/certs/gateway-1.key }
+  gateway_front_crt: { file: ../local/multihost/certs/gateway.crt }
+  gateway_front_key: { file: ../local/multihost/certs/gateway.key }
+  bots_login: { file: ../local/multihost/secrets/bots-login.txt }
   registry_key: { file: ../local/multihost/certs/registry.key }
   persist-1_crt: { file: ../local/multihost/certs/persist-1.crt }
   persist-1_key: { file: ../local/multihost/certs/persist-1.key }

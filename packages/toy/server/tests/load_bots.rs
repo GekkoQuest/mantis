@@ -23,8 +23,8 @@ use toy_server::tunables::Tunables;
 
 fn targets(cluster: &LocalCluster) -> LoginTargets {
     LoginTargets {
-        account: cluster.addr(Role::Account).unwrap(),
-        realm: cluster.addr(Role::Realm).unwrap(),
+        account: cluster.endpoint(Role::Account).unwrap().target(),
+        realm: cluster.endpoint(Role::Realm).unwrap().target(),
         key: cluster.key.clone(),
     }
 }
@@ -162,12 +162,13 @@ fn logged_in_bots_are_admitted_over_mutual_tls() {
     let mut config = ClusterConfig::local();
     config.tls = Some(ids.clone());
     let cluster = LocalCluster::start(&config).unwrap();
-    // Without a certificate the gateway cannot reach the roles.
+    // Without a certificate the gateway cannot reach the roles (one
+    // attempt: starting over would not help).
     let plain = Gateway::new(&targets(&cluster), None).unwrap();
     assert!(
         cluster
             .handle()
-            .block_on(plain.enter("bot-7-0", "bot password 7"))
+            .block_on(plain.enter_once("bot-7-0", "bot password 7"))
             .is_err()
     );
     let gateway = Gateway::new(&targets(&cluster), Some(&ids[&Role::Gateway])).unwrap();
@@ -583,4 +584,109 @@ fn bots_verify_a_ca_issued_game_certificate_against_a_bundle() {
     );
     drop(server);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A login wave against two instances of every failover role: the active
+/// account instance is killed after the first logins, and the rest of the
+/// wave rides through its failover (the bots' login targets list both
+/// instances; a login that meets the failover starts over). Every bot gets
+/// an entry token and is admitted by a host redeeming it with the realm.
+#[test]
+fn a_login_wave_rides_through_an_account_failover() {
+    const WAVE: usize = 12;
+    let mut config = ClusterConfig::local();
+    config.instances = 2;
+    config.lease_ttl = Duration::from_millis(600);
+    let mut cluster = LocalCluster::start(&config).unwrap();
+    let handle = cluster.handle();
+    let _link = CellLink::start(
+        &handle,
+        &CellLinkConfig {
+            key: cluster.key.clone(),
+            persist: cluster.endpoint(Role::Persist).unwrap(),
+            ops: cluster.endpoint(Role::Ops).unwrap(),
+            social: cluster.endpoint(Role::Social).unwrap(),
+            matchmaking: cluster.endpoint(Role::Matchmaking).unwrap(),
+            realm: cluster.endpoint(Role::Realm).unwrap(),
+            world: 0,
+            live_key: cluster.ops().public_key(),
+            cells: toy_server::world::regions()
+                .into_iter()
+                .zip(1u64..)
+                .map(|(r, id)| (id, "127.0.0.1:7400".to_owned(), r))
+                .collect(),
+            poll: Duration::from_millis(20),
+            instances: Vec::new(),
+            inspector: "127.0.0.1:0".parse().unwrap(),
+            tls: None,
+        },
+    )
+    .unwrap();
+    let t = targets(&cluster);
+    assert!(t.account.contains(','), "both account instances: {}", t.account);
+    let gateway = Gateway::new(&LoginTargets::parse(&t.render()).unwrap(), None).unwrap();
+    let mut entries = Vec::new();
+    let mut failed_over = None;
+    for n in 0..WAVE {
+        if n == WAVE / 3 {
+            // Mid-wave: the active account instance dies.
+            let (active, _) = cluster.active(Role::Account).unwrap();
+            cluster.stop_instance(Role::Account, active).unwrap();
+            failed_over = Some((active, Instant::now()));
+        }
+        let entry = handle.block_on(gateway.enter(&format!("wave-{n}"), "wave password"));
+        assert!(entry.is_ok(), "bot {n} never got in: {entry:?}");
+        entries.push(entry.unwrap());
+    }
+    let (killed, at) = failed_over.unwrap();
+    let (now, _) = cluster.active(Role::Account).unwrap();
+    assert_ne!(now, killed, "the standby took over");
+    println!(
+        "login wave: {WAVE} bots logged in; the account failover cost the wave {} ms",
+        at.elapsed().as_millis()
+    );
+    let mut characters: Vec<u64> = entries.iter().map(|e| e.character).collect();
+    characters.sort_unstable();
+    characters.dedup();
+    assert_eq!(characters.len(), WAVE, "one character each");
+
+    // Every token admits its bot at a host that redeems it.
+    let tun = Tunables::defaults().unwrap();
+    let mut sim = Sim::new(tun, 13, |_| None).unwrap();
+    let cells: Vec<u64> = (1..=toy_server::world::regions().len() as u64).collect();
+    let verifier = TokenVerifier::with_endpoint(
+        &handle,
+        cluster.endpoint(Role::Realm).unwrap(),
+        cluster.key.clone(),
+        None,
+        &cells,
+    )
+    .unwrap();
+    sim.host
+        .set_admission(Box::new(RealmAdmission(verifier)), AdmissionLimits::DEFAULT);
+    for e in &entries {
+        sim.add_bot_with_token(Side::Native, Profile::Idle, LinkConfig::PERFECT, Some(&e.token))
+            .unwrap();
+    }
+    let start = Instant::now();
+    while sim
+        .bots
+        .iter()
+        .any(|b| !b.bot.welcomed() && b.bot.stats.refused.is_none())
+    {
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "verdicts never arrived"
+        );
+        sim.step().unwrap();
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(
+        sim.bots.iter().all(|b| b.bot.welcomed()),
+        "every bot got in: {:?}",
+        sim.bots.iter().map(|b| b.bot.stats.refused).collect::<Vec<_>>()
+    );
+    let mut expected: Vec<u64> = entries.iter().map(|e| e.character).collect();
+    expected.sort_unstable();
+    assert_eq!(characters_in_world(&sim), expected);
 }

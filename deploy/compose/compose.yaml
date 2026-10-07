@@ -7,7 +7,11 @@
 # Networks:
 #   services  internal (no route out): RPC and health between roles, and PostgreSQL. Fixed
 #             addresses, because the signed registry lists ip:port, never names.
-#   game      the cell host's game ports only, published to 127.0.0.1; no masquerade (below).
+#   game      the gateway and the cell host's game listeners; no masquerade (below). Native
+#             clients reach the game only through the gateway (127.0.0.1:7400/udp, published
+#             from it); the gateway reaches the cell host here (10.78.0.20:7400). The legacy
+#             (plaintext TCP) adapter has no form for a gateway: legacy clients keep dialling
+#             the cell host's own published port (127.0.0.1:7401/tcp).
 #   ops       the Ops dashboard only, published to 127.0.0.1. The dashboard listens on
 #             this network's address alone: it is never on the game network, and never
 #             on the services network either.
@@ -20,6 +24,10 @@
 # database password and connection string) are files mounted under /run/secrets, never
 # environment variables. Every RPC between roles is mutual TLS: the signed registry carries
 # the cluster CA, and each node's certificate names its cluster, role and instance.
+#
+# Bots (profile `bots`, scripts/deploy-bots.ps1): headless clients that log in through the
+# account and realm roles with the gateway's certificate (the gateway's login flow) and play
+# through the gateway, from inside the cluster's networks (the roles are not published).
 
 name: mantis
 
@@ -251,21 +259,71 @@ services:
     networks:
       services: { ipv4_address: 10.77.0.20 }
       game: { ipv4_address: 10.78.0.20, gw_priority: 1 }
+    # Only the legacy adapter is published: native clients come through the gateway.
+    ports:
+      - "127.0.0.1:7401:7401/tcp"
+
+  # The game's front door: native clients dial 127.0.0.1:7400/udp. It checks each entry token
+  # with the realm (services network) and relays the session to the cell host serving it (game
+  # network). Its client-facing certificate is rotated in place like the game listener's.
+  gateway:
+    <<: *node
+    image: mantis/gateway:dev
+    build: { context: ../containers, dockerfile: gateway.Containerfile, args: { RUNTIME: "mantis/runtime-${MANTIS_RUNTIME:-debian}:dev" } }
+    secrets:
+      - cluster_key
+      - { source: gateway-1_crt, target: tls_cert }
+      - { source: gateway-1_key, target: tls_key }
+      - { source: gateway_front_crt, target: gateway_cert }
+      - { source: gateway_front_key, target: gateway_key }
+      - { source: ca_crt, target: clients_ca }
+    volumes:
+      - ./config/gateway.toml:/etc/mantis/node.toml:ro
+      - ../local/registry.toml:/etc/mantis/registry.toml:ro
+      - ../local/keys/deploy.pub:/etc/mantis/deploy.pub:ro
+    networks:
+      services: { ipv4_address: 10.77.0.30 }
+      game: { ipv4_address: 10.78.0.30, gw_priority: 1 }
     ports:
       - "127.0.0.1:7400:7400/udp"
-      - "127.0.0.1:7401:7401/tcp"
+
+  # Headless bots (scripts/deploy-bots.ps1; `docker compose --profile bots run --rm bots`):
+  # the toy package's `bots` from the cell-host image. They log in through the account and
+  # realm roles (every instance, services network) and dial only the gateway (game network);
+  # -Legacy: the legacy adapter, straight to the cell host's TCP port. Nothing published.
+  bots:
+    profiles: ["bots"]
+    image: mantis/cell-host:dev
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    healthcheck: { disable: true }
+    entrypoint: ["toy-server", "bots", "--cooked", "/content/toy", "--gateway", "10.78.0.30:7400",
+      "--ca", "/run/secrets/ca", "--login", "/run/secrets/login", "--tls-ca", "/run/secrets/ca",
+      "--tls-cert", "/run/secrets/tls_cert", "--tls-key", "/run/secrets/tls_key"]
+    command: ["--count", "8", "--seconds", "30"]
+    secrets:
+      - { source: bots_login, target: login }
+      - { source: ca_crt, target: ca }
+      - { source: gateway-1_crt, target: tls_cert }
+      - { source: gateway-1_key, target: tls_key }
+    volumes:
+      - ../../packages/toy/cooked:/content/toy:ro
+    # No fixed addresses: several bot runs may play at once (they start after the cluster).
+    networks: [services, game]
 
 networks:
   services:
     internal: true
-    ipam: { config: [{ subnet: 10.77.0.0/24 }] }
+    # Docker hands out addresses (the bots') from the upper half, clear of the fixed ones.
+    ipam: { config: [{ subnet: 10.77.0.0/24, ip_range: 10.77.0.128/25 }] }
   game:
     # No masquerade: a connection the cell host opens to another network on this host keeps
     # its own address, so the dashboard (which admits only the ops network's gateway, where
     # its published port arrives from) can refuse it. Docker forwards a published port's
     # container address from every bridge network on the host; unpublished ports are not.
     driver_opts: { com.docker.network.bridge.enable_ip_masquerade: "false" }
-    ipam: { config: [{ subnet: 10.78.0.0/24 }] }
+    ipam: { config: [{ subnet: 10.78.0.0/24, ip_range: 10.78.0.128/25 }] }
   ops:
     ipam: { config: [{ subnet: 10.79.0.0/24 }] }
 
@@ -305,8 +363,16 @@ secrets:
   ops-2_key: { file: ../local/certs/ops-2.key }
   cells-1_crt: { file: ../local/certs/cells-1.crt }
   cells-1_key: { file: ../local/certs/cells-1.key }
-  # The game listener's chain from the cluster CA (mantisd certs --server game), and the CA
-  # bundle clients trust (bots: -Ca deploy/local/keys/ca.crt).
+  gateway-1_crt: { file: ../local/certs/gateway-1.crt }
+  gateway-1_key: { file: ../local/certs/gateway-1.key }
+  # The cell host's game listener chain from the cluster CA (mantisd certs --server game: its
+  # game-network address and the gateway's hosts_name), the gateway's client-facing chain
+  # (--server gateway: 127.0.0.1 and its game-network address), and the CA bundle clients trust.
   game_crt: { file: ../local/certs/game.crt }
   game_key: { file: ../local/certs/game.key }
+  gateway_front_crt: { file: ../local/certs/gateway.crt }
+  gateway_front_key: { file: ../local/certs/gateway.key }
   ca_crt: { file: ../local/keys/ca.crt }
+  # The bots' login targets (every account and realm instance) and the cluster key: written
+  # by scripts/deploy-local.ps1.
+  bots_login: { file: ../local/secrets/bots-login.txt }

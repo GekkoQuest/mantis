@@ -157,7 +157,10 @@ fn role_identities(
     validity: pki::Validity,
 ) -> Result<BTreeMap<Role, Arc<TlsIdentity>>, String> {
     let mut identities = BTreeMap::new();
-    for role in matrix::DEPLOYED.into_iter().filter(|r| *r != Role::Cell) {
+    for role in matrix::DEPLOYED
+        .into_iter()
+        .filter(|r| !matches!(r, Role::Cell | Role::Gateway))
+    {
         let instance = format!("{}-local", matrix::name(role));
         let leaf = pki::issue(ca, CLUSTER, role, &instance, &[bind], validity)?;
         let id = TlsIdentity::from_pem(

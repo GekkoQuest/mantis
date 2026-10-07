@@ -26,6 +26,11 @@
 //! health = "10.40.0.15:7603"
 //! lease_owner = "social-b"    # optional: the name it holds the lease under (default: the instance name)
 //!
+//! [instance.gateway-1]        # the game's front door: any number of them
+//! role = "gateway"
+//! game = "203.0.113.7:7400"   # in place of rpc: the address clients dial (QUIC, UDP)
+//! health = "10.40.0.30:7630"
+//!
 //! [signature]
 //! algorithm = "ed25519"
 //! value = "<128 hex>"
@@ -113,7 +118,9 @@ pub struct Instance {
     pub name: String,
     /// Its role.
     pub role: Role,
-    /// Where its RPC listens (a cell host: its inspector).
+    /// Where its RPC listens (a cell host: its inspector). A gateway
+    /// serves no RPC: this is its client-facing game listener (QUIC over
+    /// UDP), keyed `game` in the registry ([`listener_key`]).
     pub rpc: Target,
     /// Where its health endpoint listens.
     pub health: Target,
@@ -130,6 +137,16 @@ impl Instance {
     #[must_use]
     pub fn owner(&self) -> &str {
         self.lease_owner.as_deref().unwrap_or(&self.name)
+    }
+}
+
+/// The registry key of an instance's listener: `game` for a gateway (the
+/// address clients dial), `rpc` for every other role.
+#[must_use]
+pub const fn listener_key(role: Role) -> &'static str {
+    match role {
+        Role::Gateway => "game",
+        _ => "rpc",
     }
 }
 
@@ -212,10 +229,10 @@ fn instance(name: &str, t: &toml::Table) -> Result<Instance, RegistryError> {
     let role = matrix::parse(role_name).ok_or_else(|| {
         f.error(
             "role",
-            "one of account, realm, social, matchmaking, persist, ops, cell-host",
+            "one of account, realm, social, matchmaking, persist, ops, gateway, cell-host",
         )
     })?;
-    let rpc = f.target("rpc")?;
+    let rpc = f.target(listener_key(role))?;
     let health = f.target("health")?;
     let cells = if role == Role::Cell {
         let cells = f.uints("cells")?;
@@ -420,7 +437,7 @@ impl Registry {
         for i in &self.instances {
             let _ = writeln!(out, "\n[instance.{}]", i.name);
             let _ = writeln!(out, "role = \"{}\"", matrix::name(i.role));
-            let _ = writeln!(out, "rpc = \"{}\"", i.rpc);
+            let _ = writeln!(out, "{} = \"{}\"", listener_key(i.role), i.rpc);
             let _ = writeln!(out, "health = \"{}\"", i.health);
             if i.role == Role::Cell {
                 let cells: Vec<String> = i.cells.iter().map(u64::to_string).collect();
@@ -441,9 +458,10 @@ impl Registry {
         for i in &self.instances {
             let _ = write!(
                 out,
-                "  {:<12} {:<16} rpc {:<21} health {}",
+                "  {:<12} {:<16} {:<4} {:<21} health {}",
                 matrix::name(i.role),
                 i.name,
+                listener_key(i.role),
                 i.rpc.to_string(),
                 i.health
             );
@@ -486,6 +504,14 @@ mod tests {
                     cells: vec![1, 2],
                     lease_owner: None,
                 },
+                Instance {
+                    name: "gateway-1".to_owned(),
+                    role: Role::Gateway,
+                    rpc: at(7400),
+                    health: at(7630),
+                    cells: Vec::new(),
+                    lease_owner: None,
+                },
             ],
         }
     }
@@ -500,6 +526,15 @@ mod tests {
         let (key, public) = keys();
         let text = sign(&sample().render(), &key);
         assert_eq!(Registry::verify(&text, &public).unwrap(), sample());
+        // A gateway lists the address clients dial as `game`, never `rpc`.
+        let body = sample().render();
+        assert!(body.contains("[instance.gateway-1]\nrole = \"gateway\"\ngame = \"127.0.0.1:7400\""));
+        let as_rpc = body.replace("game = \"127.0.0.1:7400\"", "rpc = \"127.0.0.1:7400\"");
+        let e = Registry::verify(&sign(&as_rpc, &key), &public).unwrap_err();
+        assert!(
+            matches!(&e, RegistryError::Invalid(m) if m.contains("game")),
+            "{e:?}"
+        );
     }
 
     #[test]
@@ -567,7 +602,7 @@ mod tests {
         let ok = Registry::verify(&sign(&r.render(), &key), &public).unwrap();
         assert_eq!(ok.of(Role::Social).len(), 2);
         assert_eq!(ok.instance("social-2").unwrap().owner(), "social-standby");
-        r.instances[3].lease_owner = Some("social-1".to_owned());
+        r.instances[4].lease_owner = Some("social-1".to_owned());
         let e = Registry::verify(&sign(&r.render(), &key), &public).unwrap_err();
         assert!(e.to_string().contains("share the lease owner"), "{e}");
 

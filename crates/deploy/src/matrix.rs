@@ -10,14 +10,16 @@ use mantis_services::host::Role;
 use mantis_services::methods;
 
 /// The roles `mantisd` deploys, by their names in configuration and the
-/// registry. The gateway (game logins) is not a deployable process yet.
-pub const DEPLOYED: [Role; 7] = [
+/// registry: the service roles, the gateway (the game's front door), and
+/// the cell host (run by a package's binary).
+pub const DEPLOYED: [Role; 8] = [
     Role::Account,
     Role::Realm,
     Role::Social,
     Role::Matchmaking,
     Role::Persist,
     Role::Ops,
+    Role::Gateway,
     Role::Cell,
 ];
 
@@ -52,7 +54,10 @@ pub fn may_call(caller: Role, server: Role) -> bool {
 #[must_use]
 pub const fn dependencies(role: Role) -> &'static [Role] {
     match role {
-        Role::Persist | Role::Gateway => &[],
+        Role::Persist => &[],
+        // The gateway checks entry tokens with the realm (`RouteEntry`);
+        // it reaches cell hosts on their game listeners, never over RPC.
+        Role::Gateway => &[Role::Realm],
         // Accounts, characters, guilds and friends are rows the writer
         // keeps; each of these roles reads them back before it serves.
         Role::Account | Role::Realm | Role::Social => &[Role::Persist],
@@ -140,6 +145,8 @@ mod tests {
         assert!(may_call(Role::Social, Role::Persist));
         assert!(may_call(Role::Ops, Role::Cell));
         assert!(may_call(Role::Matchmaking, Role::Persist));
+        assert!(may_call(Role::Gateway, Role::Realm));
+        assert!(!may_call(Role::Gateway, Role::Persist));
     }
 
     #[test]
@@ -147,7 +154,7 @@ mod tests {
         for role in DEPLOYED {
             assert_eq!(parse(name(role)), Some(role));
         }
-        assert_eq!(parse("gateway"), None);
+        assert_eq!(parse("gateway"), Some(Role::Gateway));
         assert_eq!(parse("cell"), None);
     }
 }

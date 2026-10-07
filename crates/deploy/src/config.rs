@@ -2,7 +2,7 @@
 //!
 //! ```toml
 //! [node]
-//! role = "social"                   # account, realm, social, matchmaking, persist, ops, cell-host
+//! role = "social"                   # account, realm, social, matchmaking, persist, ops, gateway, cell-host
 //! instance = "social-1"             # its name in the registry
 //! registry = "registry.toml"        # the signed registry: a file, "dir:DIR", or "https://host[:port]/path"
 //! registry_ca = "keys/deploy-ca.pem" # https only: the CA its server's certificate must chain to
@@ -12,7 +12,8 @@
 //! cluster_key = "keys/cluster.key"  # the RPC cluster key (a file, never an environment variable)
 //! tls_cert = "keys/social-1.crt"    # this instance's certificate (mantisd certs), PEM
 //! tls_key = "keys/social-1.key"     # its private key, PEM (a secret)
-//! listen_rpc = "0.0.0.0:7503"       # where this process binds its RPC
+//! listen_rpc = "0.0.0.0:7503"       # where this process binds its RPC (a gateway: listen_game,
+//!                                   # its client-facing game listener, QUIC over UDP)
 //! listen_health = "0.0.0.0:7603"    # where it binds its health endpoint
 //! ready_timeout_s = 120             # how long readiness waits for dependencies
 //! drain_grace_ms = 10000            # how long a drain may take
@@ -36,6 +37,17 @@
 //!
 //! [matchmaking]                     # only for role = "matchmaking"
 //! group = 2                         # characters per match
+//!
+//! [gateway]                         # only for role = "gateway"
+//! cert = "tls/gateway.crt"          # the chain clients see (PEM, leaf first), rotated in place
+//! key = "tls/gateway.key"           # its private key (PKCS#8 PEM, a secret)
+//! ca = "tls/clients-trust.pem"      # optional: chains must verify against it for the host of the
+//!                                   #   registry's `game` address
+//! hosts_name = "cells.mantis"       # the name every cell host's game certificate carries; the
+//!                                   #   gateway checks it against the registry's cluster CAs
+//! resume_s = 60                     # optional: how long a dropped client's session waits for it
+//! capacity = 4096                   # optional: sessions at once; more are refused Full
+//! route_timeout_ms = 5000           # optional: a route check or host connection, before Standby
 //!
 //! [cell_host]                       # only for role = "cell-host"
 //! advertise = "127.0.0.1:7400"      # the game address the realm hands to clients
@@ -146,6 +158,22 @@ pub struct GameTlsFiles {
     pub ca: Option<PathBuf>,
 }
 
+/// `[gateway]`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GatewayConfig {
+    /// The client-facing certificate files (`ca`: checked for the host of
+    /// the registry's `game` address).
+    pub tls: GameTlsFiles,
+    /// The name every cell host's game certificate carries.
+    pub hosts_name: String,
+    /// How long a dropped client's session waits for it.
+    pub resume: Duration,
+    /// Sessions at once.
+    pub capacity: usize,
+    /// How long a route check or a host connection may take.
+    pub route_timeout: Duration,
+}
+
 /// A node's configuration.
 #[derive(Clone, Debug)]
 pub struct NodeConfig {
@@ -169,7 +197,7 @@ pub struct NodeConfig {
     pub tls_cert: PathBuf,
     /// Its private key (PEM).
     pub tls_key: PathBuf,
-    /// Where the RPC binds.
+    /// Where the RPC binds (a gateway: its game listener, `listen_game`).
     pub listen_rpc: SocketAddr,
     /// Where the health endpoint binds.
     pub listen_health: SocketAddr,
@@ -187,15 +215,18 @@ pub struct NodeConfig {
     pub matchmaking: Option<MatchmakingConfig>,
     /// `[cell_host]`.
     pub cell_host: Option<CellHostConfig>,
+    /// `[gateway]`.
+    pub gateway: Option<GatewayConfig>,
     /// `[package]`, for the package's cell host to read.
     pub package: Table,
 }
 
-const ROLE_TABLES: [(&str, Role); 4] = [
+const ROLE_TABLES: [(&str, Role); 5] = [
     ("persist", Role::Persist),
     ("ops", Role::Ops),
     ("matchmaking", Role::Matchmaking),
     ("cell_host", Role::Cell),
+    ("gateway", Role::Gateway),
 ];
 
 impl NodeConfig {
@@ -275,6 +306,10 @@ impl NodeConfig {
             Role::Cell => Some(cell_config(&file, base, required("cell_host")?)?),
             _ => None,
         };
+        let gateway = match role {
+            Role::Gateway => Some(gateway_config(&file, base, required("gateway")?)?),
+            _ => None,
+        };
         let package = doc.table("package").cloned().unwrap_or(Table {
             name: "package".to_owned(),
             entries: Vec::new(),
@@ -299,6 +334,7 @@ impl NodeConfig {
             ops,
             matchmaking,
             cell_host,
+            gateway,
             package,
         })
     }
@@ -340,7 +376,7 @@ fn node_table(file: &str, base: &Path, node: &Table) -> Result<NodeTable, FieldE
     let role = matrix::parse(role_name).ok_or_else(|| {
         f.error(
             "role",
-            "one of account, realm, social, matchmaking, persist, ops, cell-host",
+            "one of account, realm, social, matchmaking, persist, ops, gateway, cell-host",
         )
     })?;
     let instance = f.str("instance")?.to_owned();
@@ -354,7 +390,11 @@ fn node_table(file: &str, base: &Path, node: &Table) -> Result<NodeTable, FieldE
     let cluster_key = f.path("cluster_key", base)?;
     let tls_cert = f.path("tls_cert", base)?;
     let tls_key = f.path("tls_key", base)?;
-    let listen_rpc = f.addr("listen_rpc")?;
+    // A gateway serves no RPC: its listener is the game's front door.
+    let listen_rpc = f.addr(match role {
+        Role::Gateway => "listen_game",
+        _ => "listen_rpc",
+    })?;
     let listen_health = f.addr("listen_health")?;
     if listen_rpc == listen_health {
         return Err(f.error("listen_health", "the health endpoint has its own listener"));
@@ -491,6 +531,43 @@ fn cell_config(file: &str, base: &Path, t: &Table) -> Result<CellHostConfig, Fie
     })
 }
 
+fn gateway_config(file: &str, base: &Path, t: &Table) -> Result<GatewayConfig, FieldError> {
+    let mut f = Fields::new(file, t);
+    let tls = GameTlsFiles {
+        cert: f.path("cert", base)?,
+        key: f.path("key", base)?,
+        ca: f.opt_path("ca", base)?,
+    };
+    let hosts_name = f.str("hosts_name")?.to_owned();
+    let dns = !hosts_name.is_empty()
+        && hosts_name.len() <= 253
+        && hosts_name.parse::<std::net::IpAddr>().is_err()
+        && hosts_name.split('.').all(|l| {
+            !l.is_empty()
+                && l.len() <= 63
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+                && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        });
+    if !dns {
+        return Err(f.error(
+            "hosts_name",
+            "a DNS name, the one every cell host's game certificate carries",
+        ));
+    }
+    let resume = f.duration_or("resume_s", 1..=3600, 60)?;
+    let capacity = usize::try_from(f.int_or("capacity", 1..=1_000_000, 4096)?).unwrap_or(4096);
+    let route_timeout = f.duration_or("route_timeout_ms", 100..=60_000, 5000)?;
+    f.finish()?;
+    Ok(GatewayConfig {
+        tls,
+        hosts_name,
+        resume,
+        capacity,
+        route_timeout,
+    })
+}
+
 /// The `[package]` table of a cell host's configuration, read as strictly
 /// as the rest: the package reads each key it knows inside
 /// [`PackageSettings::read`], which then refuses every key it did not read
@@ -557,7 +634,8 @@ mod tests {
         assert!(e("ready_timeout_s = 0\n").contains("outside 1..=3600"));
         assert!(e("ready_timeout_s = \"60\"\n").contains("expected an integer"));
         assert!(e("[persist]\nstore = \"memory\"\n").contains("configures a persist node"));
-        assert!(e("[gateway]\n").contains("unknown table [gateway]"));
+        assert!(e("[gateway]\n").contains("configures a gateway node"));
+        assert!(e("[relay]\n").contains("unknown table [relay]"));
         assert!(e("[package]\nx = 1\n").contains("configures a cell-host node"));
         let missing = parse(&NODE.replace("instance = \"social-1\"\n", ""))
             .unwrap_err()
@@ -567,8 +645,35 @@ mod tests {
         assert!(top.contains("outside any table"), "{top}");
         let same = parse(&NODE.replace("7603", "7503")).unwrap_err().0;
         assert!(same.contains("its own listener"), "{same}");
-        let role = parse(&NODE.replace("\"social\"", "\"gateway\"")).unwrap_err().0;
+        let role = parse(&NODE.replace("\"social\"", "\"cell\"")).unwrap_err().0;
         assert!(role.contains("one of account"), "{role}");
+    }
+
+    #[test]
+    fn a_gateway_listens_for_the_game_and_names_its_hosts() {
+        let node = NODE.replace("\"social\"", "\"gateway\"").replace(
+            "listen_rpc = \"127.0.0.1:7503\"",
+            "listen_game = \"0.0.0.0:7400\"",
+        );
+        let table = "[gateway]\ncert = \"tls/g.crt\"\nkey = \"tls/g.key\"\nhosts_name = \"cells.mantis\"\n";
+        let c = parse(&format!("{node}{table}")).unwrap();
+        assert_eq!(c.role, Role::Gateway);
+        assert_eq!(c.listen_rpc, "0.0.0.0:7400".parse().unwrap());
+        let g = c.gateway.unwrap();
+        assert_eq!(g.tls.cert, Path::new("cfg").join("tls/g.crt"));
+        assert_eq!(g.hosts_name, "cells.mantis");
+        assert_eq!(
+            (g.resume, g.capacity, g.route_timeout),
+            (Duration::from_secs(60), 4096, Duration::from_millis(5000))
+        );
+        assert!(parse(&node).unwrap_err().0.contains("needs [gateway]"));
+        let rpc = parse(&format!("{}{table}", NODE.replace("\"social\"", "\"gateway\"")));
+        assert!(rpc.unwrap_err().0.contains("`listen_game`: missing"));
+        for bad in ["10.0.0.1", "cells..mantis", "-cells", ""] {
+            let t = table.replace("cells.mantis", bad);
+            let e = parse(&format!("{node}{t}")).unwrap_err().0;
+            assert!(e.contains("hosts_name"), "{bad}: {e}");
+        }
     }
 
     #[test]

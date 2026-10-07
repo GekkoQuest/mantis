@@ -962,9 +962,9 @@ fn rpc_between_processes_is_mutual_tls_with_the_caller_matrix_on_the_certificate
     }
 }
 
-/// A client calling instance `to` as a role with no instance in the
-/// registry (the game front door, `gateway`, has no deployable process
-/// yet): a certificate the test issues from the cluster CA.
+/// A client calling instance `to` as a role with no instance in this
+/// cluster's registry (the gateway's login flow, here): a certificate the
+/// test issues from the cluster CA.
 fn client_as(cluster: &Cluster, role: Role, instance: &str, to: &str) -> RpcClient {
     use mantis_deploy::pki;
     let ca = mantis_deploy::keys::read_ca(&cluster.dir.join("keys")).unwrap();

@@ -510,7 +510,7 @@ fn start(node: &Node) -> Result<Running, String> {
         }
         Role::Cell | Role::Gateway => {
             return Err(format!(
-                "{} is not a service role mantisd runs",
+                "{} is not a service role (cli runs it on its own)",
                 matrix::name(node.config.role)
             ));
         }

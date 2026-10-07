@@ -13,6 +13,9 @@ path = "src/main.rs"
 [dependencies]
 mantis-core = { path = "../core" }
 mantis-services = { path = "../services" }
+# The gateway role: its QUIC listener and cell-host dialer, and the relay
+# (`mantis_net::gateway`).
+mantis-net = { path = "../net" }
 # `signal`: SIGTERM and Ctrl-C start a drain. A per-crate feature on the
 # workspace tokio, not a new dependency.
 tokio = { workspace = true, features = ["signal"] }
@@ -29,6 +32,8 @@ tokio-rustls = { workspace = true }
 # Reads the cell logs a package cell host writes, to check the recovery
 # invariants across processes.
 mantis-server = { path = "../server" }
+# A raw native client's handshake answer, in the gateway's replay check.
+mantis-adapter-contract = { path = "../adapter-contract" }
 
 [lints]
 workspace = true

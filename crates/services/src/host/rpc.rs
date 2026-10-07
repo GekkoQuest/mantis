@@ -910,7 +910,10 @@ pub struct RpcClient {
     key: Vec<u8>,
     tls: Option<ClientTls>,
     next_call: std::sync::atomic::AtomicU64,
-    conn: tokio::sync::Mutex<Option<Connection>>,
+    /// One connection per instance of the endpoint: calls to different
+    /// instances (a standby passed over, a failover) never cut each other's
+    /// connection.
+    conns: tokio::sync::Mutex<BTreeMap<usize, Connection>>,
 }
 
 impl RpcClient {
@@ -928,7 +931,7 @@ impl RpcClient {
             key,
             tls: None,
             next_call: std::sync::atomic::AtomicU64::new(1),
-            conn: tokio::sync::Mutex::new(None),
+            conns: tokio::sync::Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -1158,26 +1161,28 @@ impl RpcClient {
         let call = self.next_call.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let (done, wait) = oneshot::channel();
         {
-            let mut conn = self.conn.lock().await;
-            // Dead, or made before the endpoint moved, the identity
-            // changed or the preferred instance moved: the next call goes
-            // to the current target, with the current identity.
+            let mut conns = self.conns.lock().await;
+            // Dead, or made before the endpoint moved or the identity
+            // changed: the next call to this instance goes to its current
+            // target, with the current identity.
             let stamp = self.stamp(at);
-            let stale = conn
-                .as_ref()
+            let stale = conns
+                .get(&at)
                 .is_none_or(|c| !c.alive.load(std::sync::atomic::Ordering::Acquire) || c.stamp != stamp);
             if stale {
                 // Connecting (TCP, the TLS handshake, the hello) is bounded
                 // by the call's own timeout: a peer that accepts and then
                 // stalls costs one call its timeout, never more. The
                 // connection could not be made: disconnected.
-                *conn = None;
+                conns.remove(&at);
+                // The endpoint moved: every instance's connection is old.
+                conns.retain(|_, c| c.stamp.0 == stamp.0);
                 let connected = tokio::time::timeout(timeout, self.connect(at))
                     .await
                     .map_err(|_| unsent(RpcError::Disconnected))?;
-                *conn = Some(connected.map_err(unsent)?);
+                conns.insert(at, connected.map_err(unsent)?);
             }
-            let c = conn.as_ref().ok_or(unsent(RpcError::Disconnected))?;
+            let c = conns.get(&at).ok_or(unsent(RpcError::Disconnected))?;
             lock(&c.pending).insert(call, done);
             // The reader marks a connection dead before it fails its
             // waiters: a connection already dead here (refused at once)
@@ -1192,7 +1197,7 @@ impl RpcClient {
         }
         match tokio::time::timeout(timeout, wait).await {
             Err(_) => {
-                if let Some(c) = self.conn.lock().await.as_ref() {
+                if let Some(c) = self.conns.lock().await.get(&at) {
                     lock(&c.pending).remove(&call);
                 }
                 Err((RpcError::Timeout, true))

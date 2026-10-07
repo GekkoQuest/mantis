@@ -200,30 +200,67 @@ mod tests {
 
     struct Squares {
         out: Vec<AtomicU64>,
+        /// Times each job ran.
+        runs: Vec<AtomicU64>,
+        /// Jobs running on workers right now, and the most at once.
+        on_workers: std::sync::atomic::AtomicUsize,
+        peak: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Squares {
+        fn new(n: usize) -> Self {
+            Self {
+                out: (0..n).map(|_| AtomicU64::new(0)).collect(),
+                runs: (0..n).map(|_| AtomicU64::new(0)).collect(),
+                on_workers: std::sync::atomic::AtomicUsize::new(0),
+                peak: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
     }
 
     impl JobBatch for Squares {
         fn run(&self, index: usize) {
+            let worker = std::thread::current()
+                .name()
+                .is_some_and(|n| n.starts_with("mantis-job"));
+            if worker {
+                let now = self.on_workers.fetch_add(1, Ordering::SeqCst) + 1;
+                self.peak.fetch_max(now, Ordering::SeqCst);
+            }
             if let Some(slot) = self.out.get(index) {
                 slot.store((index * index) as u64, Ordering::Relaxed);
+            }
+            if let Some(n) = self.runs.get(index) {
+                n.fetch_add(1, Ordering::SeqCst);
+            }
+            if worker {
+                self.on_workers.fetch_sub(1, Ordering::SeqCst);
             }
         }
     }
 
     #[test]
     fn runs_every_job_with_quota_and_inline_fallback() {
+        // Which thread runs a job depends on scheduling (fast workers drain
+        // every job before the quota binds, slow ones push the rest inline),
+        // so only what holds either way is asserted: every job runs exactly
+        // once, the report adds up, and workers never hold more of this
+        // owner's jobs at once than its quota.
         let set = WorkerSet::new(3, 8, None);
-        let squares = Arc::new(Squares {
-            out: (0..100).map(|_| AtomicU64::new(0)).collect(),
-        });
+        let squares = Arc::new(Squares::new(100));
         let batch: Arc<dyn JobBatch> = squares.clone();
         let done = Completion::new();
         let r = set.run_batch(&batch, &done, 0..100, 4);
         assert_eq!(r.offloaded + r.inline, 100);
-        assert!(r.inline > 0, "quota 4 forces inline work");
         for (i, v) in squares.out.iter().enumerate() {
             assert_eq!(v.load(Ordering::Relaxed), (i * i) as u64);
+            assert_eq!(squares.runs[i].load(Ordering::SeqCst), 1, "job {i} ran once");
         }
+        assert!(
+            squares.peak.load(Ordering::SeqCst) <= 4,
+            "at most the quota on workers at once"
+        );
+        assert_eq!(squares.on_workers.load(Ordering::SeqCst), 0, "all finished");
         // Quota 0: everything inline.
         let r = set.run_batch(&batch, &done, 0..10, 0);
         assert_eq!(
@@ -238,9 +275,7 @@ mod tests {
     #[test]
     fn no_threads_means_inline() {
         let set = WorkerSet::new(0, 8, None);
-        let squares = Arc::new(Squares {
-            out: (0..5).map(|_| AtomicU64::new(0)).collect(),
-        });
+        let squares = Arc::new(Squares::new(5));
         let batch: Arc<dyn JobBatch> = squares;
         let r = set.run_batch(&batch, &Completion::new(), 0..5, 8);
         assert_eq!(

@@ -1,7 +1,7 @@
 # Owner: deploy-engine
 # Builds the per-role container images and starts the local compose cluster: one
-# container per role (account, realm, social, matchmaking, persist, ops, the toy cell host)
-# and PostgreSQL, from deploy/compose/compose.yaml. Prints the service graph when every
+# container per role (account, realm, social, matchmaking, persist, ops, the gateway, the toy
+# cell host) and PostgreSQL, from deploy/compose/compose.yaml. Prints the service graph when every
 # container is healthy (each health check is its node's /ready).
 #
 # First run only, into deploy/local/ (ignored by git, never committed):
@@ -10,13 +10,15 @@
 #              private key stays here and is never mounted into a container
 #   secrets/   the database password and the writer's connection string
 #   registry.toml  the registry, filled in (with the CA) and signed with the deploy key
-#   certs/     each node's mutual-TLS certificate and key (`mantisd certs`, 7 days)
+#   certs/     each node's mutual-TLS certificate and key (`mantisd certs`, 7 days), the cell
+#              host's game listener chain and the gateway's client-facing chain
+#   secrets/bots-login.txt  the bots' login targets and the cluster key (scripts/deploy-bots.ps1)
 # -Fresh writes a new registry (a higher serial) and new certificates, without touching
 # keys or data.
-# -Renew is certificate renewal with no restart: new certificates for every node and the
-# game listener from the same CA are written over the mounted files; every node takes its
-# new one up within a second (internal RPC connections handshake again; game sessions stay
-# on their connection, only new ones get the new chain). The script waits until every
+# -Renew is certificate renewal with no restart: new certificates for every node, the game
+# listener and the gateway's client-facing listener from the same CA are written over the
+# mounted files; every node takes its new one up within a second (internal RPC connections
+# handshake again; game sessions stay on their connection, only new ones get the new chain). The script waits until every
 # node reports the renewal on /metrics. Run it before the certificates expire (valid 7
 # days; the script warns when fewer than 2 remain).
 #
@@ -26,10 +28,12 @@
 # Images: rust:1.98.1-bookworm, debian:bookworm-slim and gcr.io/distroless/cc-debian12 (pinned by digest in
 # deploy/containers/base.Containerfile) and postgres:17-alpine. This script builds; it does
 # not pull anything the build does not name. Every published port binds 127.0.0.1:
-#   7400/udp  native clients (QUIC)       7401/tcp  legacy clients (TCP)
+#   7400/udp  native clients (QUIC), the gateway: the only native game address
+#   7401/tcp  legacy clients (TCP), the cell host itself (the legacy protocol has no gateway)
 #   7480/tcp  the Ops dashboard (HTTPS, its own network; operator token in
 #             deploy/local/keys/operator.token, certificate in deploy/local/out/ops-cert.der)
-# Bots: scripts/bots.ps1 -Cert deploy/local/out/toy-cert.der   (add -Legacy for TCP)
+# Bots: scripts/deploy-bots.ps1 [-Legacy] (logged in: native through the gateway, legacy
+#       straight to the cell host; the cell host redeems every entry token)
 # Stop: scripts/deploy-down.ps1
 param(
     [ValidateSet('debian', 'distroless')][string]$Runtime = 'debian',
@@ -58,8 +62,9 @@ $Nodes = @(
     @{ Service = 'matchmaking'; Health = 7604 }, @{ Service = 'ops'; Health = 7606 },
     @{ Service = 'account-2'; Health = 7601 }, @{ Service = 'realm-2'; Health = 7602 },
     @{ Service = 'social-2'; Health = 7603 }, @{ Service = 'matchmaking-2'; Health = 7604 },
-    @{ Service = 'ops-2'; Health = 7606 },
+    @{ Service = 'ops-2'; Health = 7606 }, @{ Service = 'gateway'; Health = 7630 },
     @{ Service = 'cell-host'; Health = 7620 })
+$Gateway = $Nodes[-2]
 
 # A counter from a node's /metrics (0 when absent), read inside its container with
 # `mantisd probe` (no shell needed: works on distroless).
@@ -98,6 +103,11 @@ if (-not (Test-Path $pgPassword)) {
     Write-Secret (Join-Path $Local 'secrets/pg.conn') "host=10.77.0.4 port=5432 user=mantis dbname=mantis password=$password"
     Write-Host 'secrets: a new database password in deploy/local/secrets (files, never environment variables)'
 }
+# The bots' login targets (every account and realm instance on the services network) and the
+# cluster key.
+$clusterKey = ([System.IO.File]::ReadAllText((Join-Path $Local 'keys/cluster.key'))).Trim()
+Write-Secret (Join-Path $Local 'secrets/bots-login.txt') ("account = 10.77.0.11:7501,10.77.0.21:7501`n" +
+    "realm = 10.77.0.12:7502,10.77.0.22:7502`ncluster_key = $clusterKey`n")
 # The certificates containers write for clients are regenerated at every start; old ones are
 # removed first, since a file a container of another runtime (another uid) wrote cannot be
 # overwritten by this one.
@@ -106,6 +116,12 @@ Get-ChildItem (Join-Path $Local 'out') -File | Remove-Item -Force
 
 # The registry: the live-data public key and a serial filled in, then signed.
 $registry = Join-Path $Local 'registry.toml'
+# A registry written before the gateway joined the template: written again (a higher serial),
+# with every certificate.
+if ((Test-Path $registry) -and -not (Select-String -Quiet -SimpleMatch '[instance.gateway-1]' $registry)) {
+    Write-Host 'the registry predates the gateway: writing it and the certificates again'
+    $Fresh = $true
+}
 if ($Fresh -or -not (Test-Path $registry)) {
     $live = ([System.IO.File]::ReadAllText((Join-Path $Local 'keys/live.pub'))).Trim()
     # The CA certificate as hex DER: the base64 between the PEM armour lines.
@@ -122,19 +138,25 @@ if ($Fresh -or -not (Test-Path $registry)) {
 
 # Certificates: one per node, from the CA the registry carries.
 $certs = Join-Path $Local 'certs'
-$issue = $Fresh -or $Renew -or -not (Test-Path (Join-Path $certs 'game.crt'))
+$issue = $Fresh -or $Renew -or -not (Test-Path (Join-Path $certs 'gateway.crt'))
 # What each node has taken up so far (a renewal is counted when it raises these).
 $before = @{}
 if ($Renew) {
     foreach ($n in $Nodes) { $before[$n.Service] = Get-NodeMetric $n 'tls_renewals' }
     $before['game'] = Get-NodeMetric $Nodes[-1] 'game_tls_rotations'
+    $before['front'] = Get-NodeMetric $Gateway 'gateway_tls_rotations'
 }
 if ($issue) {
     Invoke-Mantisd @('certs', '--keys', 'deploy/local/keys', '--registry', 'deploy/local/registry.toml',
         '--out', 'deploy/local/certs')
-    # The game listener's chain, from the cluster CA, for the address clients dial.
-    Invoke-Mantisd @('certs', '--keys', 'deploy/local/keys', '--server', 'game', '--hosts', '127.0.0.1',
-        '--out', 'deploy/local/certs')
+    # The game listener's chain, from the cluster CA, for the address the gateway dials and
+    # the name it checks (`[gateway] hosts_name`).
+    Invoke-Mantisd @('certs', '--keys', 'deploy/local/keys', '--server', 'game', '--hosts',
+        '10.78.0.20,cells.compose.mantis', '--out', 'deploy/local/certs')
+    # The gateway's client-facing chain, for the addresses clients dial: the published port on
+    # loopback, and its game-network address (the bots inside the cluster).
+    Invoke-Mantisd @('certs', '--keys', 'deploy/local/keys', '--server', 'gateway', '--hosts',
+        '127.0.0.1,10.78.0.30', '--out', 'deploy/local/certs')
 } else {
     $age = (Get-Date) - (Get-Item (Join-Path $certs 'cells-1.crt')).LastWriteTime
     if ($age.TotalDays -gt 5) {
@@ -156,6 +178,11 @@ if ($Renew) {
         Start-Sleep -Milliseconds 500
     }
     Write-Host '  cell-host game listener: rotated (open sessions kept)'
+    while ((Get-NodeMetric $Gateway 'gateway_tls_rotations') -le $before['front']) {
+        if ((Get-Date) -gt $deadline) { throw 'the gateway did not take its renewed client certificate up' }
+        Start-Sleep -Milliseconds 500
+    }
+    Write-Host '  gateway client listener: rotated (open sessions kept)'
     Invoke-Checked docker @('compose', '-f', $Compose, 'ps', '--format', 'table {{.Service}}\t{{.Status}}')
     Write-Host 'renewed: every node on its new certificate, no restart'
     exit 0
@@ -188,8 +215,9 @@ service graph (one container per role; services network 10.77.0.0/24, internal):
   social        rpc 10.77.0.13:7503  health :7603   <- cell-host (lines, presence, relays, projections), ops (guilds)
   matchmaking   rpc 10.77.0.14:7504  health :7604   <- cell-host (queues, placements)
   ops           rpc 10.77.0.15:7506  health :7606   <- cell-host (live changes); dashboard https 127.0.0.1:7480 (ops network only)
-  cell-host     rpc 10.77.0.20:7520  health :7620   <- ops (inspector, kick, drain); game 127.0.0.1:7400/udp, 127.0.0.1:7401/tcp
+  gateway       game 127.0.0.1:7400/udp (clients), health 10.77.0.30:7630 -> realm (entry routes), cell-host 10.78.0.20:7400
+  cell-host     rpc 10.77.0.20:7520  health :7620   <- ops (inspector, kick, drain), gateway (game 10.78.0.20:7400); legacy 127.0.0.1:7401/tcp
   postgres      10.77.0.4:5432 (services network only, not published)
 '@
-Write-Host 'bots:  scripts/bots.ps1 -Cert deploy/local/out/toy-cert.der [-Legacy]'
+Write-Host 'bots:  scripts/deploy-bots.ps1 (through the gateway)   legacy: scripts/deploy-bots.ps1 -Legacy'
 Write-Host 'stop:  scripts/deploy-down.ps1 [-Volumes]'

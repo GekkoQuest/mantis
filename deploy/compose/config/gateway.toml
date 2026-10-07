@@ -1,0 +1,26 @@
+# Owner: deploy-engine
+# The gateway node of the local compose cluster (deploy/compose/compose.yaml): the game's one
+# front door. Clients dial 127.0.0.1:7400/udp (published from here); the gateway checks each
+# entry token with the realm and relays the session to the cell host serving it, on the game
+# network. Read strictly by mantisd: an unknown key is refused. Secrets are files.
+[node]
+role = "gateway"
+instance = "gateway-1"
+registry = "/etc/mantis/registry.toml"
+deploy_key = "/etc/mantis/deploy.pub"
+cluster_key = "/run/secrets/cluster_key"
+tls_cert = "/run/secrets/tls_cert"
+tls_key = "/run/secrets/tls_key"
+listen_game = "0.0.0.0:7400"
+listen_health = "0.0.0.0:7630"
+ready_timeout_s = 300
+drain_grace_ms = 20000
+
+[gateway]
+# The chain clients see, from the cluster CA (clients trust the cluster CA bundle), for the
+# addresses clients dial. Rotated in place by scripts/deploy-local.ps1 -Renew.
+cert = "/run/secrets/gateway_cert"
+key = "/run/secrets/gateway_key"
+ca = "/run/secrets/clients_ca"
+# The name the cell host's game certificate carries besides its address.
+hosts_name = "cells.compose.mantis"

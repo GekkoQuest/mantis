@@ -17,11 +17,16 @@ ready_timeout_s = 300
 drain_grace_ms = 20000
 
 [cell_host]
-# What the realm hands to clients: the port this "host" publishes on loopback.
-advertise = "127.0.0.1:7400"
+# Where the gateway reaches the game listener: this "host"'s address on `wan`.
+advertise = "10.88.0.10:7400"
 state = "/var/lib/mantis/state"
 poll_ms = 100
 snapshot_every_ticks = 150
+# The game listener's chain from the cluster CA (its wan address and the gateway's hosts_name),
+# checked against the CA bundle for the advertised address.
+game_cert = "/run/secrets/game_cert"
+game_key = "/run/secrets/game_key"
+game_ca = "/etc/mantis/ca.crt"
 
 [package]
 quic = "0.0.0.0:7400"

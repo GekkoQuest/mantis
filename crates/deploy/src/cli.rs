@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! mantisd <role> --config FILE [--drain-on-stdin-eof]
-//!         role: account | realm | social | matchmaking | persist | ops | cell-host
+//!         role: account | realm | social | matchmaking | persist | ops | gateway | cell-host
 //! mantisd local --config FILE [--drain-on-stdin-eof]
 //! mantisd keys --out DIR --cluster NAME [--ca-days N]
 //! mantisd certs --keys DIR --registry REGISTRY.toml [--out DIR] [--days N] [--instance NAME]
@@ -37,7 +37,7 @@ use crate::registry::{Registry, sign};
 
 const USAGE: &str = "usage:
   <program> <role> --config FILE [--drain-on-stdin-eof]
-      role: account, realm, social, matchmaking, persist, ops, cell-host
+      role: account, realm, social, matchmaking, persist, ops, gateway, cell-host
   <program> local --config FILE [--drain-on-stdin-eof]
   <program> keys --out DIR --cluster NAME [--ca-days N]
   <program> certs --keys DIR --registry REGISTRY.toml [--out DIR] [--days N] [--instance NAME]
@@ -392,6 +392,7 @@ fn node(role: Role, config: &Path, stdin_eof: bool, cells: Option<&dyn CellHost>
             node.wait_for_dependencies()?;
             Ok(host.run(CellNode::new(node)?)?)
         }
+        (Role::Gateway, _) => Ok(crate::gateway::run(&node)?),
         _ => Ok(crate::roles::run(&node)?),
     }
 }

@@ -77,7 +77,8 @@ fn cooked() -> PathBuf {
     dir
 }
 
-/// Headless bots on one adapter, as `scripts/bots.ps1` runs them.
+/// Headless bots on one adapter, as `scripts/bots.ps1` runs them. They log
+/// in first (the cell host redeems every entry token), on both adapters.
 fn bots(cluster: &Cluster, legacy: bool, count: u32, seconds: u32, seed: u32) -> Child {
     let (quic, tcp) = cluster.game[HOST];
     let mut cmd = Command::new(toy_server());
@@ -85,7 +86,8 @@ fn bots(cluster: &Cluster, legacy: bool, count: u32, seconds: u32, seed: u32) ->
         .args(["--count", &count.to_string(), "--seconds", &seconds.to_string()])
         .args(["--seed", &seed.to_string()])
         .arg("--cooked")
-        .arg(cooked());
+        .arg(cooked())
+        .args(cluster.bot_login_args());
     if legacy {
         cmd.args(["--tcp", &tcp.to_string()]);
     } else {

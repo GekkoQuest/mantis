@@ -1301,7 +1301,9 @@ dependencies = [
 name = "mantis-deploy"
 version = "0.1.0"
 dependencies = [
+ "mantis-adapter-contract",
  "mantis-core",
+ "mantis-net",
  "mantis-server",
  "mantis-services",
  "rcgen",

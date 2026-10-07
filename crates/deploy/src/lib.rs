@@ -11,6 +11,7 @@
 //! - [`node`]: what every node does at start, whatever its role.
 //! - [`roles`]: the six service roles as processes.
 //! - [`cell`]: the cell-host role, adopted by a package's server binary.
+//! - [`gateway`]: the gateway role, the game's front door.
 //! - [`local`]: every service role in one process, for development.
 //! - [`keys`]: key and secret files (never environment variables).
 //! - [`publish`]: `mantisd registry serve`, registries over HTTPS.
@@ -32,6 +33,7 @@ pub mod config;
 pub mod drain;
 pub mod fields;
 pub mod game_tls;
+pub mod gateway;
 pub mod health;
 pub mod keys;
 pub mod local;

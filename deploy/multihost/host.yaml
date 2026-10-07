@@ -3,12 +3,15 @@
 # private network and its own game ports (compose projects mantis-host-a and
 # mantis-host-b, from this one file):
 #
-#   MANTIS_HOST=a  MANTIS_QUIC_PORT=7400  MANTIS_TCP_PORT=7401  docker compose -p mantis-host-a -f host.yaml up -d
-#   MANTIS_HOST=b  MANTIS_QUIC_PORT=7410  MANTIS_TCP_PORT=7411  docker compose -p mantis-host-b -f host.yaml up -d
+#   MANTIS_HOST=a  MANTIS_WAN_IP=10.88.0.10  MANTIS_TCP_PORT=7401  docker compose -p mantis-host-a -f host.yaml up -d
+#   MANTIS_HOST=b  MANTIS_WAN_IP=10.88.0.11  MANTIS_TCP_PORT=7411  docker compose -p mantis-host-b -f host.yaml up -d
 #
 # (scripts/deploy-multihost.ps1 does this.) The cell host reaches the service roles only
 # over the shared `wan` network, by the names the signed registry lists, and is reached
-# there as cells.host-<x>.mantis. Its game ports are published on 127.0.0.1 only.
+# there as cells.host-<x>.mantis. Native clients reach its game listener only through the
+# gateway, which dials the address it advertises on `wan` (MANTIS_WAN_IP:7400); its game
+# certificate (cluster CA) names that address and the gateway's hosts_name. Only the legacy
+# (plaintext TCP) port is published, on 127.0.0.1: that protocol has no gateway.
 
 services:
   cell-host:
@@ -22,6 +25,8 @@ services:
       - cluster_key
       - { source: cell_crt, target: tls_cert }
       - { source: cell_key, target: tls_key }
+      - { source: game_crt, target: game_cert }
+      - { source: game_key, target: game_key }
     volumes:
       - ./config/cells-${MANTIS_HOST:?a or b}.toml:/etc/mantis/node.toml:ro
       - ../local/multihost/keys/deploy.pub:/etc/mantis/deploy.pub:ro
@@ -31,9 +36,8 @@ services:
       - ../local/multihost/out-${MANTIS_HOST}:/var/lib/mantis/out
     networks:
       lan: {}
-      wan: { aliases: ["cells.host-${MANTIS_HOST}.mantis"] }
+      wan: { aliases: ["cells.host-${MANTIS_HOST}.mantis"], ipv4_address: "${MANTIS_WAN_IP:?}" }
     ports:
-      - "127.0.0.1:${MANTIS_QUIC_PORT:?}:7400/udp"
       - "127.0.0.1:${MANTIS_TCP_PORT:?}:7401/tcp"
 
 networks:
@@ -51,3 +55,5 @@ secrets:
   cluster_key: { file: ../local/multihost/keys/cluster.key }
   cell_crt: { file: "../local/multihost/certs/cells-${MANTIS_HOST}.crt" }
   cell_key: { file: "../local/multihost/certs/cells-${MANTIS_HOST}.key" }
+  game_crt: { file: "../local/multihost/certs/game-${MANTIS_HOST}.crt" }
+  game_key: { file: "../local/multihost/certs/game-${MANTIS_HOST}.key" }

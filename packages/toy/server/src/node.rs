@@ -34,6 +34,11 @@
 //!
 //! On a drain the zone stops ticking, every cell is snapshotted, and the
 //! link is flushed before the node exits.
+//!
+//! Every session presents an entry token (the realm's, from the login flow),
+//! redeemed with the realm exactly once before the session enters: a token
+//! presented again is refused `BadToken`, and so is every session while the
+//! realm cannot be reached (fail closed).
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -134,6 +139,7 @@ impl CellHost for ToyCells {
         // every placement.
         let mut link_config = node.link_config(&world_cells, &[instance])?;
         link_config.world = s.world;
+        redeem_tokens(&mut host, &node, &link_config)?;
         let link = mantis_services::cluster::CellLink::start(&node.handle(), &link_config)?;
         // What the logs hold goes to the writer again: it keeps each batch
         // once, so nothing acknowledged is doubled and nothing is lost.
@@ -187,6 +193,36 @@ impl CellHost for ToyCells {
         drop(zone);
         node.finish(link)
     }
+}
+
+/// Every entry token is redeemed with the realm exactly once, by this
+/// host's cells, through the link's realm endpoint (every instance) and
+/// identity (behind the gateway, routing only checks a token). Fail closed:
+/// a host that cannot reach the realm admits nobody.
+fn redeem_tokens(
+    host: &mut mantis_server::host::Host,
+    node: &CellNode,
+    link: &mantis_services::cluster::CellLinkConfig,
+) -> Result<(), String> {
+    let cells: Vec<u64> = link
+        .cells
+        .iter()
+        .map(|c| c.0)
+        .chain(link.instances.iter().map(|i| i.0))
+        .collect();
+    let verifier = mantis_services::cluster::TokenVerifier::with_endpoint(
+        &node.handle(),
+        link.realm.clone(),
+        link.key.clone(),
+        link.tls.clone(),
+        &cells,
+    )
+    .map_err(|e| format!("the token verifier: {e}"))?;
+    host.set_admission(
+        Box::new(cluster::RealmAdmission(verifier)),
+        mantis_server::host::AdmissionLimits::DEFAULT,
+    );
+    Ok(())
 }
 
 /// Cell `index`: recovered from its snapshot and the log after it, or

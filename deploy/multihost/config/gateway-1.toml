@@ -1,0 +1,27 @@
+# Owner: deploy-engine
+# The gateway node gateway-1 of the multi-host demonstration (deploy/multihost): the game's one
+# front door. Its registry is fetched over HTTPS from the registry server, pinned to the
+# cluster CA, and re-read every 5 s.
+[node]
+role = "gateway"
+instance = "gateway-1"
+registry = "https://registry.svc.mantis:8443/registry.toml"
+registry_ca = "/etc/mantis/ca.crt"
+registry_refresh_s = 5
+deploy_key = "/etc/mantis/deploy.pub"
+cluster_key = "/run/secrets/cluster_key"
+tls_cert = "/run/secrets/tls_cert"
+tls_key = "/run/secrets/tls_key"
+listen_game = "0.0.0.0:7400"
+listen_health = "0.0.0.0:7630"
+ready_timeout_s = 300
+drain_grace_ms = 20000
+
+[gateway]
+# The chain clients see, from the cluster CA, for 127.0.0.1 (the published port) and its wan
+# address (the bots); checked against the CA bundle for the registry's `game` address.
+cert = "/run/secrets/gateway_cert"
+key = "/run/secrets/gateway_key"
+ca = "/etc/mantis/ca.crt"
+# The name both cell hosts' game certificates carry besides their wan addresses.
+hosts_name = "cells.multihost.mantis"

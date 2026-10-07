@@ -1,24 +1,30 @@
 # Owner: deploy-engine
 # The multi-host demonstration on one machine: three compose projects that pretend to be
 # three machines, meeting only on a shared network by DNS name (deploy/multihost):
-#   mantis-svc     every service role, PostgreSQL, and `mantisd registry serve`
-#   mantis-host-a  a cell host (cells 1-3, world 0), game on 127.0.0.1:7400/udp, 7401/tcp
-#   mantis-host-b  a cell host (cells 11-13, world 1), game on 127.0.0.1:7410/udp, 7411/tcp
+#   mantis-svc     every service role, PostgreSQL, `mantisd registry serve`, and the gateway:
+#                  the one native game address, 127.0.0.1:7400/udp
+#   mantis-host-a  a cell host (cells 1-3, world 0), wan 10.88.0.10, legacy 127.0.0.1:7401/tcp
+#   mantis-host-b  a cell host (cells 11-13, world 1), wan 10.88.0.11, legacy 127.0.0.1:7411/tcp
 # Every node fetches the signed registry over HTTPS (pinned to the cluster CA) and re-reads
 # it every 5 s.
 #
 # First run only, into deploy/local/multihost (ignored by git): keys and the cluster CA
 # (cluster "multihost") and secrets. Every start: the signed registry in published/ (a
-# higher serial), every node's certificate (DNS names) and the registry server's.
+# higher serial), every node's certificate (DNS names), the registry server's, each cell
+# host's game listener chain (its wan address and the gateway's hosts_name), the gateway's
+# client-facing chain, and the bots' login targets.
 # Account, realm, social, matchmaking and Ops run an active and a standby instance each. Images are the ones
 # scripts/deploy-local.ps1 builds (-Build builds them here first).
 #
 #   -Publish  signs and publishes the registry again with a higher serial (every node
 #             applies it within 5 s, without a restart)
 #   -Down     stops all three projects (-Volumes also deletes the database and cell state)
-# Bots:  scripts/bots.ps1 -Quic 127.0.0.1:7400 -Cert deploy/local/multihost/out-a/toy-cert.der
-#        scripts/bots.ps1 -Quic 127.0.0.1:7410 -Cert deploy/local/multihost/out-b/toy-cert.der
-#        (-Legacy -Tcp 127.0.0.1:7401 / 127.0.0.1:7411 for the legacy adapter)
+# Bots:  scripts/deploy-bots.ps1 -Multihost (logged in, through the gateway; the realm places
+#        each in a world, and the gateway relays it to that world's host)
+#        scripts/deploy-bots.ps1 -Multihost -Legacy (logged in, legacy TCP straight to host a)
+# The shared network `wan` has the subnet 10.88.0.0/24 (fixed addresses for the cell hosts'
+# game listeners, which the gateway dials; Docker hands out the others from 10.88.0.128/25);
+# one created otherwise is refused: run -Down first.
 param(
     [switch]$Build,
     [switch]$Publish,
@@ -32,7 +38,9 @@ $env:MANTIS_RUNTIME = $Runtime
 
 $Local = Join-Path $Root 'deploy/local/multihost'
 $Dir = 'deploy/multihost'
-$Hosts = @(@{ Name = 'a'; Quic = 7400; Tcp = 7401 }, @{ Name = 'b'; Quic = 7410; Tcp = 7411 })
+$Hosts = @(@{ Name = 'a'; Wan = '10.88.0.10'; Tcp = 7401 }, @{ Name = 'b'; Wan = '10.88.0.11'; Tcp = 7411 })
+$Subnet = '10.88.0.0/24'
+$Dynamic = '10.88.0.128/25'
 
 function Invoke-Mantisd {
     param([string[]]$Arguments)
@@ -42,7 +50,7 @@ function Invoke-Mantisd {
 function Invoke-Host {
     param($h, [string[]]$Arguments)
     $env:MANTIS_HOST = $h.Name
-    $env:MANTIS_QUIC_PORT = "$($h.Quic)"
+    $env:MANTIS_WAN_IP = $h.Wan
     $env:MANTIS_TCP_PORT = "$($h.Tcp)"
     Invoke-Checked docker (@('compose', '-p', "mantis-host-$($h.Name)", '-f', "$Dir/host.yaml") + $Arguments)
 }
@@ -98,6 +106,17 @@ Invoke-Mantisd @('certs', '--keys', 'deploy/local/multihost/keys', '--registry',
     'deploy/local/multihost/published/registry.toml', '--out', 'deploy/local/multihost/certs')
 Invoke-Mantisd @('certs', '--keys', 'deploy/local/multihost/keys', '--server', 'registry',
     '--hosts', 'registry.svc.mantis', '--out', 'deploy/local/multihost/certs')
+foreach ($h in $Hosts) {
+    Invoke-Mantisd @('certs', '--keys', 'deploy/local/multihost/keys', '--server', "game-$($h.Name)",
+        '--hosts', "$($h.Wan),cells.multihost.mantis", '--out', 'deploy/local/multihost/certs')
+}
+Invoke-Mantisd @('certs', '--keys', 'deploy/local/multihost/keys', '--server', 'gateway',
+    '--hosts', '127.0.0.1,10.88.0.30', '--out', 'deploy/local/multihost/certs')
+# The bots' login targets (every account and realm instance, by registry name) and the
+# cluster key.
+$clusterKey = ([System.IO.File]::ReadAllText((Join-Path $Local 'keys/cluster.key'))).Trim()
+Write-Text (Join-Path $Local 'secrets/bots-login.txt') ("account = account.svc.mantis:7501,account-2.svc.mantis:7501`n" +
+    "realm = realm.svc.mantis:7502,realm-2.svc.mantis:7502`ncluster_key = $clusterKey`n")
 foreach ($o in @('out-svc', 'out-a', 'out-b')) {
     New-Item -ItemType Directory -Force (Join-Path $Local $o) | Out-Null
     Get-ChildItem (Join-Path $Local $o) -File | Remove-Item -Force
@@ -108,10 +127,19 @@ if ($Build) {
     Invoke-Checked powershell.exe (@('-NoProfile', '-ExecutionPolicy', 'Bypass') + $a)
 }
 
-# The shared network between the "machines": no route out.
-$null = Invoke-Logged docker @('network', 'inspect', 'mantis_wan')
-if ($LASTEXITCODE -ne 0) {
-    Invoke-Checked docker @('network', 'create', '--internal', 'mantis_wan')
+# The shared network between the "machines": no route out, fixed addresses for the cell
+# hosts' game listeners.
+# (Windows PowerShell turns a native command's stderr into errors: read it with them off.)
+$ErrorActionPreference = 'Continue'
+$wan = (& docker network inspect mantis_wan --format '{{range .IPAM.Config}}{{.Subnet}} {{.IPRange}}{{end}}' 2>&1 | Out-String)
+$found = $LASTEXITCODE -eq 0
+$ErrorActionPreference = 'Stop'
+if (-not $found) {
+    # Addresses Docker hands out come from the upper half, clear of the fixed ones below it.
+    Invoke-Checked docker @('network', 'create', '--internal', '--subnet', $Subnet, '--ip-range', $Dynamic,
+        'mantis_wan')
+} elseif ("$wan".Trim() -ne "$Subnet $Dynamic") {
+    throw "mantis_wan exists without the subnet $Subnet and range $Dynamic (it has '$("$wan".Trim())'): run scripts/deploy-multihost.ps1 -Down first"
 }
 
 Invoke-Checked docker @('compose', '-p', 'mantis-svc', '-f', "$Dir/services.yaml", 'up', '-d', '--wait',
@@ -121,6 +149,6 @@ foreach ($h in $Hosts) { Invoke-Host $h @('up', '-d', '--wait', '--wait-timeout'
 Invoke-Mantisd @('registry', 'verify', '--deploy-key', 'deploy/local/multihost/keys/deploy.pub',
     'deploy/local/multihost/published/registry.toml')
 Invoke-Checked docker @('ps', '--filter', 'name=mantis-', '--format', 'table {{.Names}}\t{{.Status}}\t{{.Ports}}')
-Write-Host 'bots:  scripts/bots.ps1 -Quic 127.0.0.1:7400 -Cert deploy/local/multihost/out-a/toy-cert.der'
-Write-Host '       scripts/bots.ps1 -Quic 127.0.0.1:7410 -Cert deploy/local/multihost/out-b/toy-cert.der'
+Write-Host 'bots:  scripts/deploy-bots.ps1 -Multihost   (through the gateway, 127.0.0.1:7400/udp)'
+Write-Host '       scripts/deploy-bots.ps1 -Multihost -Legacy   (legacy TCP, straight to host a)'
 Write-Host 'move:  scripts/deploy-multihost.ps1 -Publish   stop: scripts/deploy-multihost.ps1 -Down [-Volumes]'

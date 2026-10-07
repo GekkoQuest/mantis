@@ -188,8 +188,8 @@ fn start_cluster(args: &Args, game_ports: Vec<u16>) -> Result<LocalCluster, Stri
     );
     if let Some(path) = args.value("--login-out") {
         let targets = toy_server::login::LoginTargets {
-            account: cluster.addr(Role::Account).ok_or("no account role")?,
-            realm: cluster.addr(Role::Realm).ok_or("no realm role")?,
+            account: cluster.endpoint(Role::Account).ok_or("no account role")?.target(),
+            realm: cluster.endpoint(Role::Realm).ok_or("no realm role")?.target(),
             key: cluster.key.clone(),
         };
         std::fs::write(path, targets.render()).map_err(|e| format!("{path}: {e}"))?;
