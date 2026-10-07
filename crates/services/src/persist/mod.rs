@@ -39,6 +39,136 @@ pub struct StoredOutcome {
     pub payload: Vec<u8>,
 }
 
+/// One durable account (the account role's row; session tokens are never
+/// stored).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct AccountRecord {
+    /// The account.
+    pub id: u64,
+    /// The name as registered (unique case-insensitively, [`name_key`]).
+    pub name: String,
+    /// The password salt.
+    pub salt: [u8; 16],
+    /// The derived password key.
+    pub hash: [u8; 32],
+    /// The derivation's iterations.
+    pub iterations: u32,
+    /// Unix milliseconds it was created.
+    pub created_ms: u64,
+    /// Unix milliseconds of its last login (0 never).
+    pub last_login_ms: u64,
+    /// Unix milliseconds a ban ends (0 not banned).
+    pub banned_until_ms: u64,
+    /// Why it was banned.
+    pub ban_reason: String,
+}
+
+/// One durable character (the realm's summary: its world state stays in
+/// its cell's snapshots and outcomes).
+#[derive(Clone, PartialEq, Debug)]
+pub struct CharacterRecord {
+    /// The character.
+    pub id: u64,
+    /// Its account.
+    pub account: u64,
+    /// Its name (unique among living characters, case-insensitively).
+    pub name: String,
+    /// Its class or kind.
+    pub kind: u32,
+    /// Unix milliseconds it was created.
+    pub created_ms: u64,
+    /// Deleted: kept so its id is never reused.
+    pub deleted: bool,
+    /// The cell it was last in (0 never entered).
+    pub cell: u64,
+    /// That cell's world.
+    pub world: u32,
+    /// Where it was last.
+    pub position: [f32; 3],
+    /// Its level.
+    pub level: u32,
+}
+
+/// The key a name is unique under: lower-cased.
+#[must_use]
+pub fn name_key(name: &str) -> String {
+    name.to_lowercase()
+}
+
+/// An account record as the wire carries it.
+#[must_use]
+pub fn account_row(a: &AccountRecord) -> m::AccountRow {
+    m::AccountRow {
+        id: a.id,
+        name: WireString::new(&a.name).unwrap_or_default(),
+        salt: BoundedArray::from_slice(&a.salt).unwrap_or_default(),
+        hash: BoundedArray::from_slice(&a.hash).unwrap_or_default(),
+        iterations: a.iterations,
+        created_ms: a.created_ms,
+        last_login_ms: a.last_login_ms,
+        banned_until_ms: a.banned_until_ms,
+        ban_reason: WireString::new(&a.ban_reason).unwrap_or_default(),
+    }
+}
+
+/// An account record back from the wire (`None` for a malformed salt or
+/// key).
+#[must_use]
+pub fn account_record(r: &m::AccountRow) -> Option<AccountRecord> {
+    let salt: Vec<u8> = r.salt.iter().copied().collect();
+    let hash: Vec<u8> = r.hash.iter().copied().collect();
+    Some(AccountRecord {
+        id: r.id,
+        name: r.name.as_str().to_owned(),
+        salt: salt.try_into().ok()?,
+        hash: hash.try_into().ok()?,
+        iterations: r.iterations,
+        created_ms: r.created_ms,
+        last_login_ms: r.last_login_ms,
+        banned_until_ms: r.banned_until_ms,
+        ban_reason: r.ban_reason.as_str().to_owned(),
+    })
+}
+
+/// A character record as the wire carries it.
+#[must_use]
+pub fn character_row(c: &CharacterRecord) -> m::CharacterRow {
+    m::CharacterRow {
+        id: c.id,
+        account: c.account,
+        name: WireString::new(&c.name).unwrap_or_default(),
+        kind: c.kind,
+        created_ms: c.created_ms,
+        deleted: c.deleted,
+        cell: c.cell,
+        world: c.world,
+        x: c.position[0],
+        y: c.position[1],
+        z: c.position[2],
+        level: c.level,
+    }
+}
+
+/// A character record back from the wire.
+#[must_use]
+pub fn character_record(r: &m::CharacterRow) -> CharacterRecord {
+    CharacterRecord {
+        id: r.id,
+        account: r.account,
+        name: r.name.as_str().to_owned(),
+        kind: r.kind,
+        created_ms: r.created_ms,
+        deleted: r.deleted,
+        cell: r.cell,
+        world: r.world,
+        position: [r.x, r.y, r.z],
+        level: r.level,
+    }
+}
+
+/// Account and character rows per page of a read.
+pub const RECORD_PAGE: usize = 32;
+
 /// One ledger row as stored.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct StoredLedger {
@@ -195,6 +325,42 @@ pub trait LedgerStore: Send {
     /// # Errors
     /// [`StoreError`].
     fn friend_rows(&mut self) -> Result<Vec<FriendChange>, StoreError>;
+    /// The last applied batch of account rows (0 before the first).
+    ///
+    /// # Errors
+    /// [`StoreError`].
+    fn account_seq(&mut self) -> Result<u64, StoreError>;
+    /// Writes one batch of whole account rows atomically (each replaces the
+    /// row of its id), with its sequence number as the new watermark. The
+    /// caller skips a batch at or below the watermark.
+    ///
+    /// # Errors
+    /// [`StoreError`], also for a name another account holds
+    /// case-insensitively; nothing is written.
+    fn write_accounts(&mut self, seq: u64, rows: &[AccountRecord]) -> Result<(), StoreError>;
+    /// Every account row, in id order.
+    ///
+    /// # Errors
+    /// [`StoreError`].
+    fn account_rows(&mut self) -> Result<Vec<AccountRecord>, StoreError>;
+    /// The last applied batch of character rows (0 before the first).
+    ///
+    /// # Errors
+    /// [`StoreError`].
+    fn character_seq(&mut self) -> Result<u64, StoreError>;
+    /// Writes one batch of whole character rows atomically (each replaces
+    /// the row of its id), with its sequence number as the new watermark.
+    /// The caller skips a batch at or below the watermark.
+    ///
+    /// # Errors
+    /// [`StoreError`], also for a name another living character holds
+    /// case-insensitively; nothing is written.
+    fn write_characters(&mut self, seq: u64, rows: &[CharacterRecord]) -> Result<(), StoreError>;
+    /// Every character row, deleted ones included, in id order.
+    ///
+    /// # Errors
+    /// [`StoreError`].
+    fn character_rows(&mut self) -> Result<Vec<CharacterRecord>, StoreError>;
     /// Sets live value `name` (a flag or tunable), replacing any earlier
     /// value of it.
     ///
@@ -453,6 +619,97 @@ impl PersistService {
         })
     }
 
+    /// Makes one batch of account rows durable (once per sequence number).
+    ///
+    /// # Errors
+    /// [`RpcError::Refused`] for a malformed row or a store failure (the
+    /// account role retries the same batch).
+    pub fn write_accounts(&self, req: &m::StoreAccountRows) -> Result<m::Durable, RpcError> {
+        let rows = req
+            .rows
+            .iter()
+            .map(account_record)
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| RpcError::Refused("malformed account row".to_owned()))?;
+        self.with_store(|store| {
+            let last = store.account_seq().map_err(|e| store_err(&e))?;
+            if req.seq <= last {
+                return Ok(m::Durable { seq: last });
+            }
+            store.write_accounts(req.seq, &rows).map_err(|e| store_err(&e))?;
+            Ok(m::Durable { seq: req.seq })
+        })
+    }
+
+    /// One page of the account rows, with the stored watermark.
+    ///
+    /// # Errors
+    /// [`RpcError::Refused`] when the store fails.
+    pub fn load_accounts(&self, page: u32) -> Result<m::AccountRows, RpcError> {
+        let (seq, rows) = self
+            .with_store(|store| Ok::<_, StoreError>((store.account_seq()?, store.account_rows()?)))
+            .map_err(|e| store_err(&e))?;
+        let start = usize::try_from(page)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(RECORD_PAGE);
+        let rows: Vec<m::AccountRow> = rows
+            .iter()
+            .skip(start)
+            .take(RECORD_PAGE)
+            .map(account_row)
+            .collect();
+        let more = rows.len() == RECORD_PAGE;
+        Ok(m::AccountRows {
+            seq,
+            rows: BoundedArray::from_slice(&rows).unwrap_or_default(),
+            more,
+        })
+    }
+
+    /// Makes one batch of character rows durable (once per sequence number).
+    ///
+    /// # Errors
+    /// [`RpcError::Refused`] for a store failure (the realm retries the
+    /// same batch).
+    pub fn write_characters(&self, req: &m::StoreCharacterRows) -> Result<m::Durable, RpcError> {
+        let rows: Vec<CharacterRecord> = req.rows.iter().map(character_record).collect();
+        self.with_store(|store| {
+            let last = store.character_seq().map_err(|e| store_err(&e))?;
+            if req.seq <= last {
+                return Ok(m::Durable { seq: last });
+            }
+            store
+                .write_characters(req.seq, &rows)
+                .map_err(|e| store_err(&e))?;
+            Ok(m::Durable { seq: req.seq })
+        })
+    }
+
+    /// One page of the character rows, with the stored watermark.
+    ///
+    /// # Errors
+    /// [`RpcError::Refused`] when the store fails.
+    pub fn load_characters(&self, page: u32) -> Result<m::CharacterRows, RpcError> {
+        let (seq, rows) = self
+            .with_store(|store| Ok::<_, StoreError>((store.character_seq()?, store.character_rows()?)))
+            .map_err(|e| store_err(&e))?;
+        let start = usize::try_from(page)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(RECORD_PAGE);
+        let rows: Vec<m::CharacterRow> = rows
+            .iter()
+            .skip(start)
+            .take(RECORD_PAGE)
+            .map(character_row)
+            .collect();
+        let more = rows.len() == RECORD_PAGE;
+        Ok(m::CharacterRows {
+            seq,
+            rows: BoundedArray::from_slice(&rows).unwrap_or_default(),
+            more,
+        })
+    }
+
     /// One page of the friend rows, with the stored watermark.
     ///
     /// # Errors
@@ -553,12 +810,8 @@ impl PersistService {
         })
     }
 
-    /// The role's RPC methods.
-    #[must_use]
-    pub fn router(&self) -> Router {
-        let mut r = Router::validated(methods::validate);
-        let me = self.clone();
-        r.serve::<methods::Push>(move |_, req| me.push(&req));
+    /// The guild, friend, account and character rows' methods.
+    fn serve_records(&self, r: &mut Router) {
         let me = self.clone();
         r.serve::<methods::WriteGuilds>(move |_, req| me.write_guilds(&req));
         let me = self.clone();
@@ -567,6 +820,23 @@ impl PersistService {
         r.serve::<methods::WriteFriends>(move |_, req| me.write_friends(&req));
         let me = self.clone();
         r.serve::<methods::LoadFriends>(move |_, req| me.load_friends(req.page));
+        let me = self.clone();
+        r.serve::<methods::WriteAccounts>(move |_, req| me.write_accounts(&req));
+        let me = self.clone();
+        r.serve::<methods::LoadAccounts>(move |_, req| me.load_accounts(req.page));
+        let me = self.clone();
+        r.serve::<methods::WriteCharacters>(move |_, req| me.write_characters(&req));
+        let me = self.clone();
+        r.serve::<methods::LoadCharacters>(move |_, req| me.load_characters(req.page));
+    }
+
+    /// The role's RPC methods.
+    #[must_use]
+    pub fn router(&self) -> Router {
+        let mut r = Router::validated(methods::validate);
+        let me = self.clone();
+        r.serve::<methods::Push>(move |_, req| me.push(&req));
+        self.serve_records(&mut r);
         let me = self.clone();
         r.serve::<methods::StoreLiveValue>(move |_, req| {
             me.with_store(|s| s.set_live(req.name.as_str(), req.kind, req.value))

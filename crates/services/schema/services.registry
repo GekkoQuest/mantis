@@ -73,3 +73,12 @@
 72 StoreLive
 73 ReadLive
 74 LiveValues
+75 StoreAccountRows
+76 ReadAccountRows
+77 AccountRows
+78 StoreCharacterRows
+79 ReadCharacterRows
+80 CharacterRows
+81 ChangePassword
+82 DeleteCharacter
+83 CharacterPlaced

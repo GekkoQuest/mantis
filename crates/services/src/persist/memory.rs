@@ -6,7 +6,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::migrate::{MIGRATIONS, Migration, MigrationTarget, migrate};
 use mantis_core::social::{FriendBook, FriendChange, GuildBook, GuildChange};
 
-use super::{AuditRow, LedgerStore, StoreError, StoredLedger, StoredOutcome};
+use super::{
+    AccountRecord, AuditRow, CharacterRecord, LedgerStore, StoreError, StoredLedger, StoredOutcome, name_key,
+};
 
 /// Everything in memory.
 #[derive(Debug, Default)]
@@ -21,6 +23,10 @@ pub struct MemoryStore {
     guild_seq: u64,
     friends: FriendBook,
     friend_seq: u64,
+    accounts: BTreeMap<u64, AccountRecord>,
+    account_seq: u64,
+    characters: BTreeMap<u64, CharacterRecord>,
+    character_seq: u64,
     /// Name -> (order, kind, value).
     live: BTreeMap<String, (u64, u8, f32)>,
     live_seq: u64,
@@ -189,6 +195,61 @@ impl LedgerStore for MemoryStore {
 
     fn friend_rows(&mut self) -> Result<Vec<FriendChange>, StoreError> {
         Ok(self.friends.rows())
+    }
+
+    fn account_seq(&mut self) -> Result<u64, StoreError> {
+        Ok(self.account_seq)
+    }
+
+    fn write_accounts(&mut self, seq: u64, rows: &[AccountRecord]) -> Result<(), StoreError> {
+        if std::mem::take(&mut self.fail_next_write) {
+            return Err(StoreError("write failed (injected)".to_owned()));
+        }
+        // All or nothing, with the uniqueness Postgres enforces.
+        let mut next = self.accounts.clone();
+        for r in rows {
+            next.insert(r.id, r.clone());
+        }
+        let mut keys = BTreeSet::new();
+        if !next.values().all(|a| keys.insert(name_key(&a.name))) {
+            return Err(StoreError("an account name is taken".to_owned()));
+        }
+        self.accounts = next;
+        self.account_seq = seq;
+        Ok(())
+    }
+
+    fn account_rows(&mut self) -> Result<Vec<AccountRecord>, StoreError> {
+        Ok(self.accounts.values().cloned().collect())
+    }
+
+    fn character_seq(&mut self) -> Result<u64, StoreError> {
+        Ok(self.character_seq)
+    }
+
+    fn write_characters(&mut self, seq: u64, rows: &[CharacterRecord]) -> Result<(), StoreError> {
+        if std::mem::take(&mut self.fail_next_write) {
+            return Err(StoreError("write failed (injected)".to_owned()));
+        }
+        let mut next = self.characters.clone();
+        for r in rows {
+            next.insert(r.id, r.clone());
+        }
+        let mut keys = BTreeSet::new();
+        if !next
+            .values()
+            .filter(|c| !c.deleted)
+            .all(|c| keys.insert(name_key(&c.name)))
+        {
+            return Err(StoreError("a character name is taken".to_owned()));
+        }
+        self.characters = next;
+        self.character_seq = seq;
+        Ok(())
+    }
+
+    fn character_rows(&mut self) -> Result<Vec<CharacterRecord>, StoreError> {
+        Ok(self.characters.values().cloned().collect())
     }
 
     fn set_live(&mut self, name: &str, kind: u8, value: f32) -> Result<(), StoreError> {

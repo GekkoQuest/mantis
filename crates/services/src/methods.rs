@@ -4,7 +4,7 @@
 use mantis_core::wire::{Message, MessageId, ValidationError};
 
 use crate::generated::services as m;
-use crate::host::Role::{self, Cell, Gateway, Matchmaking, Ops, Realm, Social};
+use crate::host::Role::{self, Account, Cell, Gateway, Matchmaking, Ops, Realm, Social};
 use crate::host::rpc::{Method, RpcError};
 
 macro_rules! method {
@@ -92,6 +92,20 @@ method!(/// Social makes friend changes durable.
     WriteFriends: StoreFriendRows -> Durable, callers [Social]);
 method!(/// Social reads the friend rows back.
     LoadFriends: ReadFriendRows -> FriendRows, callers [Social]);
+method!(/// The account role makes account rows durable.
+    WriteAccounts: StoreAccountRows -> Durable, callers [Account]);
+method!(/// The account role reads the account rows back.
+    LoadAccounts: ReadAccountRows -> AccountRows, callers [Account]);
+method!(/// The realm makes character rows durable.
+    WriteCharacters: StoreCharacterRows -> Durable, callers [Realm]);
+method!(/// The realm reads the character rows back.
+    LoadCharacters: ReadCharacterRows -> CharacterRows, callers [Realm]);
+method!(/// Change an account's password.
+    ChangeAccountPassword: ChangePassword -> Empty, callers [Gateway]);
+method!(/// Delete one of an account's characters.
+    RemoveCharacter: DeleteCharacter -> Empty, callers [Gateway, Ops]);
+method!(/// A cell host reports where a character left or arrived.
+    PlaceCharacter: CharacterPlaced -> Empty, callers [Cell]);
 
 method!(/// Join a matchmaking queue.
     Queue: Enqueue -> Empty, callers [Gateway, Cell]);
@@ -285,6 +299,56 @@ impl m::Validators for Checks {
     fn validate_read_friend_rows(&self, _msg: &m::ReadFriendRows) -> Result<(), ValidationError> {
         Ok(())
     }
+    fn validate_store_account_rows(&self, msg: &m::StoreAccountRows) -> Result<(), ValidationError> {
+        if msg.seq == 0 {
+            return Err(ValidationError("account batches number from 1"));
+        }
+        for r in msg.rows.iter() {
+            named(r.name.as_str())?;
+            if r.id == 0 || r.salt.len() != 16 || r.hash.len() != 32 || r.iterations == 0 {
+                return Err(ValidationError(
+                    "an account row has an id, a salt, a key and iterations",
+                ));
+            }
+        }
+        Ok(())
+    }
+    fn validate_read_account_rows(&self, _msg: &m::ReadAccountRows) -> Result<(), ValidationError> {
+        Ok(())
+    }
+    fn validate_store_character_rows(&self, msg: &m::StoreCharacterRows) -> Result<(), ValidationError> {
+        if msg.seq == 0 {
+            return Err(ValidationError("character batches number from 1"));
+        }
+        for r in msg.rows.iter() {
+            named(r.name.as_str())?;
+            if r.id == 0 || r.account == 0 || ![r.x, r.y, r.z].iter().all(|v| v.is_finite()) {
+                return Err(ValidationError(
+                    "a character row has an id, an account and a finite position",
+                ));
+            }
+        }
+        Ok(())
+    }
+    fn validate_read_character_rows(&self, _msg: &m::ReadCharacterRows) -> Result<(), ValidationError> {
+        Ok(())
+    }
+    fn validate_change_password(&self, msg: &m::ChangePassword) -> Result<(), ValidationError> {
+        named(msg.name.as_str())?;
+        if msg.new.as_str().len() < 8 {
+            return Err(ValidationError("passwords have at least 8 bytes"));
+        }
+        Ok(())
+    }
+    fn validate_delete_character(&self, _msg: &m::DeleteCharacter) -> Result<(), ValidationError> {
+        Ok(())
+    }
+    fn validate_character_placed(&self, msg: &m::CharacterPlaced) -> Result<(), ValidationError> {
+        if msg.cell.0 == 0 || ![msg.x, msg.y, msg.z].iter().all(|v| v.is_finite()) {
+            return Err(ValidationError("a placement names a cell and a finite position"));
+        }
+        Ok(())
+    }
     fn validate_read_guild_rows(&self, _msg: &m::ReadGuildRows) -> Result<(), ValidationError> {
         Ok(())
     }
@@ -337,12 +401,12 @@ pub fn server_of(id: u16) -> Option<Role> {
             }
         };
     }
-    serving!(Account: RegisterAccount, LoginAccount, VerifySession, BanAccount, Maintenance);
+    serving!(Account: RegisterAccount, LoginAccount, VerifySession, BanAccount, Maintenance, ChangeAccountPassword);
     serving!(Realm: RegisterCellHost, Withdraw, ListAccountCharacters, NewCharacter, Select, RedeemToken,
-        RedeemForHost, Transfer, NewInstance, RealmRun);
+        RedeemForHost, Transfer, NewInstance, RealmRun, RemoveCharacter, PlaceCharacter);
     serving!(Social: PublishLine, Presence, Poll, RelayOp, Restored, Projection, NewGuild, EnterGuild);
     serving!(Persist: Push, Ledger, StoreLiveValue, ReadLiveValues, AuditOpen, AuditClose, AuditTrail, WriteGuilds, LoadGuilds, WriteFriends,
-        LoadFriends);
+        LoadFriends, WriteAccounts, LoadAccounts, WriteCharacters, LoadCharacters);
     serving!(Matchmaking: Queue, MatchFor);
     serving!(Ops: Live);
     serving!(Cell: InspectCell, Kick, Drain, InspectSystemTimes, InspectComponentNames, InspectEntityPage);
@@ -391,6 +455,13 @@ pub fn matrix() -> Vec<(&'static str, u16, &'static [Role])> {
         row::<AuditTrail>(),
         row::<WriteFriends>(),
         row::<LoadFriends>(),
+        row::<WriteAccounts>(),
+        row::<LoadAccounts>(),
+        row::<WriteCharacters>(),
+        row::<LoadCharacters>(),
+        row::<ChangeAccountPassword>(),
+        row::<RemoveCharacter>(),
+        row::<PlaceCharacter>(),
         row::<Queue>(),
         row::<MatchFor>(),
         row::<Live>(),

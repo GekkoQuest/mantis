@@ -2,8 +2,19 @@
 //! transfer tokens.
 //!
 //! Tokens are 32 random bytes held by the realm with what they grant
-//! (character, cell, lease epoch, expiry) and redeemable once, by the cell
-//! they name.
+//! (character, cell, lease epoch, expiry, and for a returning character
+//! where it enters) and redeemable once, by the cell they name.
+//!
+//! Characters are durable through the persistence writer
+//! ([`RealmService::with_writer`]): creation, deletion and the placement
+//! cell hosts report (where a character left the world or arrived after a
+//! transfer) are written, as whole character rows in a numbered batch the
+//! writer applies once, before the realm answers. A restarted realm reads
+//! every row back ([`RealmService::load_durable`]) and places a returning
+//! character in the world cell it left, where it left. Tokens and the cell
+//! directory are not durable: a token issued before a restart is refused
+//! after it (the client selects again), and cell hosts register again when
+//! they see the new run.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -13,12 +24,16 @@ use ring::rand::SecureRandom;
 
 use crate::generated::services as m;
 use crate::host::clock::ServiceClock;
-use crate::host::refused;
-use crate::host::rpc::{Router, RpcError};
+use crate::host::rpc::{Router, RpcClient, RpcError};
+use crate::host::{RPC_TIMEOUT, refused, until_durable};
 use crate::methods;
+use crate::persist::{CharacterRecord, character_record, character_row, name_key};
 
 /// How long a token stays valid, in milliseconds.
 pub const TOKEN_MS: u64 = 60_000;
+
+/// Living characters per account, at most.
+pub const CHARACTERS_PER_ACCOUNT: usize = 16;
 
 /// A registered cell.
 #[derive(Clone, Debug, PartialEq)]
@@ -33,14 +48,29 @@ pub struct CellEntry {
     pub busy: bool,
 }
 
+/// What a token grants.
+#[derive(Clone, Copy, Debug)]
+struct Grant {
+    character: u64,
+    cell: u64,
+    epoch: u64,
+    expires_ms: u64,
+    /// Where a returning character enters.
+    spawn: Option<[f32; 3]>,
+}
+
 #[derive(Default)]
 struct State {
     /// This run: hosts register their cells again when it changes.
     epoch: u64,
     cells: BTreeMap<u64, CellEntry>,
+    /// The highest character id ever used (deleted ones included).
     next_character: u64,
-    characters: BTreeMap<u64, Vec<(u64, String)>>,
-    tokens: BTreeMap<[u8; 32], (u64, u64, u64, u64)>,
+    /// The last batch of character rows written.
+    seq: u64,
+    /// Durable characters by id, deleted ones included.
+    characters: BTreeMap<u64, CharacterRecord>,
+    tokens: BTreeMap<[u8; 32], Grant>,
 }
 
 /// The realm role.
@@ -49,12 +79,18 @@ pub struct RealmService {
     state: Arc<Mutex<State>>,
     rng: Arc<crate::host::Random>,
     clock: ServiceClock,
+    /// The persistence writer character rows go through (none: in memory
+    /// only, for tests of the rules alone).
+    writer: Option<Arc<RpcClient>>,
+    /// One change at a time from durable write to answer.
+    order: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl RealmService {
-    /// An empty realm, a new run: its epoch is drawn at random, so a cell
-    /// host polling [`methods::RealmRun`] sees a restart and registers its
-    /// cells again.
+    /// An empty realm in memory only (tests of the rules alone; a served
+    /// realm uses [`RealmService::with_writer`]), a new run: its epoch is
+    /// drawn at random, so a cell host polling [`methods::RealmRun`] sees a
+    /// restart and registers its cells again.
     #[must_use]
     pub fn new() -> Self {
         let s = Self::default();
@@ -65,7 +101,16 @@ impl RealmService {
         s
     }
 
-    /// The same role on `clock` (token lifetimes).
+    /// A new run writing every character row through `writer` before it
+    /// answers. Call [`RealmService::load_durable`] before serving.
+    #[must_use]
+    pub fn with_writer(writer: RpcClient) -> Self {
+        let mut s = Self::new();
+        s.writer = Some(Arc::new(writer));
+        s
+    }
+
+    /// The same role on `clock` (token lifetimes, creation times).
     #[must_use]
     pub fn clocked(mut self, clock: ServiceClock) -> Self {
         self.clock = clock;
@@ -88,39 +133,183 @@ impl RealmService {
         self.lock().cells.clone()
     }
 
-    fn token(&self, character: u64, cell: u64, epoch: u64) -> Result<BoundedArray<u8, 32>, RpcError> {
+    /// The durable row of `character`, deleted or not (Ops and tests).
+    #[must_use]
+    pub fn character(&self, character: u64) -> Option<CharacterRecord> {
+        self.lock().characters.get(&character).cloned()
+    }
+
+    /// Reads every durable character back from the writer (after a
+    /// restart, before serving); returns how many are living.
+    ///
+    /// # Errors
+    /// No writer (a served realm must have its store), or the writer's
+    /// refusal: the realm must not serve.
+    pub async fn load_durable(&self) -> Result<usize, String> {
+        let writer = self
+            .writer
+            .as_ref()
+            .ok_or("the realm has no persistence writer")?;
+        let (mut rows, mut seq) = (Vec::new(), 0);
+        for page in 0.. {
+            // Boxed: a page of rows is large for a stack frame.
+            let got =
+                Box::pin(writer.call::<methods::LoadCharacters>(&m::ReadCharacterRows { page }, RPC_TIMEOUT))
+                    .await
+                    .map_err(|e| format!("loading characters: {e}"))?;
+            seq = got.seq;
+            rows.extend(got.rows.iter().map(character_record));
+            if !got.more {
+                break;
+            }
+        }
+        let mut s = self.lock();
+        s.seq = seq;
+        s.next_character = rows.iter().map(|c| c.id).max().unwrap_or(0);
+        s.characters = rows.into_iter().map(|c| (c.id, c)).collect();
+        Ok(s.characters.values().filter(|c| !c.deleted).count())
+    }
+
+    /// Makes `row` durable (one numbered batch, retried until the writer
+    /// answers), then makes it what the realm reads. Call with the order
+    /// lock held.
+    async fn commit(&self, row: CharacterRecord) {
+        if let Some(writer) = &self.writer {
+            let seq = {
+                let mut s = self.lock();
+                s.seq += 1;
+                s.seq
+            };
+            let req = m::StoreCharacterRows {
+                seq,
+                rows: BoundedArray::from_slice(&[character_row(&row)]).unwrap_or_default(),
+            };
+            until_durable::<methods::WriteCharacters>(writer, &req).await;
+        }
+        let mut s = self.lock();
+        s.next_character = s.next_character.max(row.id);
+        s.characters.insert(row.id, row);
+    }
+
+    fn token(&self, grant: Grant) -> Result<BoundedArray<u8, 32>, RpcError> {
         let mut t = [0u8; 32];
         self.rng.0.fill(&mut t).map_err(|_| refused("no randomness"))?;
-        self.lock()
-            .tokens
-            .insert(t, (character, cell, epoch, self.clock.now_ms() + TOKEN_MS));
+        self.lock().tokens.insert(t, grant);
         Ok(BoundedArray::from_slice(&t).unwrap_or_default())
     }
 
-    fn owns(&self, account: u64, character: u64) -> bool {
+    /// `character`, living and owned by `account`.
+    fn owned(&self, account: u64, character: u64) -> Option<CharacterRecord> {
         self.lock()
             .characters
-            .get(&account)
-            .is_some_and(|c| c.iter().any(|(id, _)| *id == character))
+            .get(&character)
+            .filter(|c| c.account == account && !c.deleted)
+            .cloned()
     }
 
     fn select(&self, req: &m::SelectCharacter) -> Result<m::Placement, RpcError> {
-        if !self.owns(req.account.0, req.character.0) {
-            return Err(refused("not your character"));
-        }
-        // New characters enter at x = 0: the world cell owning it.
-        let (cell, address) = self
-            .lock()
-            .cells
-            .iter()
-            .find(|(_, c)| !c.instance && c.range.0 <= 0.0 && 0.0 < c.range.1)
-            .map(|(id, c)| (*id, c.address.clone()))
-            .ok_or_else(|| refused("no world cell"))?;
+        let c = self
+            .owned(req.account.0, req.character.0)
+            .ok_or_else(|| refused("not your character"))?;
+        let (cell, address, spawn) = {
+            let s = self.lock();
+            // A returning character enters the world cell it left, where
+            // it left; a new one (or one whose cell is gone or was an
+            // instance) the world cell owning x = 0.
+            let returning = s
+                .cells
+                .get(&c.cell)
+                .filter(|e| !e.instance)
+                .map(|e| (c.cell, e.address.clone(), Some(c.position)));
+            let fresh = || {
+                s.cells
+                    .iter()
+                    .find(|(_, e)| !e.instance && e.range.0 <= 0.0 && 0.0 < e.range.1)
+                    .map(|(id, e)| (*id, e.address.clone(), None))
+            };
+            returning.or_else(fresh).ok_or_else(|| refused("no world cell"))?
+        };
         Ok(m::Placement {
             cell: m::CellNo(cell),
             address: WireString::new(&address).unwrap_or_default(),
-            token: self.token(req.character.0, cell, 1)?,
+            token: self.token(Grant {
+                character: c.id,
+                cell,
+                epoch: 1,
+                expires_ms: self.clock.now_ms() + TOKEN_MS,
+                spawn,
+            })?,
         })
+    }
+
+    async fn create(&self, req: &m::CreateCharacter) -> Result<m::Created, RpcError> {
+        let _order = self.order.lock().await;
+        let id = {
+            let s = self.lock();
+            let living = s
+                .characters
+                .values()
+                .filter(|c| c.account == req.account.0 && !c.deleted)
+                .count();
+            if living >= CHARACTERS_PER_ACCOUNT {
+                return Err(refused("too many characters"));
+            }
+            let key = name_key(req.name.as_str());
+            if s.characters
+                .values()
+                .any(|c| !c.deleted && name_key(&c.name) == key)
+            {
+                return Err(refused("name taken"));
+            }
+            s.next_character + 1
+        };
+        self.commit(CharacterRecord {
+            id,
+            account: req.account.0,
+            name: req.name.as_str().to_owned(),
+            kind: req.kind,
+            created_ms: self.clock.now_ms(),
+            deleted: false,
+            cell: 0,
+            world: 0,
+            position: [0.0; 3],
+            level: 1,
+        })
+        .await;
+        Ok(m::Created {
+            character: m::CharacterId(id),
+        })
+    }
+
+    async fn delete(&self, req: &m::DeleteCharacter) -> Result<m::Empty, RpcError> {
+        let _order = self.order.lock().await;
+        let mut c = self
+            .owned(req.account.0, req.character.0)
+            .ok_or_else(|| refused("not your character"))?;
+        c.deleted = true;
+        self.commit(c).await;
+        Ok(m::Empty {})
+    }
+
+    async fn place(&self, req: &m::CharacterPlaced) -> Result<m::Empty, RpcError> {
+        let _order = self.order.lock().await;
+        let Some(mut c) = self.character(req.character.0).filter(|c| !c.deleted) else {
+            // A character the realm does not know (a test session, or one
+            // deleted meanwhile): nothing to keep.
+            return Ok(m::Empty {});
+        };
+        let before = c.clone();
+        c.cell = req.cell.0;
+        c.world = req.world;
+        c.position = [req.x, req.y, req.z];
+        if req.level != 0 {
+            c.level = req.level;
+        }
+        // The same summary twice is applied once.
+        if c != before {
+            self.commit(c).await;
+        }
+        Ok(m::Empty {})
     }
 
     fn instance(&self) -> Result<m::InstanceCell, RpcError> {
@@ -145,18 +334,23 @@ impl RealmService {
     fn redeem_on(&self, token: &BoundedArray<u8, 32>, cells: &[u64]) -> Result<m::Redeemed, RpcError> {
         let bytes: Vec<u8> = token.iter().copied().collect();
         let token: [u8; 32] = bytes.try_into().map_err(|_| refused("bad token"))?;
-        let mut s = self.lock();
-        let (character, cell, epoch, expires) = *s.tokens.get(&token).ok_or_else(|| refused("bad token"))?;
-        if !cells.contains(&cell) {
+        let mut state = self.lock();
+        let grant = *state.tokens.get(&token).ok_or_else(|| refused("bad token"))?;
+        if !cells.contains(&grant.cell) {
             return Err(refused("token for another cell"));
         }
-        s.tokens.remove(&token);
-        if expires < self.clock.now_ms() {
+        state.tokens.remove(&token);
+        if grant.expires_ms < self.clock.now_ms() {
             return Err(refused("expired token"));
         }
+        let at = grant.spawn.unwrap_or([0.0; 3]);
         Ok(m::Redeemed {
-            character: m::CharacterId(character),
-            epoch,
+            character: m::CharacterId(grant.character),
+            epoch: grant.epoch,
+            placed: grant.spawn.is_some(),
+            x: at[0],
+            y: at[1],
+            z: at[2],
         })
     }
 
@@ -189,28 +383,28 @@ impl RealmService {
             let ids: Vec<m::CharacterId> = me
                 .lock()
                 .characters
-                .get(&req.account.0)
-                .map(|c| c.iter().map(|(id, _)| m::CharacterId(*id)).collect())
-                .unwrap_or_default();
+                .values()
+                .filter(|c| c.account == req.account.0 && !c.deleted)
+                .map(|c| m::CharacterId(c.id))
+                .collect();
             Ok(m::Characters {
                 ids: BoundedArray::from_slice(&ids).unwrap_or_default(),
             })
         });
         let me = self.clone();
-        r.serve::<methods::NewCharacter>(move |_, req| {
-            let mut s = me.lock();
-            if s.characters.get(&req.account.0).is_some_and(|c| c.len() >= 16) {
-                return Err(refused("too many characters"));
-            }
-            s.next_character += 1;
-            let id = s.next_character;
-            s.characters
-                .entry(req.account.0)
-                .or_default()
-                .push((id, req.name.as_str().to_owned()));
-            Ok(m::Created {
-                character: m::CharacterId(id),
-            })
+        r.serve_later::<methods::NewCharacter, _, _>(move |_, req| {
+            let me = me.clone();
+            async move { me.create(&req).await }
+        });
+        let me = self.clone();
+        r.serve_later::<methods::RemoveCharacter, _, _>(move |_, req| {
+            let me = me.clone();
+            async move { me.delete(&req).await }
+        });
+        let me = self.clone();
+        r.serve_later::<methods::PlaceCharacter, _, _>(move |_, req| {
+            let me = me.clone();
+            async move { me.place(&req).await }
         });
         let me = self.clone();
         r.serve::<methods::Select>(move |_, req| me.select(&req));
@@ -219,7 +413,13 @@ impl RealmService {
         let me = self.clone();
         r.serve::<methods::Transfer>(move |_, req| {
             Ok(m::TransferToken {
-                token: me.token(req.character.0, req.to.0, req.epoch)?,
+                token: me.token(Grant {
+                    character: req.character.0,
+                    cell: req.to.0,
+                    epoch: req.epoch,
+                    expires_ms: me.clock.now_ms() + TOKEN_MS,
+                    spawn: None,
+                })?,
             })
         });
         let me = self.clone();

@@ -103,8 +103,10 @@ message Characters outbound {
 message CreateCharacter inbound {
     /// The account.
     account: AccountId;
-    /// Its name.
+    /// Its name (unique in the realm, case-insensitively).
     name: string<32>;
+    /// Its class or kind (package content).
+    kind: u32;
 }
 
 /// A character was created.
@@ -177,6 +179,15 @@ message Redeemed outbound {
     character: CharacterId;
     /// The lease epoch.
     epoch: u64;
+    /// An entry token for a returning character: it enters where it left
+    /// (`x`, `y`, `z`); otherwise where the host spawns new characters.
+    placed: bool;
+    /// Where it left, x.
+    x: f32;
+    /// Where it left, y.
+    y: f32;
+    /// Where it left, z.
+    z: f32;
 }
 
 /// A line for a cross-cell channel: 1 party, 2 guild, 3 whisper, 4 world.
@@ -783,4 +794,147 @@ struct LiveValue {
 message LiveValues outbound {
     /// The values.
     values: list<LiveValue, 256>;
+}
+
+/// One durable account: the account role writes it through the persistence
+/// writer before it answers, and reads every row back at start.
+struct AccountRow {
+    /// The account.
+    id: u64;
+    /// The name as registered (unique case-insensitively).
+    name: string<32>;
+    /// The password salt.
+    salt: list<u8, 16>;
+    /// The derived password key (PBKDF2-HMAC-SHA256).
+    hash: list<u8, 32>;
+    /// The derivation's iterations.
+    iterations: u32;
+    /// Unix milliseconds it was created.
+    created_ms: u64;
+    /// Unix milliseconds of its last login (0 never).
+    last_login_ms: u64;
+    /// Unix milliseconds a ban ends (0 not banned).
+    banned_until_ms: u64;
+    /// Why it was banned.
+    ban_reason: string<128>;
+}
+
+/// The account role makes one change durable, before it answers. A batch at
+/// or below the stored sequence is applied once.
+message StoreAccountRows inbound {
+    /// Batch sequence number.
+    seq: u64;
+    /// The rows, whole (each replaces the stored row of its id).
+    rows: list<AccountRow, 8>;
+}
+
+/// The account role reads every account back at start, a page at a time.
+message ReadAccountRows inbound {
+    /// The page (from 0).
+    page: u32;
+}
+
+/// A page of account rows, in id order.
+message AccountRows outbound {
+    /// The stored batch watermark (the next batch numbers past it).
+    seq: u64;
+    /// The rows.
+    rows: list<AccountRow, 32>;
+    /// More pages follow.
+    more: bool;
+}
+
+/// One durable character: the realm writes it through the persistence
+/// writer before it answers, and reads every row back at start. Its state
+/// in the world stays in its cell's snapshots and outcomes; this is the
+/// realm's summary for selection and placement.
+struct CharacterRow {
+    /// The character.
+    id: u64;
+    /// Its account.
+    account: u64;
+    /// Its name (unique in the realm, case-insensitively, among the living).
+    name: string<32>;
+    /// Its class or kind (package content).
+    kind: u32;
+    /// Unix milliseconds it was created.
+    created_ms: u64;
+    /// Deleted: kept so its id is never reused, and free of its name.
+    deleted: bool;
+    /// The cell it was last in (0 never entered).
+    cell: u64;
+    /// The world that cell belongs to.
+    world: u32;
+    /// Where it was last, x.
+    x: f32;
+    /// Where it was last, y.
+    y: f32;
+    /// Where it was last, z.
+    z: f32;
+    /// Its level, as the package reports it for selection.
+    level: u32;
+}
+
+/// The realm makes one change durable, before it answers. A batch at or
+/// below the stored sequence is applied once.
+message StoreCharacterRows inbound {
+    /// Batch sequence number.
+    seq: u64;
+    /// The rows, whole (each replaces the stored row of its id).
+    rows: list<CharacterRow, 8>;
+}
+
+/// The realm reads every character back at start, a page at a time.
+message ReadCharacterRows inbound {
+    /// The page (from 0).
+    page: u32;
+}
+
+/// A page of character rows, in id order.
+message CharacterRows outbound {
+    /// The stored batch watermark (the next batch numbers past it).
+    seq: u64;
+    /// The rows.
+    rows: list<CharacterRow, 32>;
+    /// More pages follow.
+    more: bool;
+}
+
+/// Change an account's password (the gateway, for a client).
+message ChangePassword inbound {
+    /// Account name.
+    name: string<32>;
+    /// The current password.
+    old: string<64>;
+    /// The new password.
+    new: string<64>;
+}
+
+/// Delete one of an account's characters.
+message DeleteCharacter inbound {
+    /// The account.
+    account: AccountId;
+    /// The character.
+    character: CharacterId;
+}
+
+/// A cell host tells the realm where a character left the world (logout)
+/// or arrived (a transfer between cells), so a restarted realm places a
+/// returning character where it left. The same summary twice is applied
+/// once; a host sends them in order.
+message CharacterPlaced inbound {
+    /// The character.
+    character: CharacterId;
+    /// The cell it is in, or last was.
+    cell: CellNo;
+    /// The world of that cell.
+    world: u32;
+    /// Where, x.
+    x: f32;
+    /// Where, y.
+    y: f32;
+    /// Where, z.
+    z: f32;
+    /// Its level, as the package reports it (0 unchanged).
+    level: u32;
 }

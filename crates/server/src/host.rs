@@ -114,12 +114,15 @@ pub trait Admission: Send {
 }
 
 /// The answer to one admission.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Verdict {
     /// The token is good: the session plays as `character`.
     Admit {
         /// The character the token was issued for.
         character: u64,
+        /// Where it enters: a returning character where it left the
+        /// world; `None`, where the host spawns new sessions.
+        spawn: Option<Vec3>,
     },
     /// The token is bad, used, or expired.
     Refuse,
@@ -470,11 +473,12 @@ impl Host {
             };
             let id = s.id;
             match verdict {
-                Verdict::Admit { character } => {
+                Verdict::Admit { character, spawn } => {
                     if self.sessions_in_world() >= self.cfg.capacity {
                         self.refuse(li, conn, mantis_adapter_contract::RefuseReason::Full);
                     } else {
-                        self.admit(li, conn, id, *character, (protocol, capabilities), mode, zone);
+                        let entry = (*character, *spawn);
+                        self.admit(li, conn, id, entry, (protocol, capabilities), mode, zone);
                     }
                 }
                 Verdict::Refuse => self.refuse(li, conn, mantis_adapter_contract::RefuseReason::BadToken),
@@ -686,17 +690,27 @@ impl Host {
             }
             return;
         }
-        self.admit(li, conn, id, id.0, accepted, adapter.movement_mode(), zone);
+        self.admit(
+            li,
+            conn,
+            id,
+            (id.0, None),
+            accepted,
+            adapter.movement_mode(),
+            zone,
+        );
     }
 
-    /// Enters an admitted session into the world as `character`.
+    /// Enters an admitted session into the world as `character`, at
+    /// `spawn` when given (a returning character), else where the host
+    /// spawns new sessions.
     #[expect(clippy::too_many_arguments, reason = "one call site per admission path")]
     fn admit(
         &mut self,
         li: usize,
         conn: ConnectionId,
         id: SessionId,
-        character: u64,
+        (character, spawn): (u64, Option<Vec3>),
         accepted: (u16, u32),
         mode: mantis_adapter_contract::MovementMode,
         zone: &mut Zone,
@@ -708,7 +722,7 @@ impl Host {
             self.refuse(li, conn, mantis_adapter_contract::RefuseReason::Full);
             return;
         };
-        let spawn = (self.cfg.spawn)(id);
+        let spawn = spawn.unwrap_or_else(|| (self.cfg.spawn)(id));
         let Some(cell_index) = zone.cell_for(spawn.x) else {
             self.stats.refused_handshakes += 1;
             return;

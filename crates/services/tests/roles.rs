@@ -303,6 +303,7 @@ async fn the_realm_places_characters_and_issues_single_use_tokens() {
         &m::CreateCharacter {
             account,
             name: s("hero"),
+            kind: 1,
         },
     )
     .await

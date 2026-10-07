@@ -33,6 +33,7 @@ use mantis_deploy::config::NodeConfig;
 use mantis_deploy::node::Node;
 use mantis_services::cluster::{CellLink, CellOutcome, PUSH_RETRY_MAX, RELAY_RETRY_MAX};
 use mantis_services::generated::services as m;
+use mantis_services::host::rpc::{RpcClient, RpcError};
 use mantis_services::host::{RPC_TIMEOUT, Role};
 use mantis_services::methods;
 use support::{CellSpec, Cluster, TestStore, service, wait_for};
@@ -119,7 +120,9 @@ impl Host {
         let world: Vec<(u64, (f32, f32))> = self
             .cells
             .iter()
-            .map(|c| (*c, (*c as f32 * 100.0, *c as f32 * 100.0 + 100.0)))
+            // Cell c owns x in (100 (c - 2), 100 (c - 1)]: cell 2 holds x = 0,
+            // where the realm places a new character.
+            .map(|c| (*c, ((*c as f32 - 2.0) * 100.0, (*c as f32 - 1.0) * 100.0)))
             .collect();
         let link = node.link(&world, &[]).unwrap();
         for (cell, outcomes) in &self.log {
@@ -488,11 +491,15 @@ fn a_tampered_registry_or_a_bad_certificate_is_refused_before_anything_binds() {
     std::fs::write(&crt, good_crt).unwrap();
     std::fs::write(&key, good_key).unwrap();
 
-    // The good registry runs, and drains cleanly.
+    // The good registry runs (once the writer it reads its rows from is
+    // up), and drains cleanly.
     std::fs::write(&config, text).unwrap();
+    let persist = service(Role::Persist);
+    cluster.start(&persist);
     cluster.start(&name);
     cluster.wait_ready(&name, Duration::from_secs(30));
     assert_eq!(cluster.drain(&name, Duration::from_secs(30)).code(), Some(0));
+    assert_eq!(cluster.drain(&persist, Duration::from_secs(30)).code(), Some(0));
 }
 
 #[test]
@@ -942,6 +949,267 @@ fn rpc_between_processes_is_mutual_tls_with_the_caller_matrix_on_the_certificate
             cluster.drain(name, Duration::from_secs(30)).code(),
             Some(0),
             "{name}"
+        );
+    }
+}
+
+/// A client calling instance `to` as a role with no instance in the
+/// registry (the game front door, `gateway`, has no deployable process
+/// yet): a certificate the test issues from the cluster CA.
+fn client_as(cluster: &Cluster, role: Role, instance: &str, to: &str) -> RpcClient {
+    use mantis_deploy::pki;
+    let ca = mantis_deploy::keys::read_ca(&cluster.dir.join("keys")).unwrap();
+    let ok = pki::Validity::starting_now(std::time::SystemTime::now(), 7);
+    let leaf = pki::issue(&ca, support::CLUSTER, role, instance, &[], ok).unwrap();
+    let id = mantis_services::tls::TlsIdentity::from_pem(
+        ca.cert_pem.as_bytes(),
+        leaf.cert_pem.as_bytes(),
+        leaf.key_pem.as_bytes(),
+    )
+    .unwrap();
+    let server = cluster.instance(to);
+    RpcClient::with_tls(
+        server.rpc,
+        role,
+        cluster.key.clone(),
+        Some(std::sync::Arc::new(id)),
+        server.role,
+    )
+    .unwrap()
+}
+
+/// One call, made once more if it found its connection lost: a client
+/// whose server restarted learns it on its next call, and reconnects on
+/// the one after (the RPC client's documented contract). Any other answer
+/// is final.
+fn again<T>(
+    mut call: impl FnMut() -> Result<T, mantis_services::host::rpc::RpcError>,
+) -> Result<T, mantis_services::host::rpc::RpcError> {
+    match call() {
+        Err(mantis_services::host::rpc::RpcError::Disconnected) => call(),
+        other => other,
+    }
+}
+
+fn wire<const N: usize>(s: &str) -> mantis_core::wire::WireString<N> {
+    mantis_core::wire::WireString::new(s).unwrap()
+}
+
+/// Account and realm killed and restarted: what they keep through the
+/// writer comes back (accounts, passwords, bans, characters and where each
+/// left the world); the single-use tokens they held in memory (session,
+/// entry, transfer) are refused, so clients log in or select again; the
+/// cell directory comes back when every cell host sees the realm's new
+/// epoch and registers again. (In-world sessions through such a restart:
+/// `toy::bots_play_...`.)
+#[test]
+fn account_and_realm_restarts_keep_accounts_and_characters_and_refuse_old_tokens() {
+    let mut cluster = Cluster::new("accounts", &TestStore::Memory, &hosts_spec()[..1]);
+    start_services(&mut cluster);
+    let host = Host::start(&cluster, "cells-a");
+    let (account_name, realm_name) = (service(Role::Account), service(Role::Realm));
+    let account = client_as(&cluster, Role::Gateway, "gateway-test", &account_name);
+    let realm = client_as(&cluster, Role::Gateway, "gateway-test", &realm_name);
+    let ops_account = cluster.client(&service(Role::Ops), &account_name);
+    let cell_account = cluster.client("cells-a", &account_name);
+    let cell_realm = cluster.client("cells-a", &realm_name);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let login = |name: &str, password: &str| {
+        again(|| {
+            rt.block_on(account.call::<methods::LoginAccount>(
+                &m::Login {
+                    name: wire(name),
+                    password: wire(password),
+                },
+                RPC_TIMEOUT,
+            ))
+        })
+    };
+    let verify = |token: &m::Session| {
+        again(|| {
+            rt.block_on(
+                cell_account
+                    .call::<methods::VerifySession>(&m::VerifyToken { token: token.token }, RPC_TIMEOUT),
+            )
+        })
+    };
+    let redeem = |token: &m::Placement, cell: u64| {
+        again(|| {
+            rt.block_on(cell_realm.call::<methods::RedeemToken>(
+                &m::Redeem {
+                    token: token.token,
+                    cell: m::CellNo(cell),
+                },
+                RPC_TIMEOUT,
+            ))
+        })
+    };
+
+    // Before: two accounts, one banned; a character, placed by its cell
+    // host where it leaves the world; tokens of every kind outstanding.
+    for name in ["alpha", "beta"] {
+        rt.block_on(account.call::<methods::RegisterAccount>(
+            &m::Register {
+                name: wire(name),
+                password: wire("correct-horse-1"),
+            },
+            RPC_TIMEOUT,
+        ))
+        .unwrap();
+    }
+    let alpha = login("alpha", "correct-horse-1").unwrap();
+    let beta = login("beta", "correct-horse-1").unwrap();
+    rt.block_on(ops_account.call::<methods::BanAccount>(
+        &m::Ban {
+            account: beta.account,
+            until_ms: u64::MAX / 2,
+            reason: wire("test"),
+        },
+        RPC_TIMEOUT,
+    ))
+    .unwrap();
+    assert!(
+        login("beta", "correct-horse-1").is_err_and(|e| matches!(e, RpcError::Refused(_))),
+        "banned"
+    );
+    let character = rt
+        .block_on(realm.call::<methods::NewCharacter>(
+            &m::CreateCharacter {
+                account: alpha.account,
+                name: wire("walker"),
+                kind: 1,
+            },
+            RPC_TIMEOUT,
+        ))
+        .unwrap()
+        .character;
+    let select = || {
+        again(|| {
+            rt.block_on(realm.call::<methods::Select>(
+                &m::SelectCharacter {
+                    account: alpha.account,
+                    character,
+                },
+                RPC_TIMEOUT,
+            ))
+        })
+    };
+    let first = select().unwrap();
+    assert_eq!(first.cell.0, 2, "a new character enters the cell owning x = 0");
+    // It enters, crosses into cell 1, and leaves the world at (-42, 0, 7).
+    host.link().track(2, 0, &[(character.0, [5.0, 0.0, 1.0])]);
+    host.link().track(2, 0, &[]);
+    host.link().track(1, 0, &[(character.0, [-42.0, 0.0, 7.0])]);
+    host.link().track(1, 0, &[]);
+    wait_for("the placements acknowledged", Duration::from_secs(30), || {
+        host.link().pending() == 0
+    });
+    let session = login("alpha", "correct-horse-1").unwrap();
+    let entry = select().unwrap();
+    assert_eq!(entry.cell.0, 1, "a returning character enters the cell it left");
+    let transfer = rt
+        .block_on(cell_realm.call::<methods::Transfer>(
+            &m::IssueTransfer {
+                character,
+                from: m::CellNo(2),
+                to: m::CellNo(1),
+                epoch: 1,
+            },
+            RPC_TIMEOUT,
+        ))
+        .unwrap();
+    let transfer = m::Placement {
+        cell: m::CellNo(1),
+        address: wire(""),
+        token: transfer.token,
+    };
+
+    // Both roles killed, then restarted on the same writer.
+    cluster.kill(&account_name);
+    cluster.kill(&realm_name);
+    cluster.start(&account_name);
+    cluster.start(&realm_name);
+    cluster.wait_ready(&account_name, Duration::from_secs(30));
+    cluster.wait_ready(&realm_name, Duration::from_secs(30));
+    for name in [&account_name, &realm_name] {
+        let out = cluster.output(name);
+        let restarted = out.split("---- start 2 ----").nth(1).unwrap_or("");
+        assert!(
+            restarted.contains("read back"),
+            "{name} read its rows back:\n{out}"
+        );
+    }
+
+    // Kept: accounts and passwords, bans.
+    let back = login("alpha", "correct-horse-1");
+    assert!(back.is_ok(), "the account and its password: {back:?}");
+    assert!(
+        login("alpha", "wrong-horse-22").is_err_and(|e| matches!(e, RpcError::Refused(_))),
+        "the password is still checked"
+    );
+    assert!(
+        login("beta", "correct-horse-1").is_err_and(|e| matches!(e, RpcError::Refused(_))),
+        "the ban"
+    );
+    // Refused: tokens of the old run (clients log in or select again).
+    assert!(
+        verify(&session).is_err_and(|e| matches!(e, RpcError::Refused(_))),
+        "a session token of the old run"
+    );
+    assert!(
+        redeem(&entry, 1).is_err_and(|e| matches!(e, RpcError::Refused(_))),
+        "an entry token of the old run"
+    );
+    assert!(
+        redeem(&transfer, 1).is_err_and(|e| matches!(e, RpcError::Refused(_))),
+        "a transfer token of the old run"
+    );
+    let fresh = login("alpha", "correct-horse-1").unwrap();
+    assert_eq!(
+        verify(&fresh).unwrap().account,
+        alpha.account,
+        "a new session works"
+    );
+    // Kept: the character.
+    let listed = rt
+        .block_on(realm.call::<methods::ListAccountCharacters>(
+            &m::ListCharacters {
+                account: alpha.account,
+            },
+            RPC_TIMEOUT,
+        ))
+        .unwrap();
+    assert_eq!(listed.ids.iter().copied().collect::<Vec<_>>(), vec![character]);
+    // The directory comes back with the cell host's registration on the
+    // new epoch; the returning character is then placed where it left.
+    let waited = wait_for("the cell host registered again", Duration::from_secs(30), || {
+        stat(host.link(), |s| &s.realm_restarts) >= 1
+    });
+    let mut placement = None;
+    wait_for("a selection after the restart", Duration::from_secs(30), || {
+        placement = select().ok();
+        placement.is_some()
+    });
+    let placement = placement.unwrap();
+    assert_eq!(placement.cell.0, 1, "the cell it left");
+    let entered = redeem(&placement, 1).unwrap();
+    assert!(entered.placed);
+    assert_eq!(
+        (entered.character, entered.x, entered.y, entered.z),
+        (character, -42.0, 0.0, 7.0)
+    );
+    println!(
+        "MANTIS-METRIC deploy_realm_reregistered_ms={}",
+        waited.as_millis()
+    );
+    drop(host);
+    for role in SERVICES.iter().rev() {
+        assert_eq!(
+            cluster.drain(&service(*role), Duration::from_secs(30)).code(),
+            Some(0)
         );
     }
 }

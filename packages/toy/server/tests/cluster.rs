@@ -201,6 +201,7 @@ fn sessions_are_admitted_with_realm_tokens_as_their_character() {
             &m::CreateCharacter {
                 account: m::AccountId(1),
                 name: mantis_core::wire::WireString::new("hero").unwrap(),
+                kind: 1,
             },
             wait,
         ))

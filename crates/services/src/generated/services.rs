@@ -485,19 +485,23 @@ impl ::mantis_core::wire::Message for Characters {
 pub struct CreateCharacter {
     /// The account.
     pub account: AccountId,
-    /// Its name.
+    /// Its name (unique in the realm, case-insensitively).
     pub name: ::mantis_core::wire::WireString<32>,
+    /// Its class or kind (package content).
+    pub kind: u32,
 }
 
 impl ::mantis_core::wire::Wire for CreateCharacter {
     fn encode(&self, e: &mut ::mantis_core::wire::Encoder<'_>) {
         ::mantis_core::wire::Wire::encode(&self.account, e);
         ::mantis_core::wire::Wire::encode(&self.name, e);
+        ::mantis_core::wire::Wire::encode(&self.kind, e);
     }
     fn decode(d: &mut ::mantis_core::wire::Decoder<'_>) -> Result<Self, ::mantis_core::wire::DecodeError> {
         Ok(Self {
             account: ::mantis_core::wire::Wire::decode(d)?,
             name: ::mantis_core::wire::Wire::decode(d)?,
+            kind: ::mantis_core::wire::Wire::decode(d)?,
         })
     }
 }
@@ -507,6 +511,7 @@ impl ::mantis_core::wire::FuzzSample for CreateCharacter {
         Self {
             account: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
             name: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            kind: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
         }
     }
 }
@@ -805,23 +810,40 @@ impl ::mantis_core::wire::Message for Redeem {
 }
 
 /// Who the token was for.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Redeemed {
     /// The character.
     pub character: CharacterId,
     /// The lease epoch.
     pub epoch: u64,
+    /// An entry token for a returning character: it enters where it left
+    /// (`x`, `y`, `z`); otherwise where the host spawns new characters.
+    pub placed: bool,
+    /// Where it left, x.
+    pub x: f32,
+    /// Where it left, y.
+    pub y: f32,
+    /// Where it left, z.
+    pub z: f32,
 }
 
 impl ::mantis_core::wire::Wire for Redeemed {
     fn encode(&self, e: &mut ::mantis_core::wire::Encoder<'_>) {
         ::mantis_core::wire::Wire::encode(&self.character, e);
         ::mantis_core::wire::Wire::encode(&self.epoch, e);
+        ::mantis_core::wire::Wire::encode(&self.placed, e);
+        ::mantis_core::wire::Wire::encode(&self.x, e);
+        ::mantis_core::wire::Wire::encode(&self.y, e);
+        ::mantis_core::wire::Wire::encode(&self.z, e);
     }
     fn decode(d: &mut ::mantis_core::wire::Decoder<'_>) -> Result<Self, ::mantis_core::wire::DecodeError> {
         Ok(Self {
             character: ::mantis_core::wire::Wire::decode(d)?,
             epoch: ::mantis_core::wire::Wire::decode(d)?,
+            placed: ::mantis_core::wire::Wire::decode(d)?,
+            x: ::mantis_core::wire::Wire::decode(d)?,
+            y: ::mantis_core::wire::Wire::decode(d)?,
+            z: ::mantis_core::wire::Wire::decode(d)?,
         })
     }
 }
@@ -831,6 +853,10 @@ impl ::mantis_core::wire::FuzzSample for Redeemed {
         Self {
             character: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
             epoch: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            placed: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            x: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            y: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            z: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
         }
     }
 }
@@ -3255,6 +3281,516 @@ impl ::mantis_core::wire::Message for LiveValues {
     const NAME: &'static str = "LiveValues";
 }
 
+/// One durable account: the account role writes it through the persistence
+/// writer before it answers, and reads every row back at start.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct AccountRow {
+    /// The account.
+    pub id: u64,
+    /// The name as registered (unique case-insensitively).
+    pub name: ::mantis_core::wire::WireString<32>,
+    /// The password salt.
+    pub salt: ::mantis_core::wire::BoundedArray<u8, 16>,
+    /// The derived password key (PBKDF2-HMAC-SHA256).
+    pub hash: ::mantis_core::wire::BoundedArray<u8, 32>,
+    /// The derivation's iterations.
+    pub iterations: u32,
+    /// Unix milliseconds it was created.
+    pub created_ms: u64,
+    /// Unix milliseconds of its last login (0 never).
+    pub last_login_ms: u64,
+    /// Unix milliseconds a ban ends (0 not banned).
+    pub banned_until_ms: u64,
+    /// Why it was banned.
+    pub ban_reason: ::mantis_core::wire::WireString<128>,
+}
+
+impl ::mantis_core::wire::Wire for AccountRow {
+    fn encode(&self, e: &mut ::mantis_core::wire::Encoder<'_>) {
+        ::mantis_core::wire::Wire::encode(&self.id, e);
+        ::mantis_core::wire::Wire::encode(&self.name, e);
+        ::mantis_core::wire::Wire::encode(&self.salt, e);
+        ::mantis_core::wire::Wire::encode(&self.hash, e);
+        ::mantis_core::wire::Wire::encode(&self.iterations, e);
+        ::mantis_core::wire::Wire::encode(&self.created_ms, e);
+        ::mantis_core::wire::Wire::encode(&self.last_login_ms, e);
+        ::mantis_core::wire::Wire::encode(&self.banned_until_ms, e);
+        ::mantis_core::wire::Wire::encode(&self.ban_reason, e);
+    }
+    fn decode(d: &mut ::mantis_core::wire::Decoder<'_>) -> Result<Self, ::mantis_core::wire::DecodeError> {
+        Ok(Self {
+            id: ::mantis_core::wire::Wire::decode(d)?,
+            name: ::mantis_core::wire::Wire::decode(d)?,
+            salt: ::mantis_core::wire::Wire::decode(d)?,
+            hash: ::mantis_core::wire::Wire::decode(d)?,
+            iterations: ::mantis_core::wire::Wire::decode(d)?,
+            created_ms: ::mantis_core::wire::Wire::decode(d)?,
+            last_login_ms: ::mantis_core::wire::Wire::decode(d)?,
+            banned_until_ms: ::mantis_core::wire::Wire::decode(d)?,
+            ban_reason: ::mantis_core::wire::Wire::decode(d)?,
+        })
+    }
+}
+
+impl ::mantis_core::wire::FuzzSample for AccountRow {
+    fn fuzz_sample(rng: &mut ::mantis_core::rng::Rng) -> Self {
+        Self {
+            id: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            name: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            salt: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            hash: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            iterations: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            created_ms: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            last_login_ms: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            banned_until_ms: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            ban_reason: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+        }
+    }
+}
+
+/// The account role makes one change durable, before it answers. A batch at
+/// or below the stored sequence is applied once.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct StoreAccountRows {
+    /// Batch sequence number.
+    pub seq: u64,
+    /// The rows, whole (each replaces the stored row of its id).
+    pub rows: ::mantis_core::wire::BoundedArray<AccountRow, 8>,
+}
+
+impl ::mantis_core::wire::Wire for StoreAccountRows {
+    fn encode(&self, e: &mut ::mantis_core::wire::Encoder<'_>) {
+        ::mantis_core::wire::Wire::encode(&self.seq, e);
+        ::mantis_core::wire::Wire::encode(&self.rows, e);
+    }
+    fn decode(d: &mut ::mantis_core::wire::Decoder<'_>) -> Result<Self, ::mantis_core::wire::DecodeError> {
+        Ok(Self {
+            seq: ::mantis_core::wire::Wire::decode(d)?,
+            rows: ::mantis_core::wire::Wire::decode(d)?,
+        })
+    }
+}
+
+impl ::mantis_core::wire::FuzzSample for StoreAccountRows {
+    fn fuzz_sample(rng: &mut ::mantis_core::rng::Rng) -> Self {
+        Self {
+            seq: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            rows: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+        }
+    }
+}
+
+impl ::mantis_core::wire::Message for StoreAccountRows {
+    const ID: ::mantis_core::wire::MessageId = ::mantis_core::wire::MessageId(75);
+    const NAME: &'static str = "StoreAccountRows";
+}
+
+/// The account role reads every account back at start, a page at a time.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ReadAccountRows {
+    /// The page (from 0).
+    pub page: u32,
+}
+
+impl ::mantis_core::wire::Wire for ReadAccountRows {
+    fn encode(&self, e: &mut ::mantis_core::wire::Encoder<'_>) {
+        ::mantis_core::wire::Wire::encode(&self.page, e);
+    }
+    fn decode(d: &mut ::mantis_core::wire::Decoder<'_>) -> Result<Self, ::mantis_core::wire::DecodeError> {
+        Ok(Self {
+            page: ::mantis_core::wire::Wire::decode(d)?,
+        })
+    }
+}
+
+impl ::mantis_core::wire::FuzzSample for ReadAccountRows {
+    fn fuzz_sample(rng: &mut ::mantis_core::rng::Rng) -> Self {
+        Self {
+            page: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+        }
+    }
+}
+
+impl ::mantis_core::wire::Message for ReadAccountRows {
+    const ID: ::mantis_core::wire::MessageId = ::mantis_core::wire::MessageId(76);
+    const NAME: &'static str = "ReadAccountRows";
+}
+
+/// A page of account rows, in id order.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct AccountRows {
+    /// The stored batch watermark (the next batch numbers past it).
+    pub seq: u64,
+    /// The rows.
+    pub rows: ::mantis_core::wire::BoundedArray<AccountRow, 32>,
+    /// More pages follow.
+    pub more: bool,
+}
+
+impl ::mantis_core::wire::Wire for AccountRows {
+    fn encode(&self, e: &mut ::mantis_core::wire::Encoder<'_>) {
+        ::mantis_core::wire::Wire::encode(&self.seq, e);
+        ::mantis_core::wire::Wire::encode(&self.rows, e);
+        ::mantis_core::wire::Wire::encode(&self.more, e);
+    }
+    fn decode(d: &mut ::mantis_core::wire::Decoder<'_>) -> Result<Self, ::mantis_core::wire::DecodeError> {
+        Ok(Self {
+            seq: ::mantis_core::wire::Wire::decode(d)?,
+            rows: ::mantis_core::wire::Wire::decode(d)?,
+            more: ::mantis_core::wire::Wire::decode(d)?,
+        })
+    }
+}
+
+impl ::mantis_core::wire::FuzzSample for AccountRows {
+    fn fuzz_sample(rng: &mut ::mantis_core::rng::Rng) -> Self {
+        Self {
+            seq: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            rows: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            more: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+        }
+    }
+}
+
+impl ::mantis_core::wire::Message for AccountRows {
+    const ID: ::mantis_core::wire::MessageId = ::mantis_core::wire::MessageId(77);
+    const NAME: &'static str = "AccountRows";
+}
+
+/// One durable character: the realm writes it through the persistence
+/// writer before it answers, and reads every row back at start. Its state
+/// in the world stays in its cell's snapshots and outcomes; this is the
+/// realm's summary for selection and placement.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct CharacterRow {
+    /// The character.
+    pub id: u64,
+    /// Its account.
+    pub account: u64,
+    /// Its name (unique in the realm, case-insensitively, among the living).
+    pub name: ::mantis_core::wire::WireString<32>,
+    /// Its class or kind (package content).
+    pub kind: u32,
+    /// Unix milliseconds it was created.
+    pub created_ms: u64,
+    /// Deleted: kept so its id is never reused, and free of its name.
+    pub deleted: bool,
+    /// The cell it was last in (0 never entered).
+    pub cell: u64,
+    /// The world that cell belongs to.
+    pub world: u32,
+    /// Where it was last, x.
+    pub x: f32,
+    /// Where it was last, y.
+    pub y: f32,
+    /// Where it was last, z.
+    pub z: f32,
+    /// Its level, as the package reports it for selection.
+    pub level: u32,
+}
+
+impl ::mantis_core::wire::Wire for CharacterRow {
+    fn encode(&self, e: &mut ::mantis_core::wire::Encoder<'_>) {
+        ::mantis_core::wire::Wire::encode(&self.id, e);
+        ::mantis_core::wire::Wire::encode(&self.account, e);
+        ::mantis_core::wire::Wire::encode(&self.name, e);
+        ::mantis_core::wire::Wire::encode(&self.kind, e);
+        ::mantis_core::wire::Wire::encode(&self.created_ms, e);
+        ::mantis_core::wire::Wire::encode(&self.deleted, e);
+        ::mantis_core::wire::Wire::encode(&self.cell, e);
+        ::mantis_core::wire::Wire::encode(&self.world, e);
+        ::mantis_core::wire::Wire::encode(&self.x, e);
+        ::mantis_core::wire::Wire::encode(&self.y, e);
+        ::mantis_core::wire::Wire::encode(&self.z, e);
+        ::mantis_core::wire::Wire::encode(&self.level, e);
+    }
+    fn decode(d: &mut ::mantis_core::wire::Decoder<'_>) -> Result<Self, ::mantis_core::wire::DecodeError> {
+        Ok(Self {
+            id: ::mantis_core::wire::Wire::decode(d)?,
+            account: ::mantis_core::wire::Wire::decode(d)?,
+            name: ::mantis_core::wire::Wire::decode(d)?,
+            kind: ::mantis_core::wire::Wire::decode(d)?,
+            created_ms: ::mantis_core::wire::Wire::decode(d)?,
+            deleted: ::mantis_core::wire::Wire::decode(d)?,
+            cell: ::mantis_core::wire::Wire::decode(d)?,
+            world: ::mantis_core::wire::Wire::decode(d)?,
+            x: ::mantis_core::wire::Wire::decode(d)?,
+            y: ::mantis_core::wire::Wire::decode(d)?,
+            z: ::mantis_core::wire::Wire::decode(d)?,
+            level: ::mantis_core::wire::Wire::decode(d)?,
+        })
+    }
+}
+
+impl ::mantis_core::wire::FuzzSample for CharacterRow {
+    fn fuzz_sample(rng: &mut ::mantis_core::rng::Rng) -> Self {
+        Self {
+            id: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            account: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            name: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            kind: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            created_ms: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            deleted: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            cell: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            world: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            x: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            y: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            z: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            level: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+        }
+    }
+}
+
+/// The realm makes one change durable, before it answers. A batch at or
+/// below the stored sequence is applied once.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct StoreCharacterRows {
+    /// Batch sequence number.
+    pub seq: u64,
+    /// The rows, whole (each replaces the stored row of its id).
+    pub rows: ::mantis_core::wire::BoundedArray<CharacterRow, 8>,
+}
+
+impl ::mantis_core::wire::Wire for StoreCharacterRows {
+    fn encode(&self, e: &mut ::mantis_core::wire::Encoder<'_>) {
+        ::mantis_core::wire::Wire::encode(&self.seq, e);
+        ::mantis_core::wire::Wire::encode(&self.rows, e);
+    }
+    fn decode(d: &mut ::mantis_core::wire::Decoder<'_>) -> Result<Self, ::mantis_core::wire::DecodeError> {
+        Ok(Self {
+            seq: ::mantis_core::wire::Wire::decode(d)?,
+            rows: ::mantis_core::wire::Wire::decode(d)?,
+        })
+    }
+}
+
+impl ::mantis_core::wire::FuzzSample for StoreCharacterRows {
+    fn fuzz_sample(rng: &mut ::mantis_core::rng::Rng) -> Self {
+        Self {
+            seq: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            rows: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+        }
+    }
+}
+
+impl ::mantis_core::wire::Message for StoreCharacterRows {
+    const ID: ::mantis_core::wire::MessageId = ::mantis_core::wire::MessageId(78);
+    const NAME: &'static str = "StoreCharacterRows";
+}
+
+/// The realm reads every character back at start, a page at a time.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ReadCharacterRows {
+    /// The page (from 0).
+    pub page: u32,
+}
+
+impl ::mantis_core::wire::Wire for ReadCharacterRows {
+    fn encode(&self, e: &mut ::mantis_core::wire::Encoder<'_>) {
+        ::mantis_core::wire::Wire::encode(&self.page, e);
+    }
+    fn decode(d: &mut ::mantis_core::wire::Decoder<'_>) -> Result<Self, ::mantis_core::wire::DecodeError> {
+        Ok(Self {
+            page: ::mantis_core::wire::Wire::decode(d)?,
+        })
+    }
+}
+
+impl ::mantis_core::wire::FuzzSample for ReadCharacterRows {
+    fn fuzz_sample(rng: &mut ::mantis_core::rng::Rng) -> Self {
+        Self {
+            page: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+        }
+    }
+}
+
+impl ::mantis_core::wire::Message for ReadCharacterRows {
+    const ID: ::mantis_core::wire::MessageId = ::mantis_core::wire::MessageId(79);
+    const NAME: &'static str = "ReadCharacterRows";
+}
+
+/// A page of character rows, in id order.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct CharacterRows {
+    /// The stored batch watermark (the next batch numbers past it).
+    pub seq: u64,
+    /// The rows.
+    pub rows: ::mantis_core::wire::BoundedArray<CharacterRow, 32>,
+    /// More pages follow.
+    pub more: bool,
+}
+
+impl ::mantis_core::wire::Wire for CharacterRows {
+    fn encode(&self, e: &mut ::mantis_core::wire::Encoder<'_>) {
+        ::mantis_core::wire::Wire::encode(&self.seq, e);
+        ::mantis_core::wire::Wire::encode(&self.rows, e);
+        ::mantis_core::wire::Wire::encode(&self.more, e);
+    }
+    fn decode(d: &mut ::mantis_core::wire::Decoder<'_>) -> Result<Self, ::mantis_core::wire::DecodeError> {
+        Ok(Self {
+            seq: ::mantis_core::wire::Wire::decode(d)?,
+            rows: ::mantis_core::wire::Wire::decode(d)?,
+            more: ::mantis_core::wire::Wire::decode(d)?,
+        })
+    }
+}
+
+impl ::mantis_core::wire::FuzzSample for CharacterRows {
+    fn fuzz_sample(rng: &mut ::mantis_core::rng::Rng) -> Self {
+        Self {
+            seq: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            rows: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            more: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+        }
+    }
+}
+
+impl ::mantis_core::wire::Message for CharacterRows {
+    const ID: ::mantis_core::wire::MessageId = ::mantis_core::wire::MessageId(80);
+    const NAME: &'static str = "CharacterRows";
+}
+
+/// Change an account's password (the gateway, for a client).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ChangePassword {
+    /// Account name.
+    pub name: ::mantis_core::wire::WireString<32>,
+    /// The current password.
+    pub old: ::mantis_core::wire::WireString<64>,
+    /// The new password.
+    pub new: ::mantis_core::wire::WireString<64>,
+}
+
+impl ::mantis_core::wire::Wire for ChangePassword {
+    fn encode(&self, e: &mut ::mantis_core::wire::Encoder<'_>) {
+        ::mantis_core::wire::Wire::encode(&self.name, e);
+        ::mantis_core::wire::Wire::encode(&self.old, e);
+        ::mantis_core::wire::Wire::encode(&self.new, e);
+    }
+    fn decode(d: &mut ::mantis_core::wire::Decoder<'_>) -> Result<Self, ::mantis_core::wire::DecodeError> {
+        Ok(Self {
+            name: ::mantis_core::wire::Wire::decode(d)?,
+            old: ::mantis_core::wire::Wire::decode(d)?,
+            new: ::mantis_core::wire::Wire::decode(d)?,
+        })
+    }
+}
+
+impl ::mantis_core::wire::FuzzSample for ChangePassword {
+    fn fuzz_sample(rng: &mut ::mantis_core::rng::Rng) -> Self {
+        Self {
+            name: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            old: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            new: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+        }
+    }
+}
+
+impl ::mantis_core::wire::Message for ChangePassword {
+    const ID: ::mantis_core::wire::MessageId = ::mantis_core::wire::MessageId(81);
+    const NAME: &'static str = "ChangePassword";
+}
+
+/// Delete one of an account's characters.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct DeleteCharacter {
+    /// The account.
+    pub account: AccountId,
+    /// The character.
+    pub character: CharacterId,
+}
+
+impl ::mantis_core::wire::Wire for DeleteCharacter {
+    fn encode(&self, e: &mut ::mantis_core::wire::Encoder<'_>) {
+        ::mantis_core::wire::Wire::encode(&self.account, e);
+        ::mantis_core::wire::Wire::encode(&self.character, e);
+    }
+    fn decode(d: &mut ::mantis_core::wire::Decoder<'_>) -> Result<Self, ::mantis_core::wire::DecodeError> {
+        Ok(Self {
+            account: ::mantis_core::wire::Wire::decode(d)?,
+            character: ::mantis_core::wire::Wire::decode(d)?,
+        })
+    }
+}
+
+impl ::mantis_core::wire::FuzzSample for DeleteCharacter {
+    fn fuzz_sample(rng: &mut ::mantis_core::rng::Rng) -> Self {
+        Self {
+            account: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            character: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+        }
+    }
+}
+
+impl ::mantis_core::wire::Message for DeleteCharacter {
+    const ID: ::mantis_core::wire::MessageId = ::mantis_core::wire::MessageId(82);
+    const NAME: &'static str = "DeleteCharacter";
+}
+
+/// A cell host tells the realm where a character left the world (logout)
+/// or arrived (a transfer between cells), so a restarted realm places a
+/// returning character where it left. The same summary twice is applied
+/// once; a host sends them in order.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct CharacterPlaced {
+    /// The character.
+    pub character: CharacterId,
+    /// The cell it is in, or last was.
+    pub cell: CellNo,
+    /// The world of that cell.
+    pub world: u32,
+    /// Where, x.
+    pub x: f32,
+    /// Where, y.
+    pub y: f32,
+    /// Where, z.
+    pub z: f32,
+    /// Its level, as the package reports it (0 unchanged).
+    pub level: u32,
+}
+
+impl ::mantis_core::wire::Wire for CharacterPlaced {
+    fn encode(&self, e: &mut ::mantis_core::wire::Encoder<'_>) {
+        ::mantis_core::wire::Wire::encode(&self.character, e);
+        ::mantis_core::wire::Wire::encode(&self.cell, e);
+        ::mantis_core::wire::Wire::encode(&self.world, e);
+        ::mantis_core::wire::Wire::encode(&self.x, e);
+        ::mantis_core::wire::Wire::encode(&self.y, e);
+        ::mantis_core::wire::Wire::encode(&self.z, e);
+        ::mantis_core::wire::Wire::encode(&self.level, e);
+    }
+    fn decode(d: &mut ::mantis_core::wire::Decoder<'_>) -> Result<Self, ::mantis_core::wire::DecodeError> {
+        Ok(Self {
+            character: ::mantis_core::wire::Wire::decode(d)?,
+            cell: ::mantis_core::wire::Wire::decode(d)?,
+            world: ::mantis_core::wire::Wire::decode(d)?,
+            x: ::mantis_core::wire::Wire::decode(d)?,
+            y: ::mantis_core::wire::Wire::decode(d)?,
+            z: ::mantis_core::wire::Wire::decode(d)?,
+            level: ::mantis_core::wire::Wire::decode(d)?,
+        })
+    }
+}
+
+impl ::mantis_core::wire::FuzzSample for CharacterPlaced {
+    fn fuzz_sample(rng: &mut ::mantis_core::rng::Rng) -> Self {
+        Self {
+            character: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            cell: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            world: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            x: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            y: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            z: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            level: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+        }
+    }
+}
+
+impl ::mantis_core::wire::Message for CharacterPlaced {
+    const ID: ::mantis_core::wire::MessageId = ::mantis_core::wire::MessageId(83);
+    const NAME: &'static str = "CharacterPlaced";
+}
+
 /// Every client to server message of this schema.
 #[derive(Clone, Copy, PartialEq, Debug)]
 #[allow(clippy::large_enum_variant)] // inline, allocation-free values; transient on network threads
@@ -3345,6 +3881,20 @@ pub enum Inbound {
     StoreLive(StoreLive),
     /// See [`ReadLive`].
     ReadLive(ReadLive),
+    /// See [`StoreAccountRows`].
+    StoreAccountRows(StoreAccountRows),
+    /// See [`ReadAccountRows`].
+    ReadAccountRows(ReadAccountRows),
+    /// See [`StoreCharacterRows`].
+    StoreCharacterRows(StoreCharacterRows),
+    /// See [`ReadCharacterRows`].
+    ReadCharacterRows(ReadCharacterRows),
+    /// See [`ChangePassword`].
+    ChangePassword(ChangePassword),
+    /// See [`DeleteCharacter`].
+    DeleteCharacter(DeleteCharacter),
+    /// See [`CharacterPlaced`].
+    CharacterPlaced(CharacterPlaced),
 }
 
 impl Inbound {
@@ -3395,6 +3945,13 @@ impl Inbound {
             Self::PollRealm(_) => <PollRealm as ::mantis_core::wire::Message>::ID,
             Self::StoreLive(_) => <StoreLive as ::mantis_core::wire::Message>::ID,
             Self::ReadLive(_) => <ReadLive as ::mantis_core::wire::Message>::ID,
+            Self::StoreAccountRows(_) => <StoreAccountRows as ::mantis_core::wire::Message>::ID,
+            Self::ReadAccountRows(_) => <ReadAccountRows as ::mantis_core::wire::Message>::ID,
+            Self::StoreCharacterRows(_) => <StoreCharacterRows as ::mantis_core::wire::Message>::ID,
+            Self::ReadCharacterRows(_) => <ReadCharacterRows as ::mantis_core::wire::Message>::ID,
+            Self::ChangePassword(_) => <ChangePassword as ::mantis_core::wire::Message>::ID,
+            Self::DeleteCharacter(_) => <DeleteCharacter as ::mantis_core::wire::Message>::ID,
+            Self::CharacterPlaced(_) => <CharacterPlaced as ::mantis_core::wire::Message>::ID,
         }
     }
 
@@ -3444,6 +4001,13 @@ impl Inbound {
             Self::PollRealm(m) => ::mantis_core::wire::encode_into(m, out),
             Self::StoreLive(m) => ::mantis_core::wire::encode_into(m, out),
             Self::ReadLive(m) => ::mantis_core::wire::encode_into(m, out),
+            Self::StoreAccountRows(m) => ::mantis_core::wire::encode_into(m, out),
+            Self::ReadAccountRows(m) => ::mantis_core::wire::encode_into(m, out),
+            Self::StoreCharacterRows(m) => ::mantis_core::wire::encode_into(m, out),
+            Self::ReadCharacterRows(m) => ::mantis_core::wire::encode_into(m, out),
+            Self::ChangePassword(m) => ::mantis_core::wire::encode_into(m, out),
+            Self::DeleteCharacter(m) => ::mantis_core::wire::encode_into(m, out),
+            Self::CharacterPlaced(m) => ::mantis_core::wire::encode_into(m, out),
         }
     }
 }
@@ -3666,6 +4230,41 @@ pub trait Validators {
     /// # Errors
     /// The reason the message is refused.
     fn validate_read_live(&self, msg: &ReadLive) -> Result<(), ::mantis_core::wire::ValidationError>;
+    /// Validates a decoded [`StoreAccountRows`].
+    ///
+    /// # Errors
+    /// The reason the message is refused.
+    fn validate_store_account_rows(&self, msg: &StoreAccountRows) -> Result<(), ::mantis_core::wire::ValidationError>;
+    /// Validates a decoded [`ReadAccountRows`].
+    ///
+    /// # Errors
+    /// The reason the message is refused.
+    fn validate_read_account_rows(&self, msg: &ReadAccountRows) -> Result<(), ::mantis_core::wire::ValidationError>;
+    /// Validates a decoded [`StoreCharacterRows`].
+    ///
+    /// # Errors
+    /// The reason the message is refused.
+    fn validate_store_character_rows(&self, msg: &StoreCharacterRows) -> Result<(), ::mantis_core::wire::ValidationError>;
+    /// Validates a decoded [`ReadCharacterRows`].
+    ///
+    /// # Errors
+    /// The reason the message is refused.
+    fn validate_read_character_rows(&self, msg: &ReadCharacterRows) -> Result<(), ::mantis_core::wire::ValidationError>;
+    /// Validates a decoded [`ChangePassword`].
+    ///
+    /// # Errors
+    /// The reason the message is refused.
+    fn validate_change_password(&self, msg: &ChangePassword) -> Result<(), ::mantis_core::wire::ValidationError>;
+    /// Validates a decoded [`DeleteCharacter`].
+    ///
+    /// # Errors
+    /// The reason the message is refused.
+    fn validate_delete_character(&self, msg: &DeleteCharacter) -> Result<(), ::mantis_core::wire::ValidationError>;
+    /// Validates a decoded [`CharacterPlaced`].
+    ///
+    /// # Errors
+    /// The reason the message is refused.
+    fn validate_character_placed(&self, msg: &CharacterPlaced) -> Result<(), ::mantis_core::wire::ValidationError>;
 }
 
 impl Inbound {
@@ -3719,6 +4318,13 @@ impl Inbound {
             Self::PollRealm(m) => ("PollRealm", validators.validate_poll_realm(m)),
             Self::StoreLive(m) => ("StoreLive", validators.validate_store_live(m)),
             Self::ReadLive(m) => ("ReadLive", validators.validate_read_live(m)),
+            Self::StoreAccountRows(m) => ("StoreAccountRows", validators.validate_store_account_rows(m)),
+            Self::ReadAccountRows(m) => ("ReadAccountRows", validators.validate_read_account_rows(m)),
+            Self::StoreCharacterRows(m) => ("StoreCharacterRows", validators.validate_store_character_rows(m)),
+            Self::ReadCharacterRows(m) => ("ReadCharacterRows", validators.validate_read_character_rows(m)),
+            Self::ChangePassword(m) => ("ChangePassword", validators.validate_change_password(m)),
+            Self::DeleteCharacter(m) => ("DeleteCharacter", validators.validate_delete_character(m)),
+            Self::CharacterPlaced(m) => ("CharacterPlaced", validators.validate_character_placed(m)),
         };
         result.map_err(|reason| ::mantis_core::wire::WireError::Rejected { message, reason })
     }
@@ -3778,6 +4384,13 @@ pub fn parse_inbound(
         70 => Inbound::PollRealm(::mantis_core::wire::decode_message(bytes)?),
         72 => Inbound::StoreLive(::mantis_core::wire::decode_message(bytes)?),
         73 => Inbound::ReadLive(::mantis_core::wire::decode_message(bytes)?),
+        75 => Inbound::StoreAccountRows(::mantis_core::wire::decode_message(bytes)?),
+        76 => Inbound::ReadAccountRows(::mantis_core::wire::decode_message(bytes)?),
+        78 => Inbound::StoreCharacterRows(::mantis_core::wire::decode_message(bytes)?),
+        79 => Inbound::ReadCharacterRows(::mantis_core::wire::decode_message(bytes)?),
+        81 => Inbound::ChangePassword(::mantis_core::wire::decode_message(bytes)?),
+        82 => Inbound::DeleteCharacter(::mantis_core::wire::decode_message(bytes)?),
+        83 => Inbound::CharacterPlaced(::mantis_core::wire::decode_message(bytes)?),
         _ => return Err(::mantis_core::wire::WireError::UnknownMessage(id)),
     })
 }
@@ -3863,6 +4476,10 @@ pub enum Outbound {
     RealmEpoch(RealmEpoch),
     /// See [`LiveValues`].
     LiveValues(LiveValues),
+    /// See [`AccountRows`].
+    AccountRows(AccountRows),
+    /// See [`CharacterRows`].
+    CharacterRows(CharacterRows),
 }
 
 impl Outbound {
@@ -3901,6 +4518,8 @@ impl Outbound {
             Self::AuditRows(_) => <AuditRows as ::mantis_core::wire::Message>::ID,
             Self::RealmEpoch(_) => <RealmEpoch as ::mantis_core::wire::Message>::ID,
             Self::LiveValues(_) => <LiveValues as ::mantis_core::wire::Message>::ID,
+            Self::AccountRows(_) => <AccountRows as ::mantis_core::wire::Message>::ID,
+            Self::CharacterRows(_) => <CharacterRows as ::mantis_core::wire::Message>::ID,
         }
     }
 
@@ -3938,6 +4557,8 @@ impl Outbound {
             Self::AuditRows(m) => ::mantis_core::wire::encode_into(m, out),
             Self::RealmEpoch(m) => ::mantis_core::wire::encode_into(m, out),
             Self::LiveValues(m) => ::mantis_core::wire::encode_into(m, out),
+            Self::AccountRows(m) => ::mantis_core::wire::encode_into(m, out),
+            Self::CharacterRows(m) => ::mantis_core::wire::encode_into(m, out),
         }
     }
 }
@@ -3983,6 +4604,8 @@ pub fn decode_outbound(
         69 => Outbound::AuditRows(::mantis_core::wire::decode_message(bytes)?),
         71 => Outbound::RealmEpoch(::mantis_core::wire::decode_message(bytes)?),
         74 => Outbound::LiveValues(::mantis_core::wire::decode_message(bytes)?),
+        77 => Outbound::AccountRows(::mantis_core::wire::decode_message(bytes)?),
+        80 => Outbound::CharacterRows(::mantis_core::wire::decode_message(bytes)?),
         _ => return Err(::mantis_core::wire::WireError::UnknownMessage(id)),
     })
 }

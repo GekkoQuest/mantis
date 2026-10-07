@@ -1,7 +1,7 @@
 //! Readiness: a node serves only once every role it depends on is ready.
 //!
 //! The order follows from [`crate::matrix::dependencies`]: persist before
-//! social and Ops, realm before matchmaking, and every service role a cell
+//! account, realm, social and Ops, realm before matchmaking, and every service role a cell
 //! host calls (realm, persist, social, matchmaking, Ops) before a cell
 //! host. A dependency is ready when its health endpoint answers `/ready`
 //! with 200 **and names the role and instance the registry lists there**,

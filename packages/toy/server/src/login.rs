@@ -19,6 +19,9 @@ use mantis_services::host::{RPC_TIMEOUT, Role};
 use mantis_services::methods;
 use mantis_services::tls::TlsIdentity;
 
+/// The toy's one character kind.
+pub const TOY_KIND: u32 = 1;
+
 /// Where the gateway flow goes: the account and realm roles, and the
 /// cluster key. Written by `toy-server cluster --login-out`, read by
 /// `toy-server bots --login`, as `key = value` lines.
@@ -191,6 +194,7 @@ impl Gateway {
                         &m::CreateCharacter {
                             account,
                             name: name_w,
+                            kind: TOY_KIND,
                         },
                         RPC_TIMEOUT,
                     )

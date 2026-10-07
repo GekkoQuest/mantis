@@ -52,8 +52,10 @@ pub fn may_call(caller: Role, server: Role) -> bool {
 #[must_use]
 pub const fn dependencies(role: Role) -> &'static [Role] {
     match role {
-        Role::Account | Role::Realm | Role::Persist | Role::Gateway => &[],
-        Role::Social => &[Role::Persist],
+        Role::Persist | Role::Gateway => &[],
+        // Accounts, characters, guilds and friends are rows the writer
+        // keeps; each of these roles reads them back before it serves.
+        Role::Account | Role::Realm | Role::Social => &[Role::Persist],
         Role::Matchmaking => &[Role::Realm],
         Role::Ops => &[Role::Account, Role::Persist],
         Role::Cell => &[
@@ -131,7 +133,9 @@ mod tests {
         for role in DEPLOYED {
             check(role).unwrap();
         }
-        assert!(!may_call(Role::Account, Role::Persist));
+        assert!(may_call(Role::Account, Role::Persist));
+        assert!(may_call(Role::Realm, Role::Persist));
+        assert!(!may_call(Role::Account, Role::Realm));
         assert!(may_call(Role::Social, Role::Persist));
         assert!(may_call(Role::Ops, Role::Cell));
         assert!(!may_call(Role::Matchmaking, Role::Persist));

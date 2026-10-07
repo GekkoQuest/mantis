@@ -86,6 +86,25 @@ fn persist(node: &Node) -> Result<Router, String> {
     Ok(writer.router())
 }
 
+/// Accounts are rows the writer keeps: read back before serving, so a
+/// restarted account role knows every account, session and ban.
+fn account(node: &Node) -> Result<Router, String> {
+    let account = AccountService::with_writer(client(node, Role::Persist)?);
+    let rows = node.block_on(account.load_durable())?;
+    node.say(&format!("read back {rows} account rows from the writer"));
+    Ok(account.router())
+}
+
+/// Characters are rows the writer keeps: read back before serving. The cell
+/// directory is not: cell hosts register again when the realm's epoch
+/// changes.
+fn realm(node: &Node) -> Result<Router, String> {
+    let realm = RealmService::with_writer(client(node, Role::Persist)?);
+    let rows = node.block_on(realm.load_durable())?;
+    node.say(&format!("read back {rows} character rows from the writer"));
+    Ok(realm.router())
+}
+
 fn social(node: &Node) -> Result<Router, String> {
     let social = SocialService::with_writer(client(node, Role::Persist)?);
     let (guilds, friends) = node.block_on(social.load_durable())?;
@@ -175,8 +194,8 @@ fn ops(node: &Node) -> Result<(Router, Dashboard), String> {
 fn start(node: &Node) -> Result<Running, String> {
     let mut dashboard = None;
     let router = match node.config.role {
-        Role::Account => AccountService::new().router(),
-        Role::Realm => RealmService::new().router(),
+        Role::Account => account(node)?,
+        Role::Realm => realm(node)?,
         Role::Persist => persist(node)?,
         Role::Social => social(node)?,
         Role::Matchmaking => matchmaking(node)?,

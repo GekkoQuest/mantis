@@ -43,6 +43,16 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "0005_live.sql",
         sql: include_str!("../../migrations/0005_live.sql"),
     },
+    Migration {
+        version: 6,
+        name: "0006_accounts.sql",
+        sql: include_str!("../../migrations/0006_accounts.sql"),
+    },
+    Migration {
+        version: 7,
+        name: "0007_characters.sql",
+        sql: include_str!("../../migrations/0007_characters.sql"),
+    },
 ];
 
 /// The SHA-256 of a migration's text, hex.

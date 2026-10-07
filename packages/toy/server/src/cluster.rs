@@ -75,6 +75,10 @@ pub fn after_tick(zone: &mut Zone, link: &CellLink, reports: &[TickReport]) -> M
         });
         moved.outcomes += batch.len();
         link.push(id, batch);
+        // Where each character is: the realm hears where characters leave
+        // the world and arrive, to place a returning character where it
+        // left.
+        link.track(id, TOY_WORLD, &whereabouts(cell.world()));
         // Messages for service roles: outputs, never logged.
         cell.service_messages(|topic, payload| match topic {
             SOCIAL_PUBLISH => {
@@ -122,6 +126,26 @@ pub fn after_tick(zone: &mut Zone, link: &CellLink, reports: &[TickReport]) -> M
     inbound(zone, link, &mut moved);
     answer_inspector(zone, link);
     moved
+}
+
+/// The toy's one world, as the realm records it.
+pub const TOY_WORLD: u32 = 1;
+
+/// The characters a cell holds and where their avatars are.
+fn whereabouts(world: &mantis_core::ecs::World) -> Vec<(u64, [f32; 3])> {
+    world.resource::<Sessions>().map_or_else(Vec::new, |s| {
+        s.map
+            .values()
+            .filter_map(|x| {
+                let at = world
+                    .components
+                    .get::<mantis_server::components::Body>(x.avatar?)?
+                    .0
+                    .position;
+                Some((x.character, [at.x, at.y, at.z]))
+            })
+            .collect()
+    })
 }
 
 /// Publishes a cell's run times and component names for the Ops inspector.
@@ -365,10 +389,13 @@ impl Admission for RealmAdmission {
     }
 
     fn ready(&mut self, out: &mut Vec<(u64, Verdict)>) {
-        out.extend(self.0.ready().into_iter().map(|(ticket, character)| {
+        out.extend(self.0.ready().into_iter().map(|(ticket, admitted)| {
             (
                 ticket,
-                character.map_or(Verdict::Refuse, |character| Verdict::Admit { character }),
+                admitted.map_or(Verdict::Refuse, |a| Verdict::Admit {
+                    character: a.character,
+                    spawn: a.spawn.map(|[x, y, z]| mantis_core::math::Vec3::new(x, y, z)),
+                }),
             )
         }));
     }

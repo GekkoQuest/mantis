@@ -251,6 +251,19 @@ impl HealthBoard {
 /// The default RPC timeout between roles.
 pub const RPC_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// The longest wait between attempts to make a role's change durable.
+pub const DURABLE_RETRY: Duration = Duration::from_secs(1);
+
+/// Calls `M` with `req` until the persistence writer answers (the same
+/// numbered batch every time: the writer applies it once).
+pub(crate) async fn until_durable<M: rpc::Method>(writer: &rpc::RpcClient, req: &M::Request) {
+    let mut delay = Duration::from_millis(20);
+    while writer.call::<M>(req, RPC_TIMEOUT).await.is_err() {
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(DURABLE_RETRY);
+    }
+}
+
 /// The operating system's secure random source.
 pub struct Random(pub ring::rand::SystemRandom);
 

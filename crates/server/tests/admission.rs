@@ -169,11 +169,13 @@ fn a_verdict_that_never_arrives_refuses_at_the_timeout_and_the_cell_ticks_on() {
     assert_eq!(rig.sessions_in_cell(), 0);
     // A verdict arriving after the timeout is ignored.
     let ticket = silent.asked.lock().unwrap()[0];
-    silent
-        .answers
-        .lock()
-        .unwrap()
-        .push((ticket, Verdict::Admit { character: 9 }));
+    silent.answers.lock().unwrap().push((
+        ticket,
+        Verdict::Admit {
+            character: 9,
+            spawn: None,
+        },
+    ));
     for _ in 0..5 {
         rig.step();
     }
@@ -199,7 +201,13 @@ fn verdicts_admit_as_the_issued_character_or_refuse_and_waiting_is_bounded() {
     assert_eq!(refused, vec![RefuseReason::Full], "the third waits for no slot");
     let asked = service.asked.lock().unwrap().clone();
     service.answers.lock().unwrap().extend([
-        (asked[0], Verdict::Admit { character: 4242 }),
+        (
+            asked[0],
+            Verdict::Admit {
+                character: 4242,
+                spawn: None,
+            },
+        ),
         (asked[1], Verdict::Refuse),
     ]);
     for _ in 0..10 {

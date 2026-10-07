@@ -142,6 +142,23 @@ fn open_store(
     })
 }
 
+/// The account and realm roles, writing their rows through the writer at
+/// `persist` and read back from it.
+fn records(
+    runtime: &tokio::runtime::Runtime,
+    tls: Option<&BTreeMap<Role, Arc<TlsIdentity>>>,
+    persist: SocketAddr,
+    key: &[u8],
+    clock: &ServiceClock,
+) -> Result<(AccountService, RealmService), String> {
+    let writer = |role: Role| client_for(tls, persist, role, Role::Persist, key);
+    let account = AccountService::with_writer(writer(Role::Account)?).clocked(clock.clone());
+    runtime.block_on(account.load_durable())?;
+    let realm = RealmService::with_writer(writer(Role::Realm)?).clocked(clock.clone());
+    runtime.block_on(realm.load_durable())?;
+    Ok((account, realm))
+}
+
 /// Every service role in one process.
 pub struct LocalCluster {
     runtime: tokio::runtime::Runtime,
@@ -213,8 +230,6 @@ impl LocalCluster {
             .block_on(async { tokio::task::spawn(async move { PersistService::new(store, now) }).await })
             .map_err(|e| e.to_string())?
             .map_err(|e| e.0)?;
-        let account = AccountService::new().clocked(clock.clone());
-        let realm = RealmService::new().clocked(clock.clone());
         let tls = config.tls.as_ref();
         let bind = |role: Role, router: Router| -> Result<RpcServer, String> {
             let identity = identity_for(tls, role)?;
@@ -227,9 +242,10 @@ impl LocalCluster {
                 ))
                 .map_err(|e| format!("{}: {e}", role.name()))
         };
+        let persist_server = bind(Role::Persist, persist.router())?;
+        let (account, realm) = records(&runtime, tls, persist_server.addr(), &key, &clock)?;
         let account_server = bind(Role::Account, account.router())?;
         let realm_server = bind(Role::Realm, realm.router())?;
-        let persist_server = bind(Role::Persist, persist.router())?;
         // Social writes guild and friend rows through the writer and reads
         // them back.
         let social = SocialService::with_writer(client_for(
@@ -399,14 +415,39 @@ impl LocalCluster {
     }
 
     /// Starts a fresh realm role at `addr`: a new run, its directory empty
-    /// (cell hosts register again when they see the new epoch).
+    /// (cell hosts register again when they see the new epoch), its
+    /// characters read back from the writer.
     ///
     /// # Errors
-    /// The bind failed.
+    /// The writer or the bind failed.
     pub fn start_realm(&mut self, addr: SocketAddr) -> Result<(), String> {
-        self.realm = RealmService::new().clocked(self.clock.clone());
+        let persist = self.addr(Role::Persist).ok_or("no persistence writer")?;
+        let writer = client_for(self.tls.as_ref(), persist, Role::Realm, Role::Persist, &self.key)?;
+        self.realm = RealmService::with_writer(writer).clocked(self.clock.clone());
+        self.runtime.block_on(self.realm.load_durable())?;
         let server = self.bind_role(Role::Realm, addr, self.realm.router())?;
         self.servers.push((Role::Realm, server));
+        Ok(())
+    }
+
+    /// Starts a fresh account role at `addr`: its accounts read back from
+    /// the writer, no session token of the old run valid.
+    ///
+    /// # Errors
+    /// The writer or the bind failed.
+    pub fn start_account(&mut self, addr: SocketAddr) -> Result<(), String> {
+        let persist = self.addr(Role::Persist).ok_or("no persistence writer")?;
+        let writer = client_for(
+            self.tls.as_ref(),
+            persist,
+            Role::Account,
+            Role::Persist,
+            &self.key,
+        )?;
+        self.account = AccountService::with_writer(writer).clocked(self.clock.clone());
+        self.runtime.block_on(self.account.load_durable())?;
+        let server = self.bind_role(Role::Account, addr, self.account.router())?;
+        self.servers.push((Role::Account, server));
         Ok(())
     }
 
@@ -499,8 +540,18 @@ pub struct TokenVerifier {
     handle: tokio::runtime::Handle,
     realm: Arc<RpcClient>,
     cells: Vec<m::CellNo>,
-    tx: std::sync::mpsc::Sender<(u64, Option<u64>)>,
-    rx: std::sync::mpsc::Receiver<(u64, Option<u64>)>,
+    tx: std::sync::mpsc::Sender<(u64, Option<Admitted>)>,
+    rx: std::sync::mpsc::Receiver<(u64, Option<Admitted>)>,
+}
+
+/// A redeemed entry token: who plays, and where a returning character
+/// enters (where it left the world).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Admitted {
+    /// The character.
+    pub character: u64,
+    /// Where it enters; `None` where the host spawns new sessions.
+    pub spawn: Option<[f32; 3]>,
 }
 
 impl TokenVerifier {
@@ -549,13 +600,16 @@ impl TokenVerifier {
                 .call::<methods::RedeemForHost>(&req, RPC_TIMEOUT)
                 .await
                 .ok()
-                .map(|r| r.character.0);
+                .map(|r| Admitted {
+                    character: r.character.0,
+                    spawn: r.placed.then_some([r.x, r.y, r.z]),
+                });
             let _ = tx.send((ticket, character));
         });
     }
 
-    /// Answers since the last call: the character, or `None` (refuse).
-    pub fn ready(&self) -> Vec<(u64, Option<u64>)> {
+    /// Answers since the last call: who is admitted, or `None` (refuse).
+    pub fn ready(&self) -> Vec<(u64, Option<Admitted>)> {
         self.rx.try_iter().collect()
     }
 }
@@ -663,6 +717,9 @@ pub struct LinkStats {
     /// Realm runs seen beyond the first: each re-registered this host's
     /// cells.
     pub realm_restarts: AtomicU64,
+    /// Placements (a character left the world or arrived after a transfer)
+    /// the realm acknowledged.
+    pub placements: AtomicU64,
     /// Outcome messages and relays queued and not yet acknowledged
     /// ([`CellLink::pending`]).
     pub pending: AtomicU64,
@@ -758,10 +815,11 @@ enum Task {
     SocialPoll,
     LivePoll,
     Realm,
+    Whereabouts,
 }
 
 /// Link tasks.
-const TASKS: usize = 8;
+const TASKS: usize = 9;
 
 /// What a link's tasks are doing: how many are running (not parked on the
 /// clock, a queue, or the gate), and per task, items queued for it and
@@ -1164,6 +1222,70 @@ fn spawn_social(
     })
 }
 
+/// Where this host last saw each character, per cell, to tell the realm
+/// where characters leave the world and arrive.
+#[derive(Debug, Default)]
+struct Whereabouts {
+    here: BTreeMap<u64, BTreeMap<u64, [f32; 3]>>,
+}
+
+/// The task telling the realm where characters leave the world or arrive,
+/// in order, each retried until the realm answers.
+fn spawn_whereabouts(
+    handle: &tokio::runtime::Handle,
+    config: &CellLinkConfig,
+    stats: &Arc<LinkStats>,
+    pace: &Pace,
+) -> Result<
+    (
+        tokio::sync::mpsc::UnboundedSender<m::CharacterPlaced>,
+        tokio::task::JoinHandle<()>,
+    ),
+    String,
+> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let task = pace.spawn(
+        handle,
+        whereabouts_task(
+            config.client(config.realm, Role::Realm)?,
+            rx,
+            Arc::clone(stats),
+            pace.of(Task::Whereabouts),
+        ),
+    );
+    Ok((tx, task))
+}
+
+async fn whereabouts_task(
+    realm: RpcClient,
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<m::CharacterPlaced>,
+    stats: Arc<LinkStats>,
+    pace: Pace,
+) {
+    while let Some(req) = pace.recv(&mut rx).await {
+        let mut delay = Duration::from_millis(20);
+        loop {
+            match realm.call::<methods::PlaceCharacter>(&req, RPC_TIMEOUT).await {
+                Ok(_) => {
+                    stats.placements.fetch_add(1, Ordering::Relaxed);
+                    break;
+                }
+                // Refused for good (malformed): nothing to retry.
+                Err(
+                    RpcError::Refused(_) | RpcError::Malformed | RpcError::Forbidden | RpcError::NoSuchMethod,
+                ) => {
+                    break;
+                }
+                Err(_) => {
+                    pace.sleep(delay).await;
+                    delay = (delay * 2).min(RELAY_RETRY_MAX);
+                }
+            }
+        }
+        stats.pending.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// A cell host's link to the service roles.
 pub struct CellLink {
     handle: tokio::runtime::Handle,
@@ -1184,6 +1306,8 @@ pub struct CellLink {
     inspector: Option<RpcServer>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
     pace: Pace,
+    whereabouts: Mutex<Whereabouts>,
+    whereabouts_out: tokio::sync::mpsc::UnboundedSender<m::CharacterPlaced>,
     /// Counters.
     pub stats: Arc<LinkStats>,
 }
@@ -1250,6 +1374,7 @@ impl CellLink {
         );
         let social = spawn_social(handle, config, &stats, &hosted, &pace)?;
         let (match_tx, placed_rx, matches, realm_watch) = spawn_placement(handle, config, &stats, &pace)?;
+        let (whereabouts_out, whereabouts) = spawn_whereabouts(handle, config, &stats, &pace)?;
         Ok(Self {
             handle: handle.clone(),
             match_out: match_tx,
@@ -1267,11 +1392,13 @@ impl CellLink {
             inspection,
             queries: query_rx,
             inspector: Some(inspector),
-            tasks: [push, poll, matches, realm_watch]
+            tasks: [push, poll, matches, realm_watch, whereabouts]
                 .into_iter()
                 .chain(social.tasks)
                 .collect(),
             pace,
+            whereabouts: Mutex::default(),
+            whereabouts_out,
             stats,
         })
     }
@@ -1346,6 +1473,44 @@ impl CellLink {
                 self.stats.pending.fetch_sub(1, Ordering::SeqCst);
             }
         }
+    }
+
+    /// Tells the link which characters `cell` (of `world`) holds now and
+    /// where (each tick): the realm hears, in order, where each character
+    /// left the world (gone from every cell of this host) or arrived (new
+    /// in a cell, after a transfer or an entry), so a restarted realm
+    /// places a returning character where it left.
+    pub fn track(&self, cell: u64, world: u32, here: &[(u64, [f32; 3])]) {
+        let mut w = lock(&self.whereabouts);
+        let before = w.here.remove(&cell).unwrap_or_default();
+        let now: BTreeMap<u64, [f32; 3]> = here.iter().copied().collect();
+        let send = |character: u64, p: [f32; 3]| {
+            self.stats.pending.fetch_add(1, Ordering::SeqCst);
+            let req = m::CharacterPlaced {
+                character: m::CharacterId(character),
+                cell: m::CellNo(cell),
+                world,
+                x: p[0],
+                y: p[1],
+                z: p[2],
+                level: 0,
+            };
+            if !self.pace.send(Task::Whereabouts, &self.whereabouts_out, req) {
+                self.stats.pending.fetch_sub(1, Ordering::SeqCst);
+            }
+        };
+        // Departures first: one gone from every cell here left the world.
+        for (character, p) in &before {
+            if !now.contains_key(character) && !w.here.values().any(|c| c.contains_key(character)) {
+                send(*character, *p);
+            }
+        }
+        for (character, p) in &now {
+            if !before.contains_key(character) {
+                send(*character, *p);
+            }
+        }
+        w.here.insert(cell, now);
     }
 
     /// Outcome messages and relays queued and not yet acknowledged by the

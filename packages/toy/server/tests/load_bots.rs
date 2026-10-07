@@ -4,7 +4,7 @@
 //! (`toy-server cluster --verify-tokens --login-out`, then
 //! `toy-server bots --login`).
 
-#![expect(clippy::unwrap_used, clippy::indexing_slicing)]
+#![expect(clippy::unwrap_used, clippy::indexing_slicing, clippy::too_many_lines)]
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -293,4 +293,189 @@ fn toy_server_bots_log_in_and_play_on_a_cluster_verifying_tokens() {
     assert!(anonymous.contains("after 4 s: 0 in world"), "{anonymous}");
     drop(server);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- account and realm restart mid-session ----------------------------------
+
+/// The characters each cell holds, by session.
+fn characters_in_world(sim: &Sim) -> Vec<u64> {
+    let mut all: Vec<u64> = sim
+        .zone
+        .cells()
+        .iter()
+        .flat_map(|c| {
+            c.world()
+                .resource::<mantis_server::session::Sessions>()
+                .map(|s| s.map.values().map(|x| x.character).collect::<Vec<_>>())
+                .unwrap_or_default()
+        })
+        .collect();
+    all.sort_unstable();
+    all
+}
+
+/// Logged-in bots play; the account and realm roles restart while they are
+/// in the world; the bots quit (the realm hears where each left), then log
+/// in again with the same passwords: the same accounts, the same
+/// characters, entering where they left.
+#[test]
+fn logged_in_bots_log_in_again_after_account_and_realm_restart() {
+    let mut cluster = LocalCluster::start(&ClusterConfig::local()).unwrap();
+    let handle = cluster.handle();
+    let link = CellLink::start(
+        &handle,
+        &CellLinkConfig {
+            key: cluster.key.clone(),
+            persist: cluster.addr(Role::Persist).unwrap(),
+            ops: cluster.addr(Role::Ops).unwrap(),
+            social: cluster.addr(Role::Social).unwrap(),
+            matchmaking: cluster.addr(Role::Matchmaking).unwrap(),
+            realm: cluster.addr(Role::Realm).unwrap(),
+            live_key: cluster.ops.public_key(),
+            cells: toy_server::world::regions()
+                .into_iter()
+                .zip(1u64..)
+                .map(|(r, id)| (id, "127.0.0.1:7400".to_owned(), r))
+                .collect(),
+            poll: Duration::from_millis(10),
+            instances: Vec::new(),
+            inspector: "127.0.0.1:0".parse().unwrap(),
+            tls: None,
+        },
+    )
+    .unwrap();
+    let t = Tunables::defaults().unwrap();
+    let mut sim = Sim::new(t, 9, |_| None).unwrap();
+    let cells: Vec<u64> = (1..=toy_server::world::regions().len() as u64).collect();
+    let verifier = TokenVerifier::new(
+        &handle,
+        cluster.addr(Role::Realm).unwrap(),
+        cluster.key.clone(),
+        &cells,
+    );
+    sim.host
+        .set_admission(Box::new(RealmAdmission(verifier)), AdmissionLimits::DEFAULT);
+    let step = |sim: &mut Sim| {
+        let reports = sim.step().unwrap();
+        toy_server::cluster::after_tick(&mut sim.zone, &link, &reports);
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let until = |sim: &mut Sim, what: &str, done: &dyn Fn(&Sim) -> bool| {
+        let start = Instant::now();
+        while !done(sim) {
+            assert!(start.elapsed() < Duration::from_secs(20), "timed out: {what}");
+            step(sim);
+        }
+    };
+
+    // Three bots log in and play.
+    let gateway = Gateway::new(&targets(&cluster), None).unwrap();
+    let names = ["bot-9-0", "bot-9-1", "bot-9-2"];
+    let first: Vec<_> = names
+        .iter()
+        .map(|n| handle.block_on(gateway.enter(n, "bot password 9")).unwrap())
+        .collect();
+    for (i, e) in first.iter().enumerate() {
+        let side = if i % 2 == 0 { Side::Native } else { Side::Legacy };
+        sim.add_bot_with_token(side, Profile::Honest, LinkConfig::PERFECT, Some(&e.token))
+            .unwrap();
+    }
+    until(&mut sim, "all three in the world", &|s| {
+        s.bots.iter().all(|b| b.bot.welcomed()) && s.ticks() > 60
+    });
+    let mut expected: Vec<u64> = first.iter().map(|e| e.character).collect();
+    expected.sort_unstable();
+    assert_eq!(characters_in_world(&sim), expected);
+
+    // Account and realm restart while the bots are in the world: the cells
+    // keep their sessions, the cell host registers its cells again.
+    for role in [Role::Account, Role::Realm] {
+        let addr = cluster.stop_role(role).unwrap();
+        for _ in 0..10 {
+            step(&mut sim);
+        }
+        match role {
+            Role::Account => cluster.start_account(addr).unwrap(),
+            _ => cluster.start_realm(addr).unwrap(),
+        }
+    }
+    until(&mut sim, "the cells registered with the new realm", &|_| {
+        cluster.realm.cells().len() == cells.len()
+    });
+    assert_eq!(characters_in_world(&sim), expected, "nobody left the world");
+    for _ in 0..30 {
+        step(&mut sim);
+    }
+
+    // The bots quit; the realm hears where each left.
+    let left: Vec<[f32; 3]> = sim
+        .bots
+        .iter()
+        .map(|b| {
+            let p = b.bot.state().position;
+            [p.x, p.y, p.z]
+        })
+        .collect();
+    for b in &mut sim.bots {
+        b.bot.disconnect();
+    }
+    until(&mut sim, "everyone out", &|s| characters_in_world(s).is_empty());
+    sim.bots.clear();
+    until(&mut sim, "the realm placed every character", &|_| {
+        first
+            .iter()
+            .all(|e| cluster.realm.character(e.character).is_some_and(|c| c.cell != 0))
+            && link.pending() == 0
+    });
+
+    // The same bots log in again, with the same passwords.
+    let second: Vec<_> = names
+        .iter()
+        .map(|n| handle.block_on(gateway.enter(n, "bot password 9")).unwrap())
+        .collect();
+    for (a, b) in first.iter().zip(&second) {
+        assert_eq!(
+            (a.account, a.character),
+            (b.account, b.character),
+            "the same account and character"
+        );
+        assert_ne!(a.token, b.token);
+    }
+    for (i, e) in second.iter().enumerate() {
+        let row = cluster.realm.character(e.character).unwrap();
+        let near = (0..3).all(|k| (row.position[k] - left[i][k]).abs() < 1.0);
+        assert!(
+            near,
+            "the realm kept where {} left: {:?} vs {:?}",
+            names[i], row.position, left[i]
+        );
+        assert_eq!(e.cell, row.cell, "it enters the cell it left");
+        let side = if i % 2 == 0 { Side::Native } else { Side::Legacy };
+        sim.add_bot_with_token(side, Profile::Idle, LinkConfig::PERFECT, Some(&e.token))
+            .unwrap();
+    }
+    until(&mut sim, "all three back", &|s| {
+        s.bots.iter().all(|b| b.bot.welcomed())
+    });
+    for _ in 0..10 {
+        step(&mut sim);
+    }
+    assert_eq!(
+        characters_in_world(&sim),
+        expected,
+        "the same characters, back in the world"
+    );
+    for (i, b) in sim.bots.iter().enumerate() {
+        let p = b.bot.state().position;
+        assert!(
+            (p.x - left[i][0]).abs() < 1.0 && (p.z - left[i][2]).abs() < 1.0,
+            "{} entered where it left: {p:?} vs {:?}",
+            names[i],
+            left[i]
+        );
+    }
+    println!(
+        "load bots: 3 logged in, account and realm restarted mid-session, 3 logged in again as the same characters where they left; {} placements",
+        link.stats.placements.load(std::sync::atomic::Ordering::Relaxed)
+    );
 }

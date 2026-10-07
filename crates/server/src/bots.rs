@@ -378,6 +378,13 @@ impl Bot {
         self
     }
 
+    /// Closes the connection, as a client quitting does: the host ends
+    /// the session and its character leaves the world.
+    pub fn disconnect(&mut self) {
+        self.transport
+            .disconnect(mantis_adapter_contract::ConnectionId(0));
+    }
+
     /// True once the session was accepted.
     #[must_use]
     pub fn welcomed(&self) -> bool {

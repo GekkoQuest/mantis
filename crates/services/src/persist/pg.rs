@@ -7,7 +7,9 @@ use tokio_postgres::{Client, NoTls};
 use super::migrate::{MIGRATIONS, Migration, MigrationTarget, migrate};
 use mantis_core::social::{FriendChange, GuildChange};
 
-use super::{AuditRow, LedgerStore, StoreError, StoredLedger, StoredOutcome};
+use super::{
+    AccountRecord, AuditRow, CharacterRecord, LedgerStore, StoreError, StoredLedger, StoredOutcome, name_key,
+};
 
 /// A store over one Postgres connection, in one schema.
 pub struct PgStore {
@@ -479,6 +481,169 @@ impl LedgerStore for PgStore {
             }
         }));
         Ok(out)
+    }
+
+    fn account_seq(&mut self) -> Result<u64, StoreError> {
+        let rows = self
+            .block(
+                self.client
+                    .query("SELECT seq FROM account_watermark WHERE id = 1", &[]),
+            )
+            .map_err(|e| pg(&e))?;
+        Ok(rows.first().map_or(0, |r| u64_of(r.get::<_, i64>(0))))
+    }
+
+    fn write_accounts(&mut self, seq: u64, rows: &[AccountRecord]) -> Result<(), StoreError> {
+        let client = &mut self.client;
+        let rt = self.runtime.clone();
+        tokio::task::block_in_place(|| {
+            rt.block_on(async {
+                let tx = client.transaction().await?;
+                for a in rows {
+                    tx.execute(
+                        "INSERT INTO accounts (id, name, name_key, salt, hash, iterations, created_ms, \
+                         last_login_ms, banned_until_ms, ban_reason) \
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+                         ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, name_key = EXCLUDED.name_key, \
+                         salt = EXCLUDED.salt, hash = EXCLUDED.hash, iterations = EXCLUDED.iterations, \
+                         created_ms = EXCLUDED.created_ms, last_login_ms = EXCLUDED.last_login_ms, \
+                         banned_until_ms = EXCLUDED.banned_until_ms, ban_reason = EXCLUDED.ban_reason",
+                        &[
+                            &i64_of(a.id),
+                            &a.name,
+                            &name_key(&a.name),
+                            &a.salt.as_slice(),
+                            &a.hash.as_slice(),
+                            &i32_of(a.iterations),
+                            &i64_of(a.created_ms),
+                            &i64_of(a.last_login_ms),
+                            &i64_of(a.banned_until_ms),
+                            &a.ban_reason,
+                        ],
+                    )
+                    .await?;
+                }
+                tx.execute(
+                    "INSERT INTO account_watermark (id, seq) VALUES (1, $1) \
+                     ON CONFLICT (id) DO UPDATE SET seq = EXCLUDED.seq",
+                    &[&i64_of(seq)],
+                )
+                .await?;
+                tx.commit().await
+            })
+        })
+        .map_err(|e| pg(&e))
+    }
+
+    fn account_rows(&mut self) -> Result<Vec<AccountRecord>, StoreError> {
+        let rows = self
+            .block(self.client.query(
+                "SELECT id, name, salt, hash, iterations, created_ms, last_login_ms, banned_until_ms, \
+                 ban_reason FROM accounts ORDER BY id",
+                &[],
+            ))
+            .map_err(|e| pg(&e))?;
+        rows.iter()
+            .map(|r| {
+                let salt: Vec<u8> = r.get(2);
+                let hash: Vec<u8> = r.get(3);
+                Ok(AccountRecord {
+                    id: u64_of(r.get::<_, i64>(0)),
+                    name: r.get(1),
+                    salt: salt
+                        .try_into()
+                        .map_err(|_| StoreError("an account salt is not 16 bytes".to_owned()))?,
+                    hash: hash
+                        .try_into()
+                        .map_err(|_| StoreError("an account key is not 32 bytes".to_owned()))?,
+                    iterations: u32_of(r.get::<_, i32>(4)),
+                    created_ms: u64_of(r.get::<_, i64>(5)),
+                    last_login_ms: u64_of(r.get::<_, i64>(6)),
+                    banned_until_ms: u64_of(r.get::<_, i64>(7)),
+                    ban_reason: r.get(8),
+                })
+            })
+            .collect()
+    }
+
+    fn character_seq(&mut self) -> Result<u64, StoreError> {
+        let rows = self
+            .block(
+                self.client
+                    .query("SELECT seq FROM character_watermark WHERE id = 1", &[]),
+            )
+            .map_err(|e| pg(&e))?;
+        Ok(rows.first().map_or(0, |r| u64_of(r.get::<_, i64>(0))))
+    }
+
+    fn write_characters(&mut self, seq: u64, rows: &[CharacterRecord]) -> Result<(), StoreError> {
+        let client = &mut self.client;
+        let rt = self.runtime.clone();
+        tokio::task::block_in_place(|| {
+            rt.block_on(async {
+                let tx = client.transaction().await?;
+                for c in rows {
+                    tx.execute(
+                        "INSERT INTO characters (id, account, name, name_key, kind, created_ms, deleted, \
+                         cell, world, x, y, z, level) \
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
+                         ON CONFLICT (id) DO UPDATE SET account = EXCLUDED.account, name = EXCLUDED.name, \
+                         name_key = EXCLUDED.name_key, kind = EXCLUDED.kind, created_ms = EXCLUDED.created_ms, \
+                         deleted = EXCLUDED.deleted, cell = EXCLUDED.cell, world = EXCLUDED.world, \
+                         x = EXCLUDED.x, y = EXCLUDED.y, z = EXCLUDED.z, level = EXCLUDED.level",
+                        &[
+                            &i64_of(c.id),
+                            &i64_of(c.account),
+                            &c.name,
+                            &name_key(&c.name),
+                            &i32_of(c.kind),
+                            &i64_of(c.created_ms),
+                            &c.deleted,
+                            &i64_of(c.cell),
+                            &i32_of(c.world),
+                            &c.position[0],
+                            &c.position[1],
+                            &c.position[2],
+                            &i32_of(c.level),
+                        ],
+                    )
+                    .await?;
+                }
+                tx.execute(
+                    "INSERT INTO character_watermark (id, seq) VALUES (1, $1) \
+                     ON CONFLICT (id) DO UPDATE SET seq = EXCLUDED.seq",
+                    &[&i64_of(seq)],
+                )
+                .await?;
+                tx.commit().await
+            })
+        })
+        .map_err(|e| pg(&e))
+    }
+
+    fn character_rows(&mut self) -> Result<Vec<CharacterRecord>, StoreError> {
+        let rows = self
+            .block(self.client.query(
+                "SELECT id, account, name, kind, created_ms, deleted, cell, world, x, y, z, level \
+                 FROM characters ORDER BY id",
+                &[],
+            ))
+            .map_err(|e| pg(&e))?;
+        Ok(rows
+            .iter()
+            .map(|r| CharacterRecord {
+                id: u64_of(r.get::<_, i64>(0)),
+                account: u64_of(r.get::<_, i64>(1)),
+                name: r.get(2),
+                kind: u32_of(r.get::<_, i32>(3)),
+                created_ms: u64_of(r.get::<_, i64>(4)),
+                deleted: r.get(5),
+                cell: u64_of(r.get::<_, i64>(6)),
+                world: u32_of(r.get::<_, i32>(7)),
+                position: [r.get(8), r.get(9), r.get(10)],
+                level: u32_of(r.get::<_, i32>(11)),
+            })
+            .collect())
     }
 
     fn set_live(&mut self, name: &str, kind: u8, value: f32) -> Result<(), StoreError> {

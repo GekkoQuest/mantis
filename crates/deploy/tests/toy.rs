@@ -385,17 +385,34 @@ fn bots_play_through_a_process_per_role_cluster_and_a_killed_cell_host_comes_bac
     );
 
     // New bots play through the restarted host, on both adapters.
-    let native = bots(&cluster, false, 4, 6, 5);
-    let legacy = bots(&cluster, true, 4, 6, 6);
+    // While they play, the account and realm roles are killed and
+    // restarted: sessions already in the world do not depend on either.
+    let native = bots(&cluster, false, 4, 8, 5);
+    let legacy = bots(&cluster, true, 4, 8, 6);
+    std::thread::sleep(Duration::from_secs(3));
+    let tick_before = cluster.metrics(HOST).get("cell_tick").copied().unwrap_or(0);
+    for role in [Role::Account, Role::Realm] {
+        cluster.kill(&service(role));
+    }
+    for role in [Role::Account, Role::Realm] {
+        cluster.start(&service(role));
+    }
+    for role in [Role::Account, Role::Realm] {
+        cluster.wait_ready(&service(role), Duration::from_secs(30));
+    }
     let native = bots_output(native);
     let legacy = bots_output(legacy);
+    for (side, out) in [("native", &native), ("legacy", &legacy)] {
+        let last = out.lines().rev().find(|l| l.contains(" in world")).unwrap_or("");
+        assert!(
+            most_in_world(last) >= 3 && last.contains(" 0 refused"),
+            "{side} bots through an account and realm restart:\n{out}"
+        );
+        println!("{side} bots through an account and realm restart: {last}");
+    }
     assert!(
-        most_in_world(&native) >= 3,
-        "native bots after the restart:\n{native}"
-    );
-    assert!(
-        most_in_world(&legacy) >= 3,
-        "legacy bots after the restart:\n{legacy}"
+        cluster.metrics(HOST).get("cell_tick").copied().unwrap_or(0) > tick_before,
+        "the cells kept ticking"
     );
 
     // A clean drain: a final snapshot, the link flushed, exit 0.
