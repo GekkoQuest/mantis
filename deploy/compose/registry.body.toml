@@ -38,6 +38,32 @@ role = "ops"
 rpc = "10.77.0.15:7506"
 health = "10.77.0.15:7606"
 
+# Standbys: one active instance per failover role holds its lease; these take over when it lapses.
+[instance.account-2]
+role = "account"
+rpc = "10.77.0.21:7501"
+health = "10.77.0.21:7601"
+
+[instance.realm-2]
+role = "realm"
+rpc = "10.77.0.22:7502"
+health = "10.77.0.22:7602"
+
+[instance.social-2]
+role = "social"
+rpc = "10.77.0.23:7503"
+health = "10.77.0.23:7603"
+
+[instance.matchmaking-2]
+role = "matchmaking"
+rpc = "10.77.0.24:7504"
+health = "10.77.0.24:7604"
+
+[instance.ops-2]
+role = "ops"
+rpc = "10.77.0.25:7506"
+health = "10.77.0.25:7606"
+
 [instance.cells-1]
 role = "cell-host"
 rpc = "10.77.0.20:7520"

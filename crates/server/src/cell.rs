@@ -1111,8 +1111,13 @@ impl Cell {
             CellIntent::ServiceUpdate { topic, payload } => self.service_update(topic, &payload, tick),
             CellIntent::Relocate { character, position } => self.relocate(character, position, tick),
             CellIntent::SetModTier { tier } => {
-                self.world.resource_mut::<ModPolicy>().ok_or("mod policy")?.tier = tier;
-                self.feature_broadcast = true;
+                let policy = self.world.resource_mut::<ModPolicy>().ok_or("mod policy")?;
+                // The same tier again (a second placement into the same
+                // instance): nobody is told twice.
+                if policy.tier != tier {
+                    policy.tier = tier;
+                    self.feature_broadcast = true;
+                }
                 Ok(())
             }
             CellIntent::ClockSlip { ticks } => self.clock_slip(ticks),

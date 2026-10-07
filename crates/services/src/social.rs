@@ -27,10 +27,10 @@ use mantis_core::social::{
 use mantis_core::wire::{BoundedArray, Wire, WireString, decode_exact};
 
 use crate::generated::services as m;
-use crate::host::RPC_TIMEOUT;
 use crate::host::clock::ServiceClock;
 use crate::host::refused;
-use crate::host::rpc::{Method, Router, RpcClient, RpcError};
+use crate::host::rpc::{Router, RpcClient, RpcError};
+use crate::host::{Fence, RPC_TIMEOUT, until_durable};
 use crate::methods;
 use crate::persist::{friend_change, friend_row, guild_change, guild_row};
 
@@ -196,6 +196,8 @@ pub struct SocialService {
     /// in the order their changes became durable.
     order: Arc<tokio::sync::Mutex<()>>,
     clock: ServiceClock,
+    /// This instance's lease term (role failover).
+    fence: Fence,
 }
 
 impl SocialService {
@@ -223,6 +225,15 @@ impl SocialService {
         let mut s = Self::new();
         s.writer = Some(Arc::new(writer));
         s
+    }
+
+    /// The same role writing under lease term `fence` (role failover):
+    /// once the term is over it writes nothing more and answers
+    /// [`RpcError::Standby`].
+    #[must_use]
+    pub fn fenced(mut self, fence: Fence) -> Self {
+        self.fence = fence;
+        self
     }
 
     /// Reads every durable guild and friend row back from the writer (after
@@ -283,19 +294,12 @@ impl SocialService {
         self.lock().guilds.rank_of(character)
     }
 
-    /// Calls `M` with `req` until the writer answers (the same batch every
-    /// time: the writer applies it once).
-    async fn until_durable<M: Method>(writer: &RpcClient, req: &M::Request) {
-        let mut delay = Duration::from_millis(20);
-        while writer.call::<M>(req, RPC_TIMEOUT).await.is_err() {
-            tokio::time::sleep(delay).await;
-            delay = (delay * 2).min(DURABLE_RETRY_MAX);
-        }
-    }
-
     /// Makes an outcome's changes durable through the writer, then projects
     /// its updates. Without a writer, projects at once.
-    async fn settle(&self, outcome: Durable) {
+    ///
+    /// # Errors
+    /// [`RpcError::Standby`]: the lease term is over; nothing was told.
+    async fn settle(&self, outcome: Durable) -> Result<(), RpcError> {
         if let Some(writer) = &self.writer {
             match &outcome {
                 Durable::Guild(o) if !o.changes.is_empty() => {
@@ -306,11 +310,11 @@ impl SocialService {
                     };
                     let rows: Vec<m::GuildRow> = o.changes.iter().map(guild_row).collect();
                     let req = m::StoreGuildRows {
-                        epoch: 0,
+                        epoch: self.fence.epoch(),
                         seq,
                         rows: BoundedArray::from_slice(&rows).unwrap_or_default(),
                     };
-                    Self::until_durable::<methods::WriteGuilds>(writer, &req).await;
+                    until_durable::<methods::WriteGuilds>(writer, &self.fence, &req).await?;
                 }
                 Durable::Friends(o) if !o.changes.is_empty() => {
                     let seq = {
@@ -320,11 +324,11 @@ impl SocialService {
                     };
                     let rows: Vec<m::FriendRow> = o.changes.iter().map(friend_row).collect();
                     let req = m::StoreFriendRows {
-                        epoch: 0,
+                        epoch: self.fence.epoch(),
                         seq,
                         rows: BoundedArray::from_slice(&rows).unwrap_or_default(),
                     };
-                    Self::until_durable::<methods::WriteFriends>(writer, &req).await;
+                    until_durable::<methods::WriteFriends>(writer, &self.fence, &req).await?;
                 }
                 _ => {}
             }
@@ -338,6 +342,7 @@ impl SocialService {
                 }
             }
         }
+        Ok(())
     }
 
     /// This run's epoch.
@@ -433,7 +438,7 @@ impl SocialService {
             durable
         };
         if let Some(outcome) = durable {
-            self.settle(outcome).await;
+            self.settle(outcome).await?;
         }
         Ok(m::RelayAck {
             applied: true,
@@ -519,7 +524,7 @@ impl SocialService {
                 if outcome.changes.is_empty() {
                     return Err(refused("name taken, invalid, or already in a guild"));
                 }
-                me.settle(Durable::Guild(outcome)).await;
+                me.settle(Durable::Guild(outcome)).await?;
                 Ok(m::Guild {
                     guild: u64::from(guild.unwrap_or(0)),
                 })
@@ -537,7 +542,7 @@ impl SocialService {
                         .admit(req.character.0, guild)
                         .ok_or_else(|| refused("no such guild, guild full, or already in a guild"))?
                 };
-                me.settle(Durable::Guild(outcome)).await;
+                me.settle(Durable::Guild(outcome)).await?;
                 Ok(m::Empty {})
             }
         });

@@ -50,11 +50,15 @@ function Invoke-Mantisd {
     Invoke-Checked cargo (@('run', '-q', '-p', 'mantis-deploy', '--bin', 'mantisd', '--') + $Arguments)
 }
 
-# Every node: its compose service and its health port inside the container.
+# Every node (the failover roles' standbys included): its compose service and its health
+# port inside the container. The cell host stays last (its game listener is checked too).
 $Nodes = @(
     @{ Service = 'persist'; Health = 7605 }, @{ Service = 'account'; Health = 7601 },
     @{ Service = 'realm'; Health = 7602 }, @{ Service = 'social'; Health = 7603 },
     @{ Service = 'matchmaking'; Health = 7604 }, @{ Service = 'ops'; Health = 7606 },
+    @{ Service = 'account-2'; Health = 7601 }, @{ Service = 'realm-2'; Health = 7602 },
+    @{ Service = 'social-2'; Health = 7603 }, @{ Service = 'matchmaking-2'; Health = 7604 },
+    @{ Service = 'ops-2'; Health = 7606 },
     @{ Service = 'cell-host'; Health = 7620 })
 
 # A counter from a node's /metrics (0 when absent), read inside its container with

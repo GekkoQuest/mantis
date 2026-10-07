@@ -25,7 +25,7 @@ use ring::rand::SecureRandom;
 use crate::generated::services as m;
 use crate::host::clock::ServiceClock;
 use crate::host::rpc::{Router, RpcClient, RpcError};
-use crate::host::{RPC_TIMEOUT, refused, until_durable};
+use crate::host::{Fence, RPC_TIMEOUT, refused, until_durable};
 use crate::methods;
 use crate::persist::{CharacterRecord, character_record, character_row, name_key};
 
@@ -84,6 +84,8 @@ pub struct RealmService {
     /// The persistence writer character rows go through (none: in memory
     /// only, for tests of the rules alone).
     writer: Option<Arc<RpcClient>>,
+    /// This instance's lease term (role failover).
+    fence: Fence,
     /// One change at a time from durable write to answer.
     order: Arc<tokio::sync::Mutex<()>>,
 }
@@ -123,6 +125,15 @@ impl RealmService {
     #[must_use]
     pub fn epoch(&self) -> u64 {
         self.lock().epoch
+    }
+
+    /// The same role writing under lease term `fence` (role failover):
+    /// once the term is over it writes nothing more and answers
+    /// [`RpcError::Standby`].
+    #[must_use]
+    pub fn fenced(mut self, fence: Fence) -> Self {
+        self.fence = fence;
+        self
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -175,7 +186,10 @@ impl RealmService {
     /// Makes `row` durable (one numbered batch, retried until the writer
     /// answers), then makes it what the realm reads. Call with the order
     /// lock held.
-    async fn commit(&self, row: CharacterRecord) {
+    ///
+    /// # Errors
+    /// [`RpcError::Standby`]: the lease term is over; nothing was changed.
+    async fn commit(&self, row: CharacterRecord) -> Result<(), RpcError> {
         if let Some(writer) = &self.writer {
             let seq = {
                 let mut s = self.lock();
@@ -183,15 +197,16 @@ impl RealmService {
                 s.seq
             };
             let req = m::StoreCharacterRows {
-                epoch: 0,
+                epoch: self.fence.epoch(),
                 seq,
                 rows: BoundedArray::from_slice(&[character_row(&row)]).unwrap_or_default(),
             };
-            until_durable::<methods::WriteCharacters>(writer, &req).await;
+            until_durable::<methods::WriteCharacters>(writer, &self.fence, &req).await?;
         }
         let mut s = self.lock();
         s.next_character = s.next_character.max(row.id);
         s.characters.insert(row.id, row);
+        Ok(())
     }
 
     fn token(&self, grant: Grant) -> Result<BoundedArray<u8, 32>, RpcError> {
@@ -280,7 +295,7 @@ impl RealmService {
             position: [0.0; 3],
             level: 1,
         })
-        .await;
+        .await?;
         Ok(m::Created {
             character: m::CharacterId(id),
         })
@@ -292,7 +307,7 @@ impl RealmService {
             .owned(req.account.0, req.character.0)
             .ok_or_else(|| refused("not your character"))?;
         c.deleted = true;
-        self.commit(c).await;
+        self.commit(c).await?;
         Ok(m::Empty {})
     }
 
@@ -312,7 +327,7 @@ impl RealmService {
         }
         // The same summary twice is applied once.
         if c != before {
-            self.commit(c).await;
+            self.commit(c).await?;
         }
         Ok(m::Empty {})
     }

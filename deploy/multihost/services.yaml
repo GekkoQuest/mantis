@@ -154,6 +154,84 @@ services:
     ports:
       - "127.0.0.1:7480:7480/tcp"
 
+  # Standbys of every failover role, on the same "machine" here; on real machines each
+  # would sit on another one, which changes only the names in the registry.
+  account-2:
+    <<: *node
+    image: mantis/account:dev
+    secrets:
+      - cluster_key
+      - { source: account-2_crt, target: tls_cert }
+      - { source: account-2_key, target: tls_key }
+    volumes:
+      - ./config/account-2.toml:/etc/mantis/node.toml:ro
+      - ../local/multihost/keys/deploy.pub:/etc/mantis/deploy.pub:ro
+      - ../local/multihost/keys/ca.crt:/etc/mantis/ca.crt:ro
+    networks:
+      wan: { aliases: [account-2.svc.mantis] }
+
+  realm-2:
+    <<: *node
+    image: mantis/realm:dev
+    secrets:
+      - cluster_key
+      - { source: realm-2_crt, target: tls_cert }
+      - { source: realm-2_key, target: tls_key }
+    volumes:
+      - ./config/realm-2.toml:/etc/mantis/node.toml:ro
+      - ../local/multihost/keys/deploy.pub:/etc/mantis/deploy.pub:ro
+      - ../local/multihost/keys/ca.crt:/etc/mantis/ca.crt:ro
+    networks:
+      wan: { aliases: [realm-2.svc.mantis] }
+
+  social-2:
+    <<: *node
+    image: mantis/social:dev
+    secrets:
+      - cluster_key
+      - { source: social-2_crt, target: tls_cert }
+      - { source: social-2_key, target: tls_key }
+    volumes:
+      - ./config/social-2.toml:/etc/mantis/node.toml:ro
+      - ../local/multihost/keys/deploy.pub:/etc/mantis/deploy.pub:ro
+      - ../local/multihost/keys/ca.crt:/etc/mantis/ca.crt:ro
+    networks:
+      wan: { aliases: [social-2.svc.mantis] }
+
+  matchmaking-2:
+    <<: *node
+    image: mantis/matchmaking:dev
+    secrets:
+      - cluster_key
+      - { source: matchmaking-2_crt, target: tls_cert }
+      - { source: matchmaking-2_key, target: tls_key }
+    volumes:
+      - ./config/matchmaking-2.toml:/etc/mantis/node.toml:ro
+      - ../local/multihost/keys/deploy.pub:/etc/mantis/deploy.pub:ro
+      - ../local/multihost/keys/ca.crt:/etc/mantis/ca.crt:ro
+    networks:
+      wan: { aliases: [matchmaking-2.svc.mantis] }
+
+  ops-2:
+    <<: *node
+    image: mantis/ops:dev
+    secrets:
+      - cluster_key
+      - live_key
+      - operator_token
+      - { source: ops-2_crt, target: tls_cert }
+      - { source: ops-2_key, target: tls_key }
+    volumes:
+      - ./config/ops-2.toml:/etc/mantis/node.toml:ro
+      - ../local/multihost/keys/deploy.pub:/etc/mantis/deploy.pub:ro
+      - ../local/multihost/keys/ca.crt:/etc/mantis/ca.crt:ro
+      - ../local/multihost/out-svc:/var/lib/mantis/out
+    networks:
+      wan: { aliases: [ops-2.svc.mantis] }
+      ops: { ipv4_address: 10.89.0.11, gw_priority: 1 }
+    ports:
+      - "127.0.0.1:7481:7480/tcp"
+
 networks:
   wan:
     external: true
@@ -186,3 +264,13 @@ secrets:
   matchmaking-1_key: { file: ../local/multihost/certs/matchmaking-1.key }
   ops-1_crt: { file: ../local/multihost/certs/ops-1.crt }
   ops-1_key: { file: ../local/multihost/certs/ops-1.key }
+  account-2_crt: { file: ../local/multihost/certs/account-2.crt }
+  account-2_key: { file: ../local/multihost/certs/account-2.key }
+  realm-2_crt: { file: ../local/multihost/certs/realm-2.crt }
+  realm-2_key: { file: ../local/multihost/certs/realm-2.key }
+  social-2_crt: { file: ../local/multihost/certs/social-2.crt }
+  social-2_key: { file: ../local/multihost/certs/social-2.key }
+  matchmaking-2_crt: { file: ../local/multihost/certs/matchmaking-2.crt }
+  matchmaking-2_key: { file: ../local/multihost/certs/matchmaking-2.key }
+  ops-2_crt: { file: ../local/multihost/certs/ops-2.crt }
+  ops-2_key: { file: ../local/multihost/certs/ops-2.key }

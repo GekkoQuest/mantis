@@ -215,7 +215,7 @@ fn link_cells(cluster: &LocalCluster, game: SocketAddr) -> Result<CellLink, Stri
             matchmaking: mantis_services::host::rpc::Endpoint::fixed(need(Role::Matchmaking)?),
             realm: mantis_services::host::rpc::Endpoint::fixed(need(Role::Realm)?),
             world: 0,
-            live_key: cluster.ops.public_key(),
+            live_key: cluster.ops().public_key(),
             cells,
             poll: Duration::from_millis(500),
             // One instance cell, after the world cells.

@@ -18,8 +18,8 @@ use mantis_adapter_contract::core_types::{
 };
 use mantis_adapter_contract::{
     Cast, Choose, Extension, ExtensionMessage, ExtensionRefused, FeatureState, Goodbye, Hello, Inbound,
-    Interact, Move, MoveClaim, Outbound, PermittedModules, Refuse, SetPosition, SnapshotAck, Validators,
-    Welcome, decode_inbound, decode_outbound,
+    Interact, Linked, Move, MoveClaim, Outbound, PermittedModules, Refuse, SetPosition, SnapshotAck,
+    Validators, Welcome, decode_inbound, decode_outbound,
 };
 use mantis_core::rng::{Rng, Salt, Seed};
 
@@ -54,6 +54,9 @@ impl Validators for AcceptAll {
     fn validate_goodbye(&self, _: &Goodbye) -> Result<(), ValidationError> {
         Ok(())
     }
+    fn validate_linked(&self, _: &Linked) -> Result<(), ValidationError> {
+        Ok(())
+    }
 }
 
 /// Refuses everything: proves the validator runs after every successful decode.
@@ -85,6 +88,9 @@ impl Validators for RefuseAll {
         Err(ValidationError("no"))
     }
     fn validate_goodbye(&self, _: &Goodbye) -> Result<(), ValidationError> {
+        Err(ValidationError("no"))
+    }
+    fn validate_linked(&self, _: &Linked) -> Result<(), ValidationError> {
         Err(ValidationError("no"))
     }
 }

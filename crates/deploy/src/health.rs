@@ -68,6 +68,15 @@ impl Status {
         *self.lock() = (phase, note.into());
     }
 
+    /// Changes the note only while the phase is `phase` (a ready node's
+    /// "active" or "standby", never overwriting a drain).
+    pub fn note_if(&self, phase: Phase, note: impl Into<String>) {
+        let mut s = self.lock();
+        if s.0 == phase {
+            s.1 = note.into();
+        }
+    }
+
     /// The phase.
     #[must_use]
     pub fn phase(&self) -> Phase {
@@ -92,7 +101,11 @@ impl Status {
         match path {
             "/live" => (200, format!("live {who}\n")),
             "/ready" => match phase {
-                Phase::Ready => (200, format!("ready {who}\n")),
+                Phase::Ready if note.is_empty() => (200, format!("ready {who}\n")),
+                // A failover role's instance: "ready <role> <instance> (active)"
+                // or "(standby)". Both are ready: a standby serves its role
+                // the moment the active instance's lease lapses.
+                Phase::Ready => (200, format!("ready {who} ({note})\n")),
                 Phase::Starting => (503, format!("starting {who}: {note}\n")),
                 Phase::Draining => (503, format!("draining {who}: {note}\n")),
             },

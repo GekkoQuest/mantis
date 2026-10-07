@@ -8,8 +8,9 @@
 # it every 5 s.
 #
 # First run only, into deploy/local/multihost (ignored by git): keys and the cluster CA
-# (cluster "multihost"), secrets, every node's certificate (DNS names), the registry
-# server's certificate, and the signed registry in published/. Images are the ones
+# (cluster "multihost") and secrets. Every start: the signed registry in published/ (a
+# higher serial), every node's certificate (DNS names) and the registry server's.
+# Account, realm, social, matchmaking and Ops run an active and a standby instance each. Images are the ones
 # scripts/deploy-local.ps1 builds (-Build builds them here first).
 #
 #   -Publish  signs and publishes the registry again with a higher serial (every node
@@ -89,12 +90,14 @@ if (-not (Test-Path (Join-Path $Local 'keys/ca.crt'))) {
     Write-Text (Join-Path $Local 'secrets/pg_password') $password
     Write-Text (Join-Path $Local 'secrets/pg.conn') "host=postgres port=5432 user=mantis dbname=mantis password=$password"
     New-Item -ItemType Directory -Force (Join-Path $Local 'published') | Out-Null
-    Publish-Registry
-    Invoke-Mantisd @('certs', '--keys', 'deploy/local/multihost/keys', '--registry',
-        'deploy/local/multihost/published/registry.toml', '--out', 'deploy/local/multihost/certs')
-    Invoke-Mantisd @('certs', '--keys', 'deploy/local/multihost/keys', '--server', 'registry',
-        '--hosts', 'registry.svc.mantis', '--out', 'deploy/local/multihost/certs')
 }
+# Every start publishes the template as it is now (a higher serial) and issues every
+# instance's certificate from it (7 days), so instances added to the template get theirs.
+Publish-Registry
+Invoke-Mantisd @('certs', '--keys', 'deploy/local/multihost/keys', '--registry',
+    'deploy/local/multihost/published/registry.toml', '--out', 'deploy/local/multihost/certs')
+Invoke-Mantisd @('certs', '--keys', 'deploy/local/multihost/keys', '--server', 'registry',
+    '--hosts', 'registry.svc.mantis', '--out', 'deploy/local/multihost/certs')
 foreach ($o in @('out-svc', 'out-a', 'out-b')) {
     New-Item -ItemType Directory -Force (Join-Path $Local $o) | Out-Null
     Get-ChildItem (Join-Path $Local $o) -File | Remove-Item -Force

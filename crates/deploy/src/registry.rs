@@ -20,6 +20,12 @@
 //! health = "10.40.0.20:7620"
 //! cells = [1, 2, 3]           # the cells it hosts
 //!
+//! [instance.social-2]         # account, realm, social, matchmaking and ops may list
+//! role = "social"             # several instances: one active, the rest standbys
+//! rpc = "10.40.0.15:7503"
+//! health = "10.40.0.15:7603"
+//! lease_owner = "social-b"    # optional: the name it holds the lease under (default: the instance name)
+//!
 //! [signature]
 //! algorithm = "ed25519"
 //! value = "<128 hex>"
@@ -113,7 +119,29 @@ pub struct Instance {
     pub health: Target,
     /// The cells it hosts (cell hosts only).
     pub cells: Vec<u64>,
+    /// Its lease owner, when its role runs active and standby instances:
+    /// unique in its role and the same across its restarts. `None`: the
+    /// instance name.
+    pub lease_owner: Option<String>,
 }
+
+impl Instance {
+    /// The owner name this instance holds its role's lease under.
+    #[must_use]
+    pub fn owner(&self) -> &str {
+        self.lease_owner.as_deref().unwrap_or(&self.name)
+    }
+}
+
+/// The roles that run one active instance and any number of standbys
+/// (`mantis_services::failover`); the persistence writer is one instance.
+pub const FAILOVER: [Role; 5] = [
+    Role::Account,
+    Role::Realm,
+    Role::Social,
+    Role::Matchmaking,
+    Role::Ops,
+];
 
 /// A verified registry.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -175,6 +203,49 @@ pub fn sign(body: &str, key: &Ed25519KeyPair) -> String {
         hex(sig.as_ref())
     );
     out
+}
+
+/// One `[instance.<name>]` table.
+fn instance(name: &str, t: &toml::Table) -> Result<Instance, RegistryError> {
+    let mut f = Fields::new("registry", t);
+    let role_name = f.str("role")?;
+    let role = matrix::parse(role_name).ok_or_else(|| {
+        f.error(
+            "role",
+            "one of account, realm, social, matchmaking, persist, ops, cell-host",
+        )
+    })?;
+    let rpc = f.target("rpc")?;
+    let health = f.target("health")?;
+    let cells = if role == Role::Cell {
+        let cells = f.uints("cells")?;
+        if cells.is_empty() || cells.contains(&0) {
+            return Err(f
+                .error("cells", "a cell host hosts at least one cell; ids from 1")
+                .into());
+        }
+        cells
+    } else {
+        Vec::new()
+    };
+    let lease_owner = if FAILOVER.contains(&role) {
+        match f.opt_str("lease_owner")? {
+            Some(o) if valid_name(o) => Some(o.to_owned()),
+            Some(_) => return Err(f.error("lease_owner", "1 to 32 of a-z, 0-9 and -").into()),
+            None => None,
+        }
+    } else {
+        None
+    };
+    f.finish()?;
+    Ok(Instance {
+        name: name.to_owned(),
+        role,
+        rpc,
+        health,
+        cells,
+        lease_owner,
+    })
 }
 
 impl Registry {
@@ -262,35 +333,7 @@ impl Registry {
                     t.name
                 )));
             }
-            let mut f = Fields::new("registry", t);
-            let role_name = f.str("role")?;
-            let role = matrix::parse(role_name).ok_or_else(|| {
-                f.error(
-                    "role",
-                    "one of account, realm, social, matchmaking, persist, ops, cell-host",
-                )
-            })?;
-            let rpc = f.target("rpc")?;
-            let health = f.target("health")?;
-            let cells = if role == Role::Cell {
-                let cells = f.uints("cells")?;
-                if cells.is_empty() || cells.contains(&0) {
-                    return Err(f
-                        .error("cells", "a cell host hosts at least one cell; ids from 1")
-                        .into());
-                }
-                cells
-            } else {
-                Vec::new()
-            };
-            f.finish()?;
-            instances.push(Instance {
-                name: name.to_owned(),
-                role,
-                rpc,
-                health,
-                cells,
-            });
+            instances.push(instance(name, t)?);
         }
         let registry = Self {
             serial,
@@ -319,13 +362,22 @@ impl Registry {
                 }
             }
         }
-        for role in matrix::DEPLOYED {
-            if role != Role::Cell && self.of(role).len() > 1 {
-                return invalid(format!(
-                    "{} has {} instances; service roles run one instance each",
-                    matrix::name(role),
-                    self.of(role).len()
-                ));
+        if self.of(Role::Persist).len() > 1 {
+            return invalid(format!(
+                "persist has {} instances; the persistence writer is one instance",
+                self.of(Role::Persist).len()
+            ));
+        }
+        for role in FAILOVER {
+            let mut owners = BTreeSet::new();
+            for i in self.of(role) {
+                if !owners.insert(i.owner()) {
+                    return invalid(format!(
+                        "{} instances share the lease owner {:?}; each holds the lease under its own",
+                        matrix::name(role),
+                        i.owner()
+                    ));
+                }
             }
         }
         Ok(())
@@ -374,6 +426,9 @@ impl Registry {
                 let cells: Vec<String> = i.cells.iter().map(u64::to_string).collect();
                 let _ = writeln!(out, "cells = [{}]", cells.join(", "));
             }
+            if let Some(o) = &i.lease_owner {
+                let _ = writeln!(out, "lease_owner = \"{o}\"");
+            }
         }
         out
     }
@@ -421,6 +476,7 @@ mod tests {
                     rpc: at(7504),
                     health: at(7604),
                     cells: Vec::new(),
+                    lease_owner: None,
                 },
                 Instance {
                     name: "cells-a".to_owned(),
@@ -428,6 +484,7 @@ mod tests {
                     rpc: at(7520),
                     health: at(7620),
                     cells: vec![1, 2],
+                    lease_owner: None,
                 },
             ],
         }
@@ -489,7 +546,30 @@ mod tests {
         twin.health = Target::parse("persist-b.internal:9001").unwrap();
         r.instances.push(twin);
         let e = Registry::verify(&sign(&r.render(), &key), &public).unwrap_err();
-        assert!(e.to_string().contains("one instance each"), "{e}");
+        assert!(
+            e.to_string().contains("the persistence writer is one instance"),
+            "{e}"
+        );
+
+        // An active and a standby of a failover role: fine, with distinct
+        // owners; the same owner twice is refused.
+        let mut r = sample();
+        let social = |name: &str, port: u16, owner: Option<&str>| Instance {
+            name: name.to_owned(),
+            role: Role::Social,
+            rpc: Target::parse(&format!("social.internal:{port}")).unwrap(),
+            health: Target::parse(&format!("social.internal:{}", port + 100)).unwrap(),
+            cells: Vec::new(),
+            lease_owner: owner.map(str::to_owned),
+        };
+        r.instances.push(social("social-1", 7503, None));
+        r.instances.push(social("social-2", 7513, Some("social-standby")));
+        let ok = Registry::verify(&sign(&r.render(), &key), &public).unwrap();
+        assert_eq!(ok.of(Role::Social).len(), 2);
+        assert_eq!(ok.instance("social-2").unwrap().owner(), "social-standby");
+        r.instances[3].lease_owner = Some("social-1".to_owned());
+        let e = Registry::verify(&sign(&r.render(), &key), &public).unwrap_err();
+        assert!(e.to_string().contains("share the lease owner"), "{e}");
 
         let body = sample().render().replace("version = 3", "version = 2");
         let e = Registry::verify(&sign(&body, &key), &public).unwrap_err();

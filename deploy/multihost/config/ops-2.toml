@@ -1,0 +1,29 @@
+# Owner: deploy-engine
+# The ops node ops-2 (a standby) of the multi-host demonstration (deploy/multihost). Its registry is
+# fetched over HTTPS from the registry server, pinned to the cluster CA, and re-read every 5 s.
+[node]
+role = "ops"
+instance = "ops-2"
+registry = "https://registry.svc.mantis:8443/registry.toml"
+registry_ca = "/etc/mantis/ca.crt"
+registry_refresh_s = 5
+deploy_key = "/etc/mantis/deploy.pub"
+cluster_key = "/run/secrets/cluster_key"
+tls_cert = "/run/secrets/tls_cert"
+tls_key = "/run/secrets/tls_key"
+listen_rpc = "0.0.0.0:7506"
+listen_health = "0.0.0.0:7606"
+ready_timeout_s = 300
+drain_grace_ms = 20000
+
+[ops]
+live_key = "/run/secrets/live_key"
+operator_token = "/run/secrets/operator_token"
+operator_name = "operator"
+# The ops network's address only, published on the host's 127.0.0.1:7480; only that
+# network's gateway (where the published port arrives from) reaches TLS.
+dashboard = "10.89.0.11:7480"
+dashboard_allow_remote = true
+dashboard_allowed_peers = ["10.89.0.1/32"]
+dashboard_cert_out = "/var/lib/mantis/out/ops-cert.der"
+game_ports = [7400, 7401]

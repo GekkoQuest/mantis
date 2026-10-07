@@ -208,6 +208,12 @@ pub enum RefuseReason {
     BadToken = 4,
     /// The server is in maintenance.
     Maintenance = 5,
+    /// Not the active server for this session right now (a cell between
+    /// hosts, or a standby instance): connect again shortly.
+    Standby = 6,
+    /// The resume ticket or token is from before the session's latest
+    /// hand-off: a newer one was issued.
+    StaleEpoch = 7,
 }
 
 impl ::mantis_core::wire::Wire for RefuseReason {
@@ -222,6 +228,8 @@ impl ::mantis_core::wire::Wire for RefuseReason {
             3 => Ok(Self::Full),
             4 => Ok(Self::BadToken),
             5 => Ok(Self::Maintenance),
+            6 => Ok(Self::Standby),
+            7 => Ok(Self::StaleEpoch),
             _ => Err(::mantis_core::wire::DecodeError::Invalid("RefuseReason")),
         }
     }
@@ -229,13 +237,15 @@ impl ::mantis_core::wire::Wire for RefuseReason {
 
 impl ::mantis_core::wire::FuzzSample for RefuseReason {
     fn fuzz_sample(rng: &mut ::mantis_core::rng::Rng) -> Self {
-        match rng.below(6) {
+        match rng.below(8) {
             0 => Self::VersionMismatch,
             1 => Self::ContentMismatch,
             2 => Self::ModuleRefused,
             3 => Self::Full,
             4 => Self::BadToken,
-            _ => Self::Maintenance,
+            5 => Self::Maintenance,
+            6 => Self::Standby,
+            _ => Self::StaleEpoch,
         }
     }
 }
@@ -916,6 +926,170 @@ impl ::mantis_core::wire::Message for PermittedModules {
     const NAME: &'static str = "PermittedModules";
 }
 
+/// From a gateway to the cell host serving its client (never from a
+/// client): the client's connection dropped (`up` false: the avatar holds
+/// still, no input is repeated for it) or came back with a resume ticket
+/// (`up` true: the next `Move`'s seq starts the input stream again, with
+/// no wait for the seqs lost with the old connection).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Linked {
+    /// The client is connected.
+    pub up: bool,
+}
+
+impl ::mantis_core::wire::Wire for Linked {
+    fn encode(&self, e: &mut ::mantis_core::wire::Encoder<'_>) {
+        ::mantis_core::wire::Wire::encode(&self.up, e);
+    }
+    fn decode(d: &mut ::mantis_core::wire::Decoder<'_>) -> Result<Self, ::mantis_core::wire::DecodeError> {
+        Ok(Self {
+            up: ::mantis_core::wire::Wire::decode(d)?,
+        })
+    }
+}
+
+impl ::mantis_core::wire::FuzzSample for Linked {
+    fn fuzz_sample(rng: &mut ::mantis_core::rng::Rng) -> Self {
+        Self {
+            up: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+        }
+    }
+}
+
+impl ::mantis_core::wire::Message for Linked {
+    const ID: ::mantis_core::wire::MessageId = ::mantis_core::wire::MessageId(17);
+    const NAME: &'static str = "Linked";
+}
+
+/// The session continues on another cell host, sent by the gateway before
+/// the first frame from that host. The client forgets every delta
+/// baseline and re-anchors its timeline: the new host counts its own
+/// ticks. From now on the gateway stamps every snapshot with `epoch`
+/// (native snapshot flag bit 3); a snapshot stamped with an older epoch,
+/// or not at all, is from the host before and is dropped.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Transferred {
+    /// The cell now serving the session.
+    pub cell: u64,
+    /// The session's hand-off count: 1 after the first.
+    pub epoch: u32,
+    /// The new host's current tick.
+    pub tick: ::mantis_core::time::Tick,
+}
+
+impl ::mantis_core::wire::Wire for Transferred {
+    fn encode(&self, e: &mut ::mantis_core::wire::Encoder<'_>) {
+        ::mantis_core::wire::Wire::encode(&self.cell, e);
+        ::mantis_core::wire::Wire::encode(&self.epoch, e);
+        ::mantis_core::wire::Wire::encode(&self.tick, e);
+    }
+    fn decode(d: &mut ::mantis_core::wire::Decoder<'_>) -> Result<Self, ::mantis_core::wire::DecodeError> {
+        Ok(Self {
+            cell: ::mantis_core::wire::Wire::decode(d)?,
+            epoch: ::mantis_core::wire::Wire::decode(d)?,
+            tick: ::mantis_core::wire::Wire::decode(d)?,
+        })
+    }
+}
+
+impl ::mantis_core::wire::FuzzSample for Transferred {
+    fn fuzz_sample(rng: &mut ::mantis_core::rng::Rng) -> Self {
+        Self {
+            cell: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            epoch: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            tick: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+        }
+    }
+}
+
+impl ::mantis_core::wire::Message for Transferred {
+    const ID: ::mantis_core::wire::MessageId = ::mantis_core::wire::MessageId(18);
+    const NAME: &'static str = "Transferred";
+}
+
+/// A ticket to resume this session over a new connection, sent after
+/// `Welcome` and after every `Transferred`. Single use; it replaces every
+/// earlier ticket. Valid for `expires_ms` after the connection drops: the
+/// client reconnects to the same gateway with `Hello { token: ticket }`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ResumeTicket {
+    /// The ticket.
+    pub token: ::mantis_core::wire::BoundedArray<u8, 32>,
+    /// How long it stays valid after a disconnect, in milliseconds.
+    pub expires_ms: u64,
+}
+
+impl ::mantis_core::wire::Wire for ResumeTicket {
+    fn encode(&self, e: &mut ::mantis_core::wire::Encoder<'_>) {
+        ::mantis_core::wire::Wire::encode(&self.token, e);
+        ::mantis_core::wire::Wire::encode(&self.expires_ms, e);
+    }
+    fn decode(d: &mut ::mantis_core::wire::Decoder<'_>) -> Result<Self, ::mantis_core::wire::DecodeError> {
+        Ok(Self {
+            token: ::mantis_core::wire::Wire::decode(d)?,
+            expires_ms: ::mantis_core::wire::Wire::decode(d)?,
+        })
+    }
+}
+
+impl ::mantis_core::wire::FuzzSample for ResumeTicket {
+    fn fuzz_sample(rng: &mut ::mantis_core::rng::Rng) -> Self {
+        Self {
+            token: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            expires_ms: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+        }
+    }
+}
+
+impl ::mantis_core::wire::Message for ResumeTicket {
+    const ID: ::mantis_core::wire::MessageId = ::mantis_core::wire::MessageId(19);
+    const NAME: &'static str = "ResumeTicket";
+}
+
+/// From a cell host: the session's character continues in `cell` on
+/// another host. A gateway presents `token` there and hands the session
+/// over (`Transferred`); a client connected directly reconnects to
+/// `address` with it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct HandOff {
+    /// The cell.
+    pub cell: u64,
+    /// Its host's game address.
+    pub address: ::mantis_core::wire::WireString<64>,
+    /// The entry token the host there redeems.
+    pub token: ::mantis_core::wire::BoundedArray<u8, 32>,
+}
+
+impl ::mantis_core::wire::Wire for HandOff {
+    fn encode(&self, e: &mut ::mantis_core::wire::Encoder<'_>) {
+        ::mantis_core::wire::Wire::encode(&self.cell, e);
+        ::mantis_core::wire::Wire::encode(&self.address, e);
+        ::mantis_core::wire::Wire::encode(&self.token, e);
+    }
+    fn decode(d: &mut ::mantis_core::wire::Decoder<'_>) -> Result<Self, ::mantis_core::wire::DecodeError> {
+        Ok(Self {
+            cell: ::mantis_core::wire::Wire::decode(d)?,
+            address: ::mantis_core::wire::Wire::decode(d)?,
+            token: ::mantis_core::wire::Wire::decode(d)?,
+        })
+    }
+}
+
+impl ::mantis_core::wire::FuzzSample for HandOff {
+    fn fuzz_sample(rng: &mut ::mantis_core::rng::Rng) -> Self {
+        Self {
+            cell: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            address: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            token: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+        }
+    }
+}
+
+impl ::mantis_core::wire::Message for HandOff {
+    const ID: ::mantis_core::wire::MessageId = ::mantis_core::wire::MessageId(20);
+    const NAME: &'static str = "HandOff";
+}
+
 /// Every client to server message of this schema.
 #[derive(Clone, Copy, PartialEq, Debug)]
 #[allow(clippy::large_enum_variant)] // inline, allocation-free values; transient on network threads
@@ -939,6 +1113,8 @@ pub enum Inbound {
     SnapshotAck(SnapshotAck),
     /// See [`Goodbye`].
     Goodbye(Goodbye),
+    /// See [`Linked`].
+    Linked(Linked),
 }
 
 impl Inbound {
@@ -955,6 +1131,7 @@ impl Inbound {
             Self::Extension(_) => <Extension as ::mantis_core::wire::Message>::ID,
             Self::SnapshotAck(_) => <SnapshotAck as ::mantis_core::wire::Message>::ID,
             Self::Goodbye(_) => <Goodbye as ::mantis_core::wire::Message>::ID,
+            Self::Linked(_) => <Linked as ::mantis_core::wire::Message>::ID,
         }
     }
 
@@ -970,6 +1147,7 @@ impl Inbound {
             Self::Extension(m) => ::mantis_core::wire::encode_into(m, out),
             Self::SnapshotAck(m) => ::mantis_core::wire::encode_into(m, out),
             Self::Goodbye(m) => ::mantis_core::wire::encode_into(m, out),
+            Self::Linked(m) => ::mantis_core::wire::encode_into(m, out),
         }
     }
 }
@@ -1022,6 +1200,11 @@ pub trait Validators {
     /// # Errors
     /// The reason the message is refused.
     fn validate_goodbye(&self, msg: &Goodbye) -> Result<(), ::mantis_core::wire::ValidationError>;
+    /// Validates a decoded [`Linked`].
+    ///
+    /// # Errors
+    /// The reason the message is refused.
+    fn validate_linked(&self, msg: &Linked) -> Result<(), ::mantis_core::wire::ValidationError>;
 }
 
 impl Inbound {
@@ -1041,6 +1224,7 @@ impl Inbound {
             Self::Extension(m) => ("Extension", validators.validate_extension(m)),
             Self::SnapshotAck(m) => ("SnapshotAck", validators.validate_snapshot_ack(m)),
             Self::Goodbye(m) => ("Goodbye", validators.validate_goodbye(m)),
+            Self::Linked(m) => ("Linked", validators.validate_linked(m)),
         };
         result.map_err(|reason| ::mantis_core::wire::WireError::Rejected { message, reason })
     }
@@ -1066,6 +1250,7 @@ pub fn parse_inbound(
         7 => Inbound::Extension(::mantis_core::wire::decode_message(bytes)?),
         8 => Inbound::SnapshotAck(::mantis_core::wire::decode_message(bytes)?),
         9 => Inbound::Goodbye(::mantis_core::wire::decode_message(bytes)?),
+        17 => Inbound::Linked(::mantis_core::wire::decode_message(bytes)?),
         _ => return Err(::mantis_core::wire::WireError::UnknownMessage(id)),
     })
 }
@@ -1104,6 +1289,12 @@ pub enum Outbound {
     FeatureState(FeatureState),
     /// See [`PermittedModules`].
     PermittedModules(PermittedModules),
+    /// See [`Transferred`].
+    Transferred(Transferred),
+    /// See [`ResumeTicket`].
+    ResumeTicket(ResumeTicket),
+    /// See [`HandOff`].
+    HandOff(HandOff),
 }
 
 impl Outbound {
@@ -1118,6 +1309,9 @@ impl Outbound {
             Self::ExtensionMessage(_) => <ExtensionMessage as ::mantis_core::wire::Message>::ID,
             Self::FeatureState(_) => <FeatureState as ::mantis_core::wire::Message>::ID,
             Self::PermittedModules(_) => <PermittedModules as ::mantis_core::wire::Message>::ID,
+            Self::Transferred(_) => <Transferred as ::mantis_core::wire::Message>::ID,
+            Self::ResumeTicket(_) => <ResumeTicket as ::mantis_core::wire::Message>::ID,
+            Self::HandOff(_) => <HandOff as ::mantis_core::wire::Message>::ID,
         }
     }
 
@@ -1131,6 +1325,9 @@ impl Outbound {
             Self::ExtensionMessage(m) => ::mantis_core::wire::encode_into(m, out),
             Self::FeatureState(m) => ::mantis_core::wire::encode_into(m, out),
             Self::PermittedModules(m) => ::mantis_core::wire::encode_into(m, out),
+            Self::Transferred(m) => ::mantis_core::wire::encode_into(m, out),
+            Self::ResumeTicket(m) => ::mantis_core::wire::encode_into(m, out),
+            Self::HandOff(m) => ::mantis_core::wire::encode_into(m, out),
         }
     }
 }
@@ -1152,6 +1349,9 @@ pub fn decode_outbound(
         14 => Outbound::ExtensionMessage(::mantis_core::wire::decode_message(bytes)?),
         15 => Outbound::FeatureState(::mantis_core::wire::decode_message(bytes)?),
         16 => Outbound::PermittedModules(::mantis_core::wire::decode_message(bytes)?),
+        18 => Outbound::Transferred(::mantis_core::wire::decode_message(bytes)?),
+        19 => Outbound::ResumeTicket(::mantis_core::wire::decode_message(bytes)?),
+        20 => Outbound::HandOff(::mantis_core::wire::decode_message(bytes)?),
         _ => return Err(::mantis_core::wire::WireError::UnknownMessage(id)),
     })
 }

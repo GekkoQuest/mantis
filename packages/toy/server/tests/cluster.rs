@@ -46,7 +46,7 @@ fn the_zone_pushes_outcomes_and_applies_signed_live_changes() {
             ),
             realm: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Realm).unwrap()),
             world: 0,
-            live_key: cluster.ops.public_key(),
+            live_key: cluster.ops().public_key(),
             cells: world::regions()
                 .into_iter()
                 .enumerate()
@@ -169,7 +169,7 @@ fn link(cluster: &LocalCluster) -> CellLink {
             ),
             realm: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Realm).unwrap()),
             world: 0,
-            live_key: cluster.ops.public_key(),
+            live_key: cluster.ops().public_key(),
             cells: world::regions()
                 .into_iter()
                 .enumerate()
@@ -469,7 +469,7 @@ fn a_party_survives_an_instance_round_trip_and_the_instance_releases_itself() {
             ),
             realm: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Realm).unwrap()),
             world: 0,
-            live_key: cluster.ops.public_key(),
+            live_key: cluster.ops().public_key(),
             cells: world::regions()
                 .into_iter()
                 .enumerate()
@@ -527,7 +527,7 @@ fn a_party_survives_an_instance_round_trip_and_the_instance_releases_itself() {
     });
     let (party, leader, members) = rosters_seen(&sim, 0).last().cloned().unwrap();
     assert_eq!((leader, members), (1, vec![1, 2]));
-    assert_eq!(cluster.social.party_of(2), Some(party));
+    assert_eq!(cluster.social().party_of(2), Some(party));
     let seen_before: Vec<usize> = (0..2).map(|b| rosters_seen(&sim, b).len()).collect();
 
     // The party queues; matchmaking places both in the instance cell.
@@ -551,7 +551,7 @@ fn a_party_survives_an_instance_round_trip_and_the_instance_releases_itself() {
     until(&mut sim, "both in the instance", &|s| {
         [1, 2].iter().all(|x| s.zone.route(SessionId(*x)) == Some(2))
     });
-    assert!(cluster.realm.cells()[&instance_cell].busy);
+    assert!(cluster.realm().cells()[&instance_cell].busy);
     // The party is intact inside: each member is sent its roster on arrival.
     until(&mut sim, "rosters in the instance", &|s| {
         (0..2).all(|b| rosters_seen(s, b).len() > seen_before[b])
@@ -597,12 +597,12 @@ fn a_party_survives_an_instance_round_trip_and_the_instance_releases_itself() {
         rosters_seen(&sim, 1).last().cloned().unwrap(),
         (party, 1, vec![1, 2])
     );
-    assert_eq!(cluster.social.party_of(1), Some(party));
+    assert_eq!(cluster.social().party_of(1), Some(party));
 
     // Nobody releases the instance by hand: it releases itself after the
     // package's grace.
     until(&mut sim, "the instance released", &|_| {
-        !cluster.realm.cells()[&instance_cell].busy
+        !cluster.realm().cells()[&instance_cell].busy
     });
     assert_eq!(sim.host.stats.joined, 2);
 
@@ -668,7 +668,7 @@ fn a_competitive_instance_permits_presentation_modules_only_and_replays() {
             ),
             realm: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Realm).unwrap()),
             world: 0,
-            live_key: cluster.ops.public_key(),
+            live_key: cluster.ops().public_key(),
             cells: world::regions()
                 .into_iter()
                 .enumerate()
@@ -747,6 +747,20 @@ fn a_competitive_instance_permits_presentation_modules_only_and_replays() {
         let inside = seen.iter().rposition(|p| p.0 == ModTier::Automation).unwrap();
         assert_eq!(inside, seen.len() - 2, "{seen:?}");
     }
+    // A later placement into the same instance sets the same tier again
+    // (here, after both have arrived): nobody is told twice.
+    let told: Vec<usize> = (0..2).map(|b| sim.bots[b].bot.stats.permitted.len()).collect();
+    assert!(sim.zone.cell_mut(2).unwrap().inbox().push(
+        SessionId(0),
+        mantis_server::intent::CellIntent::SetModTier {
+            tier: ModTier::Presentation
+        }
+    ));
+    for _ in 0..5 {
+        step(&mut sim);
+    }
+    let again: Vec<usize> = (0..2).map(|b| sim.bots[b].bot.stats.permitted.len()).collect();
+    assert_eq!(again, told, "the same tier is not announced again");
     assert_eq!(
         sim.zone.cells()[2].world().resource::<ModPolicy>().unwrap().tier,
         ModTier::Presentation
@@ -855,7 +869,7 @@ fn ops_kicks_drains_and_traces_ledgers_through_the_cell_host() {
         )
         .unwrap();
     assert!(d.undo.starts_with("drain on=false"));
-    assert!(cluster.account.maintenance());
+    assert!(cluster.account().maintenance());
     for _ in 0..3 {
         step(&mut sim);
     }
@@ -883,14 +897,14 @@ fn ops_kicks_drains_and_traces_ledgers_through_the_cell_host() {
         step(&mut sim);
     }
     assert!(!sim.host.in_maintenance());
-    assert!(!cluster.account.maintenance());
+    assert!(!cluster.account().maintenance());
 
     // The ledger trace is read-only and audited.
     let trace = cluster
         .execute("alice", &Command::LedgerTrace { character: 1 })
         .unwrap();
     assert_eq!(trace.undo, "none: read-only");
-    let rows = cluster.handle().block_on(cluster.ops.audit_rows()).unwrap();
+    let rows = cluster.handle().block_on(cluster.ops().audit_rows()).unwrap();
     let names: Vec<&str> = rows.iter().map(|r| r.command.as_str()).collect();
     assert_eq!(names, ["kick", "kick", "drain", "drain", "ledger"]);
     assert_eq!(rows[1].status, "failed");

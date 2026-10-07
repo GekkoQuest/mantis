@@ -13,7 +13,7 @@ use std::sync::Arc;
 use mantis_adapter_contract::core_types::{Angle16, Tick, ValidationError, Vec3};
 use mantis_adapter_contract::{
     AppearanceId, Cast, Channel, Choose, ConnectionId, Extension, ExtensionRefusal, ExtensionRefused,
-    Goodbye, Hello, Inbound, Interact, Move, MoveClaim, Outbound, Refuse, SnapshotAck, Transport,
+    Goodbye, Hello, Inbound, Interact, Linked, Move, MoveClaim, Outbound, Refuse, SnapshotAck, Transport,
     TransportEvent, TransportKind, Validators, Welcome, WireAdapter,
 };
 use mantis_core::log::SessionId;
@@ -75,6 +75,9 @@ impl Validators for ServerValidators {
         Ok(())
     }
     fn validate_goodbye(&self, _msg: &Goodbye) -> Result<(), ValidationError> {
+        Ok(())
+    }
+    fn validate_linked(&self, _msg: &Linked) -> Result<(), ValidationError> {
         Ok(())
     }
 }

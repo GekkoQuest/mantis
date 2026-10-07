@@ -153,10 +153,24 @@ pub fn service(role: Role) -> String {
     format!("{}-1", matrix::name(role))
 }
 
+/// The second instance of a failover role.
+pub fn standby(role: Role) -> String {
+    format!("{}-2", matrix::name(role))
+}
+
+/// A failover role's lease lifetime in the tests.
+pub const LEASE_TTL_MS: u64 = 1200;
+
 impl Cluster {
     /// Writes keys, a signed registry with one instance of each service
     /// role and the given cell hosts, and every configuration file.
     pub fn new(label: &str, store: &TestStore, cell_hosts: &[CellSpec]) -> Self {
+        Self::with_standbys(label, store, cell_hosts, &[])
+    }
+
+    /// [`Cluster::new`], with a second instance (`<role>-2`, a standby
+    /// while the first holds the lease) of each of `standbys`.
+    pub fn with_standbys(label: &str, store: &TestStore, cell_hosts: &[CellSpec], standbys: &[Role]) -> Self {
         let dir =
             Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("deploy-{label}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -174,7 +188,8 @@ impl Cluster {
             Role::Matchmaking,
             Role::Ops,
         ];
-        let mut ports = free_ports(services.len() * 2 + cell_hosts.len() * 4 + 1).into_iter();
+        let mut ports =
+            free_ports((services.len() + standbys.len()) * 2 + cell_hosts.len() * 4 + 1).into_iter();
         let mut next = || ports.next().unwrap();
         let mut instances = Vec::new();
         for role in services {
@@ -184,6 +199,17 @@ impl Cluster {
                 rpc: target(next()),
                 health: target(next()),
                 cells: Vec::new(),
+                lease_owner: None,
+            });
+        }
+        for role in standbys {
+            instances.push(Instance {
+                name: standby(*role),
+                role: *role,
+                rpc: target(next()),
+                health: target(next()),
+                cells: Vec::new(),
+                lease_owner: None,
             });
         }
         let mut game = BTreeMap::new();
@@ -194,6 +220,7 @@ impl Cluster {
                 rpc: target(next()),
                 health: target(next()),
                 cells: c.cells.clone(),
+                lease_owner: None,
             });
             game.insert(c.name.to_owned(), (at(next()), at(next())));
         }
@@ -218,7 +245,7 @@ impl Cluster {
                  deploy_key = \"keys/{}\"\ncluster_key = \"keys/{}\"\ntls_cert = \"keys/{}\"\n\
                  tls_key = \"keys/{}\"\nlisten_rpc = \"{}\"\n\
                  listen_health = \"{}\"\nready_timeout_s = 60\ndrain_grace_ms = 10000\n\
-                 registry_refresh_s = 1\n",
+                 registry_refresh_s = 1\nlease_ttl_ms = {LEASE_TTL_MS}\n",
                 matrix::name(i.role),
                 i.name,
                 keys::files::DEPLOY_PUBLIC,

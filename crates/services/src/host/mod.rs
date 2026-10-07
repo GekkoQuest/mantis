@@ -6,6 +6,7 @@ pub mod rpc;
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -254,13 +255,81 @@ pub const RPC_TIMEOUT: Duration = Duration::from_secs(2);
 /// The longest wait between attempts to make a role's change durable.
 pub const DURABLE_RETRY: Duration = Duration::from_secs(1);
 
+/// One term of an instance's hold on its role's lease (role failover),
+/// shared by the lease task and the service it seats: the epoch the
+/// service's durable writes carry, and whether the term is over. An
+/// unleased, single-instance role's fence is epoch 0 and never lost.
+#[derive(Clone, Debug, Default)]
+pub struct Fence(Arc<FenceState>);
+
+#[derive(Debug, Default)]
+struct FenceState {
+    epoch: AtomicU64,
+    lost: AtomicBool,
+}
+
+impl Fence {
+    /// An unleased role's fence: epoch 0.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A term under lease `epoch`.
+    #[must_use]
+    pub fn held(epoch: u64) -> Self {
+        let f = Self::default();
+        f.0.epoch.store(epoch, Ordering::Release);
+        f
+    }
+
+    /// The epoch writes carry.
+    #[must_use]
+    pub fn epoch(&self) -> u64 {
+        self.0.epoch.load(Ordering::Acquire)
+    }
+
+    /// Ends the term: the lease was lost, or a write was refused as stale.
+    /// The instance is a standby from now on.
+    pub fn lose(&self) {
+        self.0.lost.store(true, Ordering::Release);
+    }
+
+    /// True once the term is over.
+    #[must_use]
+    pub fn is_lost(&self) -> bool {
+        self.0.lost.load(Ordering::Acquire)
+    }
+}
+
 /// Calls `M` with `req` until the persistence writer answers (the same
 /// numbered batch every time: the writer applies it once).
-pub(crate) async fn until_durable<M: rpc::Method>(writer: &rpc::RpcClient, req: &M::Request) {
+///
+/// # Errors
+/// [`rpc::RpcError::Standby`] once `fence`'s term is over (a stale-epoch
+/// refusal ends it): nothing more is written, and the caller answers as a
+/// standby.
+pub(crate) async fn until_durable<M: rpc::Method>(
+    writer: &rpc::RpcClient,
+    fence: &Fence,
+    req: &M::Request,
+) -> Result<(), rpc::RpcError> {
     let mut delay = Duration::from_millis(20);
-    while writer.call::<M>(req, RPC_TIMEOUT).await.is_err() {
-        tokio::time::sleep(delay).await;
-        delay = (delay * 2).min(DURABLE_RETRY);
+    loop {
+        if fence.is_lost() {
+            return Err(rpc::RpcError::Standby);
+        }
+        match writer.call::<M>(req, RPC_TIMEOUT).await {
+            Ok(_) => return Ok(()),
+            Err(rpc::RpcError::StaleEpoch) => {
+                fence.lose();
+                return Err(rpc::RpcError::Standby);
+            }
+            Err(_) => {
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(DURABLE_RETRY);
+            }
+        }
     }
 }
 

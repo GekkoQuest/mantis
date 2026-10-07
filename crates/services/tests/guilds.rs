@@ -141,7 +141,7 @@ fn guild_changes_are_durable_before_they_are_told_and_survive_a_restart() {
         who: 2,
         rank: guild_rank::OFFICER,
     });
-    assert_eq!(cluster.social.guild_of(2), Some(1));
+    assert_eq!(cluster.social().guild_of(2), Some(1));
 
     // Every update the cell was told is backed by a durable row.
     let told = cell.updates();
@@ -196,13 +196,13 @@ fn guild_changes_are_durable_before_they_are_told_and_survive_a_restart() {
     // are read back from the writer, and new batches number past the old.
     let addr = cluster.stop_social().unwrap();
     cluster.start_social(addr).unwrap();
-    assert_eq!(cluster.social.guild_of(2), Some(1));
-    assert_eq!(cluster.social.guild_rank(1), Some(guild_rank::LEADER));
-    assert_eq!(cluster.social.guild_rank(2), Some(guild_rank::OFFICER));
+    assert_eq!(cluster.social().guild_of(2), Some(1));
+    assert_eq!(cluster.social().guild_rank(1), Some(guild_rank::LEADER));
+    assert_eq!(cluster.social().guild_rank(2), Some(guild_rank::OFFICER));
     let mut cell = Cell::new(&cluster);
     cell.relay(&GuildOp::Leave { me: 1 });
     assert_eq!(
-        cluster.social.guild_rank(2),
+        cluster.social().guild_rank(2),
         Some(guild_rank::LEADER),
         "the officer leads"
     );
@@ -223,7 +223,7 @@ fn friendships_and_requests_of_offline_characters_survive_a_social_restart() {
     cell.relay_on(FRIEND_OP, &FriendOp::Request { me: 1, other: 2 });
     cell.relay_on(FRIEND_OP, &FriendOp::Request { me: 2, other: 1 });
     cell.relay_on(FRIEND_OP, &FriendOp::Request { me: 1, other: 3 });
-    assert!(cluster.social.are_friends(1, 2));
+    assert!(cluster.social().are_friends(1, 2));
     let told: Vec<FriendUpdate> = cell.updates_on(FRIEND_UPDATE);
     assert!(told.contains(&FriendUpdate::List {
         to: 2,
@@ -245,7 +245,7 @@ fn friendships_and_requests_of_offline_characters_survive_a_social_restart() {
     cell.present(&[]);
     let addr = cluster.stop_social().unwrap();
     cluster.start_social(addr).unwrap();
-    assert!(cluster.social.are_friends(2, 1), "offline friends survive");
+    assert!(cluster.social().are_friends(2, 1), "offline friends survive");
 
     // 3 logs in for the first time and accepts the request made while it
     // had never been online; 1 arriving is told its whole list.
@@ -259,7 +259,7 @@ fn friendships_and_requests_of_offline_characters_survive_a_social_restart() {
             accept: true,
         },
     );
-    assert!(cluster.social.are_friends(1, 3));
+    assert!(cluster.social().are_friends(1, 3));
     let told: Vec<FriendUpdate> = cell.updates_on(FRIEND_UPDATE);
     assert!(told.contains(&FriendUpdate::List {
         to: 1,

@@ -21,10 +21,10 @@ use std::sync::{Arc, Mutex};
 use mantis_core::wire::{BoundedArray, WireString};
 
 use crate::generated::services as m;
-use crate::host::RPC_TIMEOUT;
 use crate::host::clock::ServiceClock;
 use crate::host::lock;
 use crate::host::rpc::{Router, RpcClient, RpcError};
+use crate::host::{Fence, RPC_TIMEOUT};
 use crate::methods;
 use crate::persist::{AuditRow, PersistService, StoredLedger, audit_row, clip};
 use live::LiveSigner;
@@ -263,20 +263,24 @@ impl AuditStore {
         }
     }
 
-    async fn set_live(&self, name: &str, kind: u8, value: f32) -> Result<(), String> {
+    async fn set_live(&self, fence: &Fence, name: &str, kind: u8, value: f32) -> Result<(), String> {
         match self {
             Self::Local(p) => p.with_store(|s| s.set_live(name, kind, value)).map_err(|e| e.0),
             Self::Remote(c) => {
                 let req = m::StoreLive {
-                    epoch: 0,
+                    epoch: fence.epoch(),
                     name: WireString::new(name).ok_or("live names are at most 96 bytes")?,
                     kind,
                     value,
                 };
-                Box::pin(c.call::<methods::StoreLiveValue>(&req, RPC_TIMEOUT))
-                    .await
-                    .map(|_| ())
-                    .map_err(|e| e.to_string())
+                match Box::pin(c.call::<methods::StoreLiveValue>(&req, RPC_TIMEOUT)).await {
+                    Ok(_) => Ok(()),
+                    Err(RpcError::StaleEpoch) => {
+                        fence.lose();
+                        Err(RpcError::Standby.to_string())
+                    }
+                    Err(e) => Err(e.to_string()),
+                }
             }
         }
     }
@@ -335,6 +339,8 @@ pub struct OpsService {
     signer: Arc<LiveSigner>,
     live: Arc<Mutex<LiveState>>,
     clock: ServiceClock,
+    /// This instance's lease term (role failover).
+    fence: Fence,
 }
 
 impl OpsService {
@@ -364,7 +370,16 @@ impl OpsService {
                 ..LiveState::default()
             })),
             clock: ServiceClock::default(),
+            fence: Fence::new(),
         }
+    }
+
+    /// The same role writing under lease term `fence` (role failover):
+    /// once the term is over it publishes nothing more.
+    #[must_use]
+    pub fn fenced(mut self, fence: Fence) -> Self {
+        self.fence = fence;
+        self
     }
 
     /// The same role on `clock`: audit times, and its live-data run epoch
@@ -740,7 +755,10 @@ impl OpsService {
         if !value.is_finite() || WireString::<96>::new(name).is_none() {
             return Err("live values are finite, with names of at most 96 bytes".to_owned());
         }
-        self.audit.set_live(name, kind, value).await?;
+        if self.fence.is_lost() {
+            return Err(RpcError::Standby.to_string());
+        }
+        self.audit.set_live(&self.fence, name, kind, value).await?;
         let mut live = lock(&self.live);
         let seq = live.changes.last().map_or(1, |c| c.seq + 1);
         let change = self.signer.sign(live.epoch, seq, name, kind, value)?;

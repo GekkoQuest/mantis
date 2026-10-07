@@ -56,7 +56,8 @@ pub const fn dependencies(role: Role) -> &'static [Role] {
         // Accounts, characters, guilds and friends are rows the writer
         // keeps; each of these roles reads them back before it serves.
         Role::Account | Role::Realm | Role::Social => &[Role::Persist],
-        Role::Matchmaking => &[Role::Realm],
+        // Matchmaking holds its role lease through the writer (`Lease`).
+        Role::Matchmaking => &[Role::Persist, Role::Realm],
         Role::Ops => &[Role::Account, Role::Persist],
         Role::Cell => &[
             Role::Realm,
@@ -138,7 +139,7 @@ mod tests {
         assert!(!may_call(Role::Account, Role::Realm));
         assert!(may_call(Role::Social, Role::Persist));
         assert!(may_call(Role::Ops, Role::Cell));
-        assert!(!may_call(Role::Matchmaking, Role::Persist));
+        assert!(may_call(Role::Matchmaking, Role::Persist));
     }
 
     #[test]

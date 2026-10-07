@@ -18,8 +18,20 @@ pub struct PgStore {
     runtime: tokio::runtime::Handle,
 }
 
+/// A Postgres error with the server's own words: its SQLSTATE code,
+/// message, and detail, when the server answered.
 fn pg(e: &tokio_postgres::Error) -> StoreError {
-    StoreError(format!("postgres: {e}"))
+    match e.as_db_error() {
+        Some(db) => {
+            let mut text = format!("postgres: {e} ({}): {}", db.code().code(), db.message());
+            if let Some(detail) = db.detail() {
+                text.push_str("; ");
+                text.push_str(detail);
+            }
+            StoreError(text)
+        }
+        None => StoreError(format!("postgres: {e}")),
+    }
 }
 
 fn i64_of(v: u64) -> i64 {
@@ -656,11 +668,11 @@ impl LedgerStore for PgStore {
     ) -> Result<Lease, StoreError> {
         // One statement: the row lock makes racing instances take turns.
         self.block(self.client.execute(
-            "INSERT INTO role_leases (role, owner, epoch, expires_ms) VALUES ($1, $2, 1, $3 + $4) \
+            "INSERT INTO role_leases (role, owner, epoch, expires_ms) VALUES ($1, $2, 1, $3::BIGINT + $4::BIGINT) \
              ON CONFLICT (role) DO UPDATE SET owner = EXCLUDED.owner, \
              epoch = CASE WHEN role_leases.owner = EXCLUDED.owner THEN role_leases.epoch ELSE role_leases.epoch + 1 END, \
              expires_ms = EXCLUDED.expires_ms \
-             WHERE role_leases.owner = EXCLUDED.owner OR role_leases.expires_ms <= $3",
+             WHERE role_leases.owner = EXCLUDED.owner OR role_leases.expires_ms <= $3::BIGINT",
             &[&i16::from(role), &owner, &i64_of(now_ms), &i64_of(ttl_ms)],
         ))
         .map_err(|e| pg(&e))?;

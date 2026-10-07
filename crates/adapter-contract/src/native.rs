@@ -16,8 +16,8 @@
 //!
 //! ```text
 //! server_tick u64 | baseline_lag v (0: none, else server_tick - baseline tick)
-//! flags u8 (bit0 ack, bit1 local, bit2 mods)
-//! [ack u32] [local: entity u64, pos 3xf32, vel 3xf32, yaw u16, grounded u8] [mods 3xf32]
+//! flags u8 (bit0 ack, bit1 local, bit2 mods, bit3 epoch)
+//! [epoch v] [ack u32] [local: entity u64, pos 3xf32, vel 3xf32, yaw u16, grounded u8] [mods 3xf32]
 //! entered v x (entity id, appearance u32)
 //! remotes v x (entity id, tick_lag v, mask u8, [base_lag v], [pos 3z], [vel 3z], [yaw u16])
 //! removed v x (entity id)
@@ -42,6 +42,11 @@
 //! The decoder parses the whole frame once to validate it (bounds, duplicate
 //! ids, finite floats, known tags, a present baseline, no trailing bytes) and
 //! only then visits it.
+//!
+//! The epoch (flag bit 3) is a gateway's hand-off stamp (`Transferred`): the
+//! cell host never writes it; a gateway inserts it into frames it relays
+//! after a hand-off ([`stamp_epoch`]), and clients read it with
+//! [`snapshot_epoch`] to drop frames of the host before.
 
 use mantis_core::ecs::EntityId;
 use mantis_core::graph::{
@@ -288,6 +293,58 @@ pub fn peek_snapshot_ticks(body: &[u8]) -> Result<(Tick, Option<Tick>), DecodeEr
     Ok((tick, baseline))
 }
 
+/// Snapshot flag bit 3: a gateway's hand-off epoch follows the flags.
+const FLAG_EPOCH: u8 = 8;
+
+/// The offset of a snapshot frame's flags byte (after the frame kind, the
+/// server tick, and the baseline lag), when `frame` is a snapshot frame.
+fn snapshot_flags_at(frame: &[u8]) -> Option<usize> {
+    if frame.first() != Some(&FRAME_SNAPSHOT) {
+        return None;
+    }
+    let lag = frame.get(9..)?;
+    let lag_len = lag.iter().position(|b| b & 0x80 == 0)? + 1;
+    let at = 9 + lag_len;
+    (at < frame.len()).then_some(at)
+}
+
+/// The hand-off epoch a gateway stamped on a snapshot frame (whole frame,
+/// kind byte included): `None` when unstamped (epoch 0, the first host) or
+/// not a snapshot frame. Reads the prefix only.
+#[must_use]
+pub fn snapshot_epoch(frame: &[u8]) -> Option<u32> {
+    let at = snapshot_flags_at(frame)?;
+    let flags = *frame.get(at)?;
+    if flags & FLAG_EPOCH == 0 {
+        return None;
+    }
+    let mut d = Decoder::new(frame.get(at + 1..)?);
+    get_v(&mut d).ok().and_then(|e| u32::try_from(e).ok())
+}
+
+/// Writes `frame` (a whole snapshot frame from a cell host, unstamped) into
+/// `out` stamped with hand-off `epoch` (flag bit 3, then the epoch). `out`
+/// is cleared first; it allocates only to grow. False, and `out` left
+/// empty, when `frame` is not an unstamped snapshot frame.
+pub fn stamp_epoch(frame: &[u8], epoch: u32, out: &mut Vec<u8>) -> bool {
+    out.clear();
+    let Some(at) = snapshot_flags_at(frame) else {
+        return false;
+    };
+    let (Some(head), Some(&flags), Some(tail)) = (frame.get(..at), frame.get(at), frame.get(at + 1..)) else {
+        return false;
+    };
+    if flags & FLAG_EPOCH != 0 {
+        return false;
+    }
+    out.extend_from_slice(head);
+    let mut e = Encoder::new(out);
+    e.u8(flags | FLAG_EPOCH);
+    put_v(&mut e, u64::from(epoch));
+    out.extend_from_slice(tail);
+    true
+}
+
 // ---- snapshot encoding ------------------------------------------------------
 
 fn encode_marker(e: &mut Encoder<'_>, m: &TimelineMarker, server_tick: Tick) {
@@ -471,8 +528,11 @@ fn decode_q3(d: &mut Decoder<'_>, base: Option<[i32; 3]>) -> Result<[i32; 3], De
 /// The header fields after the baseline lag.
 fn parse_header(d: &mut Decoder<'_>, server_tick: Tick) -> Result<SnapshotHeader, DecodeError> {
     let flags = d.u8()?;
-    if flags & !0b111 != 0 {
+    if flags & !0b1111 != 0 {
         return Err(DecodeError::Invalid("snapshot flags"));
+    }
+    if flags & FLAG_EPOCH != 0 {
+        u32::try_from(get_v(d)?).map_err(|_| DecodeError::Invalid("snapshot epoch"))?;
     }
     let ack = if flags & 1 != 0 {
         Some(InputSeq(d.u32()?))

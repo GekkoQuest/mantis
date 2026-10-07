@@ -17,6 +17,12 @@
 //! - **Timeouts** on every call; **reconnect** on the next call after a
 //!   connection drops, with a bounded backoff; calls in flight when a
 //!   connection drops fail with [`RpcError::Disconnected`].
+//! - **Failover** (role failover) when an [`Endpoint`] lists several
+//!   instances of a role: a call goes to the preferred one, and moves on to
+//!   the next when it answers [`RpcError::Standby`] or
+//!   [`RpcError::StaleEpoch`] or cannot be reached (nothing was applied).
+//!   A call lost in flight is not retried (it may have been applied): it
+//!   fails, and the next call starts at the next instance.
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -32,20 +38,23 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
-use super::Role;
+use super::{Fence, Role};
 use crate::tls::{IdentityError, TlsHandle, TlsIdentity, peer_identity};
 
 /// Where a client connects: `host:port`, the host an IP literal or a DNS
-/// name, resolved at every connect. Live-updatable (a registry reload moves
-/// a role): when the target changes, clients drop their connection before
-/// the next call and reconnect to the new one. Cheap to clone; every clone
-/// is the same endpoint.
+/// name, resolved at every connect; or several, comma-separated, one per
+/// instance of a role (role failover), tried from the preferred one on.
+/// Live-updatable (a registry reload moves a role): when the targets
+/// change, clients drop their connection before the next call and
+/// reconnect. Cheap to clone; every clone is the same endpoint.
 #[derive(Clone)]
 pub struct Endpoint(Arc<EndpointShared>);
 
 struct EndpointShared {
     target: Mutex<String>,
     generation: std::sync::atomic::AtomicU64,
+    /// The instance calls go to first.
+    preferred: std::sync::atomic::AtomicUsize,
 }
 
 impl std::fmt::Debug for Endpoint {
@@ -76,17 +85,39 @@ fn split_target(target: &str) -> Result<(String, u16), String> {
     Ok((host.to_owned(), port))
 }
 
+/// `host:port[,host:port...]`, checked: one (host, port) per instance.
+fn split_targets(targets: &str) -> Result<Vec<(String, u16)>, String> {
+    targets.split(',').map(split_target).collect()
+}
+
 impl Endpoint {
-    /// `host:port`: an IP literal (`[v6]:port` for IPv6) or a DNS name.
+    /// `host:port`: an IP literal (`[v6]:port` for IPv6) or a DNS name;
+    /// or several, comma-separated, one per instance of a role.
     ///
     /// # Errors
-    /// Not `host:port`.
+    /// Not `host:port[,host:port...]`.
     pub fn new(target: &str) -> Result<Self, String> {
-        split_target(target)?;
+        split_targets(target)?;
         Ok(Self(Arc::new(EndpointShared {
             target: Mutex::new(target.to_owned()),
             generation: std::sync::atomic::AtomicU64::new(0),
+            preferred: std::sync::atomic::AtomicUsize::new(0),
         })))
+    }
+
+    /// One endpoint over several fixed addresses, one per instance.
+    ///
+    /// # Panics
+    /// `addrs` is empty.
+    #[must_use]
+    pub fn instances(addrs: &[SocketAddr]) -> Self {
+        assert!(!addrs.is_empty(), "an endpoint names at least one instance");
+        let target: Vec<String> = addrs.iter().map(ToString::to_string).collect();
+        Self(Arc::new(EndpointShared {
+            target: Mutex::new(target.join(",")),
+            generation: std::sync::atomic::AtomicU64::new(0),
+            preferred: std::sync::atomic::AtomicUsize::new(0),
+        }))
     }
 
     /// A fixed address.
@@ -95,30 +126,58 @@ impl Endpoint {
         Self(Arc::new(EndpointShared {
             target: Mutex::new(addr.to_string()),
             generation: std::sync::atomic::AtomicU64::new(0),
+            preferred: std::sync::atomic::AtomicUsize::new(0),
         }))
     }
 
-    /// Moves the endpoint to `target`; true when it changed.
+    /// Moves the endpoint to `target` (calls start again at its first
+    /// instance); true when it changed.
     ///
     /// # Errors
-    /// Not `host:port`.
+    /// Not `host:port[,host:port...]`.
     pub fn set(&self, target: &str) -> Result<bool, String> {
-        split_target(target)?;
+        split_targets(target)?;
         let mut t = lock(&self.0.target);
         if *t == target {
             return Ok(false);
         }
         target.clone_into(&mut t);
+        self.0.preferred.store(0, std::sync::atomic::Ordering::SeqCst);
         self.0
             .generation
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(true)
     }
 
-    /// The target, `host:port`.
+    /// The target, `host:port[,host:port...]`.
     #[must_use]
     pub fn target(&self) -> String {
         lock(&self.0.target).clone()
+    }
+
+    /// One `host:port` per instance.
+    #[must_use]
+    pub fn targets(&self) -> Vec<String> {
+        self.target().split(',').map(str::to_owned).collect()
+    }
+
+    /// The instance calls go to first (an index into
+    /// [`Endpoint::targets`]).
+    #[must_use]
+    pub fn preferred(&self) -> usize {
+        self.0.preferred.load(std::sync::atomic::Ordering::SeqCst) % self.targets().len().max(1)
+    }
+
+    /// Moves the preferred instance past `from`, unless another call moved
+    /// it already.
+    fn pass(&self, from: usize) {
+        let n = self.targets().len().max(1);
+        let _ = self.0.preferred.compare_exchange(
+            from,
+            (from + 1) % n,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        );
     }
 
     /// Bumped on every change.
@@ -127,10 +186,10 @@ impl Endpoint {
         self.0.generation.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// The addresses the target resolves to, in order, and the TLS server
-    /// name: the IP for a literal, the DNS name otherwise.
-    async fn resolve(&self) -> Option<(Vec<SocketAddr>, rustls::pki_types::ServerName<'static>)> {
-        let target = self.target();
+    /// The addresses instance `at`'s target resolves to, in order, and the
+    /// TLS server name: the IP for a literal, the DNS name otherwise.
+    async fn resolve(&self, at: usize) -> Option<(Vec<SocketAddr>, rustls::pki_types::ServerName<'static>)> {
+        let target = self.targets().get(at)?.clone();
         let (host, port) = split_target(&target).ok()?;
         let name = match host.parse::<std::net::IpAddr>() {
             Ok(ip) => rustls::pki_types::ServerName::IpAddress(ip.into()),
@@ -319,6 +378,52 @@ pub type Validate = fn(u16, &[u8]) -> Result<(), RpcError>;
 pub struct Router {
     methods: BTreeMap<u16, Entry>,
     validate: Option<Validate>,
+    /// A failover role instance's seat: calls go to the router in it.
+    seat: Option<SeatSlot>,
+}
+
+/// Where a failover role instance's current router sits (role failover):
+/// filled while the instance is its role's active one, under that term's
+/// [`Fence`]. Empty, or under a lost fence, the instance is a standby and
+/// answers every call with [`RpcError::Standby`].
+#[derive(Clone, Default)]
+pub struct SeatSlot(Arc<Mutex<Option<Seated>>>);
+
+/// A seated router and its term.
+type Seated = (Arc<Router>, Fence);
+
+impl SeatSlot {
+    /// Seats `router` for the term `fence` holds (ending any earlier one).
+    pub fn fill(&self, router: Router, fence: Fence) {
+        if let Some((_, old)) = lock(&self.0).replace((Arc::new(router), fence)) {
+            old.lose();
+        }
+    }
+
+    /// Ends the current term, if any: the instance is a standby.
+    pub fn vacate(&self) {
+        if let Some((_, old)) = lock(&self.0).take() {
+            old.lose();
+        }
+    }
+
+    /// The current term's epoch, while one is held.
+    #[must_use]
+    pub fn epoch(&self) -> Option<u64> {
+        lock(&self.0)
+            .as_ref()
+            .filter(|(_, f)| !f.is_lost())
+            .map(|(_, f)| f.epoch())
+    }
+
+    /// The seated router, while its term is held.
+    fn current(&self) -> Option<Arc<Router>> {
+        let mut seat = lock(&self.0);
+        if seat.as_ref().is_some_and(|(_, f)| f.is_lost()) {
+            *seat = None;
+        }
+        seat.as_ref().map(|(r, _)| Arc::clone(r))
+    }
 }
 
 impl Router {
@@ -346,6 +451,18 @@ impl Router {
         Self {
             methods: BTreeMap::new(),
             validate: Some(validate),
+            seat: None,
+        }
+    }
+
+    /// A failover role instance's router: calls go to the router in
+    /// `seat`, and are answered [`RpcError::Standby`] while it is empty.
+    #[must_use]
+    pub fn seated(seat: SeatSlot) -> Self {
+        Self {
+            methods: BTreeMap::new(),
+            validate: None,
+            seat: Some(seat),
         }
     }
 
@@ -406,8 +523,21 @@ impl Router {
         self
     }
 
-    /// Dispatches one call (the caller matrix first).
+    /// Dispatches one call: to the seated router, for a failover role
+    /// instance's.
     async fn dispatch(&self, role: Role, method: u16, payload: &[u8]) -> Result<Vec<u8>, RpcError> {
+        match &self.seat {
+            None => self.dispatch_here(role, method, payload).await,
+            Some(seat) => {
+                let router = seat.current().ok_or(RpcError::Standby)?;
+                router.dispatch_here(role, method, payload).await
+            }
+        }
+    }
+
+    /// Dispatches one call to this router's methods (the caller matrix
+    /// first).
+    async fn dispatch_here(&self, role: Role, method: u16, payload: &[u8]) -> Result<Vec<u8>, RpcError> {
         let e = self.methods.get(&method).ok_or(RpcError::NoSuchMethod)?;
         if !e.callers.contains(&role) {
             return Err(RpcError::Forbidden);
@@ -747,8 +877,9 @@ struct Connection {
     tx: mpsc::Sender<Vec<u8>>,
     pending: Pending,
     alive: Arc<std::sync::atomic::AtomicBool>,
-    /// The (endpoint, identity) generations it was made under.
-    stamp: (u64, u64),
+    /// The (endpoint, identity) generations and the instance it was made
+    /// under.
+    stamp: (u64, u64, usize),
     reader: tokio::task::AbortHandle,
 }
 
@@ -846,19 +977,23 @@ impl RpcClient {
         &self.endpoint
     }
 
-    /// The generations a connection is made under: (endpoint, identity).
-    fn stamp(&self) -> (u64, u64) {
+    /// What a connection to instance `at` is made under: (endpoint
+    /// generation, identity generation, instance).
+    fn stamp(&self, at: usize) -> (u64, u64, usize) {
         (
             self.endpoint.generation(),
             self.tls.as_ref().map_or(0, |t| t.handle.generation()),
+            at,
         )
     }
 
-    async fn connect(&self) -> Result<Connection, RpcError> {
-        let stamp = self.stamp();
+    async fn connect(&self, at: usize) -> Result<Connection, RpcError> {
+        let stamp = self.stamp(at);
         let mut delay = Duration::from_millis(10);
-        for _ in 0..4 {
-            let Some((addrs, name)) = self.endpoint.resolve().await else {
+        // One instance of several: one try, then the call moves on.
+        let tries = if self.endpoint.targets().len() > 1 { 1 } else { 4 };
+        for _ in 0..tries {
+            let Some((addrs, name)) = self.endpoint.resolve(at).await else {
                 tokio::time::sleep(delay).await;
                 delay *= 2;
                 continue;
@@ -896,7 +1031,7 @@ impl RpcClient {
         Err(RpcError::Disconnected)
     }
 
-    async fn open<S>(mut stream: S, hello: &[u8], stamp: (u64, u64)) -> Result<Connection, RpcError>
+    async fn open<S>(mut stream: S, hello: &[u8], stamp: (u64, u64, usize)) -> Result<Connection, RpcError>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
@@ -908,7 +1043,7 @@ impl RpcClient {
         Ok(Self::start(stream, stamp))
     }
 
-    fn start<S>(stream: S, stamp: (u64, u64)) -> Connection
+    fn start<S>(stream: S, stamp: (u64, u64, usize)) -> Connection
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
@@ -950,10 +1085,14 @@ impl RpcClient {
     }
 
     /// Calls `M` with `req`: connecting (when the connection is new) and
-    /// the answer each within `timeout`.
+    /// the answer each within `timeout`. Over several instances, from the
+    /// preferred one on: an instance that is a standby, or cannot be
+    /// reached, passes the call to the next (nothing was applied).
     ///
     /// # Errors
-    /// [`RpcError`].
+    /// [`RpcError`]: over several instances, the last one's, or the error
+    /// of a call lost in flight (not retried: it may have been applied),
+    /// after which the next call starts at the next instance.
     pub async fn call<M: Method>(
         &self,
         req: &M::Request,
@@ -961,14 +1100,52 @@ impl RpcClient {
     ) -> Result<M::Response, RpcError> {
         let mut payload = Vec::new();
         mantis_core::wire::encode_into(req, &mut payload);
+        let instances = self.endpoint.targets().len();
+        let mut failure = RpcError::Disconnected;
+        for _ in 0..instances.max(1) {
+            let at = self.endpoint.preferred();
+            match self.call_at(at, M::ID, &payload, timeout).await {
+                Ok(bytes) => {
+                    return mantis_core::wire::decode_exact::<M::Response>(&bytes)
+                        .map_err(|_| RpcError::Malformed);
+                }
+                Err((e, sent)) => {
+                    if instances < 2 {
+                        return Err(e);
+                    }
+                    let elsewhere = matches!(e, RpcError::Standby | RpcError::StaleEpoch);
+                    let lost = matches!(e, RpcError::Disconnected | RpcError::Timeout);
+                    if elsewhere || lost {
+                        self.endpoint.pass(at);
+                    }
+                    if !(elsewhere || (lost && !sent)) {
+                        return Err(e);
+                    }
+                    failure = e;
+                }
+            }
+        }
+        Err(failure)
+    }
+
+    /// One call to instance `at`: the answer's bytes, or the error and
+    /// whether the request was sent.
+    async fn call_at(
+        &self,
+        at: usize,
+        method: u16,
+        payload: &[u8],
+        timeout: Duration,
+    ) -> Result<Vec<u8>, (RpcError, bool)> {
+        let unsent = |e| (e, false);
         let call = self.next_call.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let (done, wait) = oneshot::channel();
         {
             let mut conn = self.conn.lock().await;
-            // Dead, or made before the endpoint moved or the identity
-            // changed: the next call goes to the current target, with the
-            // current identity.
-            let stamp = self.stamp();
+            // Dead, or made before the endpoint moved, the identity
+            // changed or the preferred instance moved: the next call goes
+            // to the current target, with the current identity.
+            let stamp = self.stamp(at);
             let stale = conn
                 .as_ref()
                 .is_none_or(|c| !c.alive.load(std::sync::atomic::Ordering::Acquire) || c.stamp != stamp);
@@ -977,34 +1154,35 @@ impl RpcClient {
                 // by the call's own timeout: a peer that accepts and then
                 // stalls costs one call its timeout, never more. The
                 // connection could not be made: disconnected.
-                let connected = tokio::time::timeout(timeout, self.connect())
+                *conn = None;
+                let connected = tokio::time::timeout(timeout, self.connect(at))
                     .await
-                    .map_err(|_| RpcError::Disconnected)?;
-                *conn = Some(connected?);
+                    .map_err(|_| unsent(RpcError::Disconnected))?;
+                *conn = Some(connected.map_err(unsent)?);
             }
-            let c = conn.as_ref().ok_or(RpcError::Disconnected)?;
+            let c = conn.as_ref().ok_or(unsent(RpcError::Disconnected))?;
             lock(&c.pending).insert(call, done);
             // The reader marks a connection dead before it fails its
             // waiters: a connection already dead here (refused at once)
             // will not answer this call.
             if !c.alive.load(std::sync::atomic::Ordering::Acquire) {
                 lock(&c.pending).remove(&call);
-                return Err(RpcError::Disconnected);
+                return Err(unsent(RpcError::Disconnected));
             }
-            c.tx.send(frame(REQUEST, call, M::ID, &payload))
+            c.tx.send(frame(REQUEST, call, method, payload))
                 .await
-                .map_err(|_| RpcError::Disconnected)?;
+                .map_err(|_| unsent(RpcError::Disconnected))?;
         }
-        let bytes = match tokio::time::timeout(timeout, wait).await {
+        match tokio::time::timeout(timeout, wait).await {
             Err(_) => {
                 if let Some(c) = self.conn.lock().await.as_ref() {
                     lock(&c.pending).remove(&call);
                 }
-                return Err(RpcError::Timeout);
+                Err((RpcError::Timeout, true))
             }
-            Ok(Err(_)) => return Err(RpcError::Disconnected),
-            Ok(Ok(result)) => result?,
-        };
-        mantis_core::wire::decode_exact::<M::Response>(&bytes).map_err(|_| RpcError::Malformed)
+            Ok(Err(_)) => Err((RpcError::Disconnected, true)),
+            // An answer (a refusal included) means it reached the server.
+            Ok(Ok(result)) => result.map_err(|e| (e, true)),
+        }
     }
 }

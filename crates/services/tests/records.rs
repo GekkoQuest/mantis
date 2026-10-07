@@ -159,7 +159,7 @@ fn accounts_and_characters_survive_restarts(store: StoreChoice) {
         },
     )
     .unwrap();
-    let last_login = cluster.account.account(alice).unwrap().last_login_ms;
+    let last_login = cluster.account().account(alice).unwrap().last_login_ms;
     assert!(last_login > 0, "the login time is durable");
 
     // Characters: two created, one deleted, one placed by a cell host.
@@ -220,9 +220,9 @@ fn accounts_and_characters_survive_restarts(store: StoreChoice) {
     assert!(c.login("alice", "first password").is_err());
     let after = c.login("Alice", "second password").unwrap();
     assert_eq!(after.account, before.account);
-    assert!(cluster.account.account(alice).unwrap().last_login_ms >= last_login);
+    assert!(cluster.account().account(alice).unwrap().last_login_ms >= last_login);
     assert!(matches!(c.login("mallory", "mallory password"), Err(RpcError::Refused(r)) if r == "banned"));
-    let banned = cluster.account.account(mallory).unwrap();
+    let banned = cluster.account().account(mallory).unwrap();
     assert_eq!(banned.ban_reason, "testing bans");
     assert!(matches!(
         c.account::<methods::RegisterAccount>(
@@ -256,10 +256,10 @@ fn accounts_and_characters_survive_restarts(store: StoreChoice) {
     // Characters: the living one, with its kind, level and placement; the
     // deleted one gone, its id never reused, its name free again.
     assert_eq!(c.characters(alice), vec![hero]);
-    let row = cluster.realm.character(hero).unwrap();
+    let row = cluster.realm().character(hero).unwrap();
     assert_eq!((row.name.as_str(), row.kind, row.level), ("Hero", 3, 4));
     assert_eq!((row.cell, row.world, row.position), (2, 1, [12.5, 0.0, -3.0]));
-    assert!(cluster.realm.character(spare).unwrap().deleted);
+    assert!(cluster.realm().character(spare).unwrap().deleted);
     let again = create_on(&c, alice, "Spare").unwrap().character.0;
     assert!(again > spare, "a deleted character's id is never reused");
     // The entry token of the old run is refused; selecting again places
@@ -389,7 +389,7 @@ fn worlds_register_side_by_side_and_new_characters_enter_the_first() {
         )
         .unwrap();
     }
-    assert_eq!(cluster.realm.cells().len(), 4);
+    assert_eq!(cluster.realm().cells().len(), 4);
     let hero = create_on(&c, 5, "Wanderer").unwrap().character.0;
     let select = || {
         c.realm::<methods::Select>(

@@ -39,6 +39,32 @@ role = "ops"
 rpc = "ops.svc.mantis:7506"
 health = "ops.svc.mantis:7606"
 
+# Standbys: the active instance of each failover role holds its lease; these take over when it lapses.
+[instance.account-2]
+role = "account"
+rpc = "account-2.svc.mantis:7501"
+health = "account-2.svc.mantis:7601"
+
+[instance.realm-2]
+role = "realm"
+rpc = "realm-2.svc.mantis:7502"
+health = "realm-2.svc.mantis:7602"
+
+[instance.social-2]
+role = "social"
+rpc = "social-2.svc.mantis:7503"
+health = "social-2.svc.mantis:7603"
+
+[instance.matchmaking-2]
+role = "matchmaking"
+rpc = "matchmaking-2.svc.mantis:7504"
+health = "matchmaking-2.svc.mantis:7604"
+
+[instance.ops-2]
+role = "ops"
+rpc = "ops-2.svc.mantis:7506"
+health = "ops-2.svc.mantis:7606"
+
 [instance.cells-a]
 role = "cell-host"
 rpc = "cells.host-a.mantis:7520"

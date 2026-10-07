@@ -58,6 +58,12 @@ enum RefuseReason : u8 {
     BadToken = 4;
     /// The server is in maintenance.
     Maintenance = 5;
+    /// Not the active server for this session right now (a cell between
+    /// hosts, or a standby instance): connect again shortly.
+    Standby = 6;
+    /// The resume ticket or token is from before the session's latest
+    /// hand-off: a newer one was issued.
+    StaleEpoch = 7;
 }
 
 /// A client module and its hash (for compatibility and refusal, never trust).
@@ -227,4 +233,53 @@ message PermittedModules outbound {
     tier: ModTier;
     /// Permitted client module keys.
     modules: list<string<32>, 32>;
+}
+
+/// From a gateway to the cell host serving its client (never from a
+/// client): the client's connection dropped (`up` false: the avatar holds
+/// still, no input is repeated for it) or came back with a resume ticket
+/// (`up` true: the next `Move`'s seq starts the input stream again, with
+/// no wait for the seqs lost with the old connection).
+message Linked inbound {
+    /// The client is connected.
+    up: bool;
+}
+
+/// The session continues on another cell host, sent by the gateway before
+/// the first frame from that host. The client forgets every delta
+/// baseline and re-anchors its timeline: the new host counts its own
+/// ticks. From now on the gateway stamps every snapshot with `epoch`
+/// (native snapshot flag bit 3); a snapshot stamped with an older epoch,
+/// or not at all, is from the host before and is dropped.
+message Transferred outbound {
+    /// The cell now serving the session.
+    cell: u64;
+    /// The session's hand-off count: 1 after the first.
+    epoch: u32;
+    /// The new host's current tick.
+    tick: tick;
+}
+
+/// A ticket to resume this session over a new connection, sent after
+/// `Welcome` and after every `Transferred`. Single use; it replaces every
+/// earlier ticket. Valid for `expires_ms` after the connection drops: the
+/// client reconnects to the same gateway with `Hello { token: ticket }`.
+message ResumeTicket outbound {
+    /// The ticket.
+    token: list<u8, 32>;
+    /// How long it stays valid after a disconnect, in milliseconds.
+    expires_ms: u64;
+}
+
+/// From a cell host: the session's character continues in `cell` on
+/// another host. A gateway presents `token` there and hands the session
+/// over (`Transferred`); a client connected directly reconnects to
+/// `address` with it.
+message HandOff outbound {
+    /// The cell.
+    cell: u64;
+    /// Its host's game address.
+    address: string<64>;
+    /// The entry token the host there redeems.
+    token: list<u8, 32>;
 }

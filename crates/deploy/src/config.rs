@@ -16,6 +16,8 @@
 //! listen_health = "0.0.0.0:7603"    # where it binds its health endpoint
 //! ready_timeout_s = 120             # how long readiness waits for dependencies
 //! drain_grace_ms = 10000            # how long a drain may take
+//! lease_ttl_ms = 3000               # account, realm, social, matchmaking, ops: how long the role's
+//!                                   # lease lasts unless renewed (a standby takes over within it)
 //!
 //! [persist]                         # only for role = "persist"
 //! store = "postgres"                # or "memory" (development: lost at exit)
@@ -175,6 +177,8 @@ pub struct NodeConfig {
     pub ready_timeout: Duration,
     /// How long a drain may take.
     pub drain_grace: Duration,
+    /// A failover role's lease lifetime.
+    pub lease_ttl: Duration,
     /// `[persist]`.
     pub persist: Option<PersistConfig>,
     /// `[ops]`.
@@ -290,6 +294,7 @@ impl NodeConfig {
             listen_health: n.listen_health,
             ready_timeout: n.ready_timeout,
             drain_grace: n.drain_grace,
+            lease_ttl: n.lease_ttl,
             persist,
             ops,
             matchmaking,
@@ -326,6 +331,7 @@ struct NodeTable {
     listen_health: SocketAddr,
     ready_timeout: Duration,
     drain_grace: Duration,
+    lease_ttl: Duration,
 }
 
 fn node_table(file: &str, base: &Path, node: &Table) -> Result<NodeTable, FieldError> {
@@ -355,6 +361,7 @@ fn node_table(file: &str, base: &Path, node: &Table) -> Result<NodeTable, FieldE
     }
     let ready_timeout = f.duration_or("ready_timeout_s", 1..=3600, 120)?;
     let drain_grace = f.duration_or("drain_grace_ms", 0..=600_000, 10_000)?;
+    let lease_ttl = f.duration_or("lease_ttl_ms", 300..=600_000, 3000)?;
     f.finish()?;
     Ok(NodeTable {
         role,
@@ -370,6 +377,7 @@ fn node_table(file: &str, base: &Path, node: &Table) -> Result<NodeTable, FieldE
         listen_health,
         ready_timeout,
         drain_grace,
+        lease_ttl,
     })
 }
 

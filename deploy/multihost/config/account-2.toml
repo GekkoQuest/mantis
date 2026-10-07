@@ -1,0 +1,17 @@
+# Owner: deploy-engine
+# The account node account-2 (a standby) of the multi-host demonstration (deploy/multihost). Its registry is
+# fetched over HTTPS from the registry server, pinned to the cluster CA, and re-read every 5 s.
+[node]
+role = "account"
+instance = "account-2"
+registry = "https://registry.svc.mantis:8443/registry.toml"
+registry_ca = "/etc/mantis/ca.crt"
+registry_refresh_s = 5
+deploy_key = "/etc/mantis/deploy.pub"
+cluster_key = "/run/secrets/cluster_key"
+tls_cert = "/run/secrets/tls_cert"
+tls_key = "/run/secrets/tls_key"
+listen_rpc = "0.0.0.0:7501"
+listen_health = "0.0.0.0:7601"
+ready_timeout_s = 300
+drain_grace_ms = 20000

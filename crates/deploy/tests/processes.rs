@@ -523,10 +523,16 @@ fn readiness_blocks_until_dependencies_are_up() {
     while held.elapsed() < Duration::from_millis(1500) {
         let (code, body) = cluster.ready(&social).unwrap();
         assert_eq!(code, 503, "{body}");
-        assert!(body.contains("waiting for persist (persist-1)"), "{body}");
+        assert!(body.contains("waiting for persist (persist-1 at "), "{body}");
+        // No RPC before the dependencies are ready: the node has not bound
+        // its listener (it logs ": rpc <addr>" when it does). Asked of the
+        // node itself, not of the port: another test process may hold the
+        // same number.
+        let out = cluster.output(&social);
         assert!(
-            std::net::TcpStream::connect(support::addr(&cluster.instance(&social).rpc)).is_err(),
-            "no RPC before the dependencies are ready"
+            !out.contains(": rpc "),
+            "no RPC before the dependencies are ready:
+{out}"
         );
         std::thread::sleep(Duration::from_millis(100));
     }

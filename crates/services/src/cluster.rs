@@ -41,6 +41,10 @@ use crate::realm::RealmService;
 use crate::social::SocialService;
 use crate::tls::{IdentityError, TlsHandle, TlsIdentity};
 
+mod replicas;
+
+use replicas::{Current, Inspected, Plan, Replica, Roles};
+
 /// The system of record a cluster writes to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StoreChoice {
@@ -74,6 +78,14 @@ pub struct ClusterConfig {
     /// The clock every role runs on (the wall clock by default; a test's
     /// manual clock makes token lifetimes, epochs and audit times its own).
     pub clock: ServiceClock,
+    /// Instances of each failover role (account, realm, social,
+    /// matchmaking, Ops). 1, the default: one unleased instance each. Two
+    /// or more: one active instance per role, chosen by a lease in the
+    /// persistence writer, and standbys (see [`crate::failover`]).
+    pub instances: usize,
+    /// How long a failover role's lease lasts unless renewed (with two or
+    /// more instances).
+    pub lease_ttl: Duration,
 }
 
 /// `role`'s identity from `tls` (`None` when plaintext).
@@ -119,6 +131,8 @@ impl ClusterConfig {
             live_pkcs8: None,
             tls: None,
             clock: ServiceClock::default(),
+            instances: 1,
+            lease_ttl: Duration::from_secs(3),
         }
     }
 }
@@ -160,6 +174,76 @@ fn records(
     Ok((account, realm))
 }
 
+/// One unleased instance of each role besides the writer, bound by
+/// `plan`: the roles' services and every server, the writer's among them.
+fn single(
+    runtime: &tokio::runtime::Runtime,
+    plan: &Plan,
+    persist: &PersistService,
+    persist_server: RpcServer,
+    live_pkcs8: &[u8],
+) -> Result<(Roles, Vec<(Role, RpcServer)>), String> {
+    let tls = plan.tls.as_ref();
+    let (account, realm) = records(runtime, tls, plan.persist, &plan.key, &plan.clock)?;
+    let account_server = plan.bind_any(runtime, Role::Account, account.router())?;
+    let realm_server = plan.bind_any(runtime, Role::Realm, realm.router())?;
+    // Social writes guild and friend rows through the writer and reads
+    // them back.
+    let social = SocialService::with_writer(client_for(
+        tls,
+        plan.persist,
+        Role::Social,
+        Role::Persist,
+        &plan.key,
+    )?)
+    .clocked(plan.clock.clone());
+    runtime.block_on(social.load_durable())?;
+    let social_server = plan.bind_any(runtime, Role::Social, social.router())?;
+    let (account_addr, realm_addr) = (account_server.addr(), realm_server.addr());
+    let mut servers = vec![
+        (Role::Account, account_server),
+        (Role::Realm, realm_server),
+        (Role::Social, social_server),
+        (Role::Persist, persist_server),
+    ];
+    let to_realm = Arc::new(client_for(
+        tls,
+        realm_addr,
+        Role::Matchmaking,
+        Role::Realm,
+        &plan.key,
+    )?);
+    let matchmaking = MatchmakingService::new(
+        plan.group,
+        replicas::instance_source(to_realm, runtime.handle().clone()),
+    );
+    servers.push((
+        Role::Matchmaking,
+        plan.bind_any(runtime, Role::Matchmaking, matchmaking.router())?,
+    ));
+    let ops = OpsService::new(
+        persist.clone(),
+        Arc::new(client_for(
+            tls,
+            account_addr,
+            Role::Ops,
+            Role::Account,
+            &plan.key,
+        )?),
+        LiveSigner::from_pkcs8(live_pkcs8)?,
+    )
+    .clocked(plan.clock.clone());
+    runtime.block_on(ops.load_live())?;
+    servers.push((Role::Ops, plan.bind_any(runtime, Role::Ops, ops.router())?));
+    let roles = Roles {
+        account: Current::new(account),
+        realm: Current::new(realm),
+        social: Current::new(social),
+        ops: Current::new(ops),
+    };
+    Ok((roles, servers))
+}
+
 /// Every service role in one process.
 pub struct LocalCluster {
     runtime: tokio::runtime::Runtime,
@@ -169,16 +253,18 @@ pub struct LocalCluster {
     pub dashboard_cert: Vec<u8>,
     /// The cluster key every role proves at the RPC hello.
     pub key: Vec<u8>,
-    /// The account role.
-    pub account: AccountService,
-    /// The realm role.
-    pub realm: RealmService,
-    /// The social role.
-    pub social: SocialService,
+    account: Current<AccountService>,
+    realm: Current<RealmService>,
+    social: Current<SocialService>,
     /// The persistence writer.
     pub persist: PersistService,
-    /// Ops.
-    pub ops: OpsService,
+    ops: Current<OpsService>,
+    /// Every instance of a failover role, with two or more each.
+    replicas: Vec<Replica>,
+    /// How its roles were started, for restarting instances.
+    plan: Plan,
+    /// The cells Ops inspects, for every Ops term.
+    inspected: Inspected,
     /// Ops's live-data signing key (PKCS#8), for restarting Ops.
     live_pkcs8: Vec<u8>,
     store: String,
@@ -208,7 +294,10 @@ pub fn operator_token() -> Result<String, String> {
 impl LocalCluster {
     /// Starts every role: account, realm, social, matchmaking, the
     /// persistence writer (migrating its store), and Ops with its
-    /// dashboard.
+    /// dashboard. With [`ClusterConfig::instances`] of two or more, every
+    /// failover role starts that many instances, and returns once each
+    /// role has its active one; the dashboard serves the Ops term active
+    /// then.
     ///
     /// # Errors
     /// Why the cluster cannot start.
@@ -231,83 +320,53 @@ impl LocalCluster {
             .block_on(async { tokio::task::spawn(async move { PersistService::new(store, now) }).await })
             .map_err(|e| e.to_string())?
             .map_err(|e| e.0)?;
-        let tls = config.tls.as_ref();
-        let bind = |role: Role, router: Router| -> Result<RpcServer, String> {
-            let identity = identity_for(tls, role)?;
-            runtime
-                .block_on(RpcServer::bind_tls(
-                    SocketAddr::new(config.bind, 0),
-                    key.clone(),
-                    router,
-                    identity.map(TlsHandle::from),
-                ))
-                .map_err(|e| format!("{}: {e}", role.name()))
+        if config.instances == 0 {
+            return Err("a cluster runs at least one instance of each role".to_owned());
+        }
+        let plan = Plan {
+            instances: config.instances,
+            ttl: config.lease_ttl,
+            tls: config.tls.clone(),
+            key: key.clone(),
+            // Set once the writer is bound.
+            persist: SocketAddr::new(config.bind, 0),
+            clock: clock.clone(),
+            bind: config.bind,
+            group: config.group,
         };
-        let persist_server = bind(Role::Persist, persist.router())?;
-        let (account, realm) = records(&runtime, tls, persist_server.addr(), &key, &clock)?;
-        let account_server = bind(Role::Account, account.router())?;
-        let realm_server = bind(Role::Realm, realm.router())?;
-        // Social writes guild and friend rows through the writer and reads
-        // them back.
-        let social = SocialService::with_writer(client_for(
-            tls,
-            persist_server.addr(),
-            Role::Social,
-            Role::Persist,
-            &key,
-        )?)
-        .clocked(clock.clone());
-        runtime.block_on(social.load_durable())?;
-        let social_server = bind(Role::Social, social.router())?;
-        let (account_addr, realm_addr) = (account_server.addr(), realm_server.addr());
-        let mut servers = vec![
-            (Role::Account, account_server),
-            (Role::Realm, realm_server),
-            (Role::Social, social_server),
-            (Role::Persist, persist_server),
-        ];
-        let handle = runtime.handle().clone();
-        let to_realm = Arc::new(client_for(tls, realm_addr, Role::Matchmaking, Role::Realm, &key)?);
-        let matchmaking = MatchmakingService::new(
-            config.group,
-            Arc::new(move |queue| {
-                let req = m::CreateInstance {
-                    template: u32::from(queue),
-                };
-                let (realm, handle) = (Arc::clone(&to_realm), handle.clone());
-                tokio::task::block_in_place(|| {
-                    handle
-                        .block_on(async move { realm.call::<methods::NewInstance>(&req, RPC_TIMEOUT).await })
-                })
-                .map(|i| (i.cell.0, i.address.as_str().to_owned()))
-            }),
-        );
-        servers.push((Role::Matchmaking, bind(Role::Matchmaking, matchmaking.router())?));
-        let (signer, live_pkcs8) = match &config.live_pkcs8 {
-            Some(pkcs8) => (LiveSigner::from_pkcs8(pkcs8)?, pkcs8.clone()),
-            None => LiveSigner::generate(&SystemRandom::new())?,
+        let persist_server = plan.bind_any(&runtime, Role::Persist, persist.router())?;
+        let plan = Plan {
+            persist: persist_server.addr(),
+            ..plan
         };
-        let ops = OpsService::new(
-            persist.clone(),
-            Arc::new(client_for(tls, account_addr, Role::Ops, Role::Account, &key)?),
-            signer,
-        )
-        .clocked(clock.clone());
-        runtime.block_on(ops.load_live())?;
-        servers.push((Role::Ops, bind(Role::Ops, ops.router())?));
+        let live_pkcs8 = match &config.live_pkcs8 {
+            Some(pkcs8) => pkcs8.clone(),
+            None => LiveSigner::generate(&SystemRandom::new())?.1,
+        };
+        let inspected: Inspected = Arc::default();
+        let (roles, servers, replicas) = if config.instances > 1 {
+            let (roles, replicas) = replicas::replicate(&runtime, &plan, &live_pkcs8, &inspected)?;
+            (roles, vec![(Role::Persist, persist_server)], replicas)
+        } else {
+            let (roles, servers) = single(&runtime, &plan, &persist, persist_server, &live_pkcs8)?;
+            (roles, servers, Vec::new())
+        };
         let (tls, dashboard_cert) = dev_tls()?;
-        let dashboard = runtime.block_on(Dashboard::start(&config.dashboard, ops.clone(), tls))?;
+        let dashboard = runtime.block_on(Dashboard::start(&config.dashboard, roles.ops.get(), tls))?;
         Ok(Self {
             runtime,
             servers,
             dashboard: Some(dashboard),
             dashboard_cert,
             key,
-            account,
-            realm,
-            social,
+            account: roles.account,
+            realm: roles.realm,
+            social: roles.social,
             persist,
-            ops,
+            ops: roles.ops,
+            replicas,
+            plan,
+            inspected,
             live_pkcs8,
             store: store_name,
             tls: config.tls.clone(),
@@ -322,6 +381,127 @@ impl LocalCluster {
             .iter()
             .find(|(r, _)| *r == role)
             .map(|(_, s)| s.addr())
+            .or_else(|| self.replicas.iter().find(|r| r.role == role).map(|r| r.addr))
+    }
+
+    /// Where each instance of `role` listens, running or not (one address
+    /// for a role with one instance).
+    #[must_use]
+    pub fn instances(&self, role: Role) -> Vec<SocketAddr> {
+        let replicas: Vec<SocketAddr> = self
+            .replicas
+            .iter()
+            .filter(|r| r.role == role)
+            .map(|r| r.addr)
+            .collect();
+        if replicas.is_empty() {
+            self.addr(role).into_iter().collect()
+        } else {
+            replicas
+        }
+    }
+
+    /// An endpoint listing every instance of `role`: calls reach its
+    /// active one.
+    #[must_use]
+    pub fn endpoint(&self, role: Role) -> Option<Endpoint> {
+        let addrs = self.instances(role);
+        (!addrs.is_empty()).then(|| Endpoint::instances(&addrs))
+    }
+
+    /// The account role: the only instance's, or the latest term's.
+    #[must_use]
+    pub fn account(&self) -> AccountService {
+        self.account.get()
+    }
+
+    /// The realm role: the only instance's, or the latest term's.
+    #[must_use]
+    pub fn realm(&self) -> RealmService {
+        self.realm.get()
+    }
+
+    /// The social role: the only instance's, or the latest term's.
+    #[must_use]
+    pub fn social(&self) -> SocialService {
+        self.social.get()
+    }
+
+    /// Ops: the only instance's, or the latest term's.
+    #[must_use]
+    pub fn ops(&self) -> OpsService {
+        self.ops.get()
+    }
+
+    /// Which instance of failover role `role` is active, and its lease
+    /// epoch (with two or more instances): of two that believe they are (a
+    /// hung one has not learnt it lost its lease), the newer term's.
+    #[must_use]
+    pub fn active(&self, role: Role) -> Option<(usize, u64)> {
+        self.replicas
+            .iter()
+            .filter(|r| r.role == role)
+            .filter_map(|r| {
+                r.running
+                    .as_ref()
+                    .and_then(|(seat, _)| seat.seat_epoch())
+                    .map(|epoch| (r.index, epoch))
+            })
+            .max_by_key(|(_, epoch)| *epoch)
+    }
+
+    /// Stops instance `index` of failover role `role` as a crash of its
+    /// process would: its server closes and its term ends. Returns where
+    /// it listened.
+    pub fn stop_instance(&mut self, role: Role, index: usize) -> Option<SocketAddr> {
+        let r = self
+            .replicas
+            .iter_mut()
+            .find(|r| r.role == role && r.index == index)?;
+        let running = r.running.take()?;
+        let _guard = self.runtime.enter();
+        drop(running);
+        Some(r.addr)
+    }
+
+    /// Starts instance `index` of failover role `role` again at its
+    /// address, as its process restarting would: it takes the lease when
+    /// it is free, and is a standby otherwise.
+    ///
+    /// # Errors
+    /// No such instance, it runs, or the bind failed.
+    pub fn start_instance(&mut self, role: Role, index: usize) -> Result<(), String> {
+        let r = self
+            .replicas
+            .iter_mut()
+            .find(|r| r.role == role && r.index == index)
+            .ok_or_else(|| format!("no {} instance {index}", role.name()))?;
+        if r.running.is_some() {
+            return Err(format!("{} instance {index} runs", role.name()));
+        }
+        r.restart(&self.runtime, &self.plan)
+    }
+
+    /// Stops the lease task of instance `index` of `role` while it keeps
+    /// serving, as a hung process's would: its term ends when the writer
+    /// refuses one of its writes. False: no such running instance.
+    pub fn stall_instance(&self, role: Role, index: usize) -> bool {
+        self.replicas
+            .iter()
+            .find(|r| r.role == role && r.index == index)
+            .and_then(|r| r.running.as_ref())
+            .map(|(seat, _)| seat.seat_stall())
+            .is_some()
+    }
+
+    /// Waits until every running instance's lease task has had each round
+    /// due by the clock's time now (a takeover's durable load included):
+    /// on a manual clock, advance it, then settle.
+    ///
+    /// # Errors
+    /// They did not settle in time.
+    pub fn settle_leases(&self) -> Result<(), String> {
+        replicas::settle(&self.runtime, &self.replicas)
     }
 
     /// The dashboard's address.
@@ -357,7 +537,8 @@ impl LocalCluster {
     /// The Ops identity does not make a client.
     pub fn try_add_cell(&self, cell: u64, inspector: SocketAddr) -> Result<(), String> {
         let client = client_for(self.tls.as_ref(), inspector, Role::Ops, Role::Cell, &self.key)?;
-        self.ops.add_cell(cell, Arc::new(client));
+        lock(&self.inspected).push((cell, inspector));
+        self.ops.get().add_cell(cell, Arc::new(client));
         Ok(())
     }
 
@@ -378,7 +559,7 @@ impl LocalCluster {
     /// # Errors
     /// The command's failure, as text.
     pub fn execute(&self, actor: &str, cmd: &Command) -> Result<crate::ops::Executed, String> {
-        let ops = self.ops.clone();
+        let ops = self.ops.get();
         let (actor, cmd) = (actor.to_owned(), cmd.clone());
         self.runtime
             .block_on(async move { tokio::spawn(async move { ops.execute(&actor, &cmd).await }).await })
@@ -415,7 +596,7 @@ impl LocalCluster {
         .clocked(self.clock.clone());
         self.runtime.block_on(ops.load_live())?;
         let server = self.bind_role(Role::Ops, addr, ops.router())?;
-        self.ops = ops;
+        self.ops.set(ops);
         self.servers.push((Role::Ops, server));
         Ok(())
     }
@@ -429,9 +610,10 @@ impl LocalCluster {
     pub fn start_realm(&mut self, addr: SocketAddr) -> Result<(), String> {
         let persist = self.addr(Role::Persist).ok_or("no persistence writer")?;
         let writer = client_for(self.tls.as_ref(), persist, Role::Realm, Role::Persist, &self.key)?;
-        self.realm = RealmService::with_writer(writer).clocked(self.clock.clone());
-        self.runtime.block_on(self.realm.load_durable())?;
-        let server = self.bind_role(Role::Realm, addr, self.realm.router())?;
+        let realm = RealmService::with_writer(writer).clocked(self.clock.clone());
+        self.runtime.block_on(realm.load_durable())?;
+        let server = self.bind_role(Role::Realm, addr, realm.router())?;
+        self.realm.set(realm);
         self.servers.push((Role::Realm, server));
         Ok(())
     }
@@ -450,9 +632,10 @@ impl LocalCluster {
             Role::Persist,
             &self.key,
         )?;
-        self.account = AccountService::with_writer(writer).clocked(self.clock.clone());
-        self.runtime.block_on(self.account.load_durable())?;
-        let server = self.bind_role(Role::Account, addr, self.account.router())?;
+        let account = AccountService::with_writer(writer).clocked(self.clock.clone());
+        self.runtime.block_on(account.load_durable())?;
+        let server = self.bind_role(Role::Account, addr, account.router())?;
+        self.account.set(account);
         self.servers.push((Role::Account, server));
         Ok(())
     }
@@ -486,7 +669,7 @@ impl LocalCluster {
     /// The bind failed.
     pub fn start_social(&mut self, addr: SocketAddr) -> Result<(), String> {
         let persist = self.addr(Role::Persist).ok_or("no persistence writer")?;
-        self.social = SocialService::with_writer(client_for(
+        let social = SocialService::with_writer(client_for(
             self.tls.as_ref(),
             persist,
             Role::Social,
@@ -494,8 +677,9 @@ impl LocalCluster {
             &self.key,
         )?)
         .clocked(self.clock.clone());
-        self.runtime.block_on(self.social.load_durable())?;
-        let server = self.bind_role(Role::Social, addr, self.social.router())?;
+        self.runtime.block_on(social.load_durable())?;
+        let server = self.bind_role(Role::Social, addr, social.router())?;
+        self.social.set(social);
         self.servers.push((Role::Social, server));
         Ok(())
     }
@@ -507,6 +691,20 @@ impl LocalCluster {
         let mut out = String::from("service graph (all roles in this process):\n");
         for (role, server) in &self.servers {
             let _ = writeln!(out, "  {:<12} rpc {}", role.name(), server.addr());
+        }
+        for r in &self.replicas {
+            let state = match &r.running {
+                None => "stopped",
+                Some((seat, _)) if seat.seat_epoch().is_some() => "active",
+                Some(_) => "standby",
+            };
+            let _ = writeln!(
+                out,
+                "  {:<12} rpc {} (instance {}, {state})",
+                r.role.name(),
+                r.addr,
+                r.index + 1
+            );
         }
         if let Some(d) = &self.dashboard {
             let _ = writeln!(
@@ -533,6 +731,7 @@ impl Drop for LocalCluster {
         let _guard = self.runtime.enter();
         self.dashboard = None;
         self.servers.clear();
+        self.replicas.clear();
     }
 }
 

@@ -63,37 +63,58 @@ impl Endpoints {
         self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// The endpoint of `instance`.
+    /// The endpoint of a cell host `instance`.
     #[must_use]
     pub fn get(&self, instance: &str) -> Option<Endpoint> {
         self.lock().get(instance).cloned()
     }
 
-    /// Makes the endpoints those of `registry`'s instances of `roles`:
-    /// existing ones are moved in place, new ones added, gone ones
-    /// removed. Returns how many moved.
+    /// The endpoint of service `role`: every instance of it, a call going
+    /// to the active one.
+    #[must_use]
+    pub fn role(&self, role: Role) -> Option<Endpoint> {
+        self.lock().get(&Self::role_key(role)).cloned()
+    }
+
+    fn role_key(role: Role) -> String {
+        format!("role {}", matrix::name(role))
+    }
+
+    /// Makes the endpoints those of `registry`'s instances of `roles`: one
+    /// per service role listing every instance of it (active and
+    /// standbys), one per cell host. Existing ones are moved in place, new
+    /// ones added, gone ones removed. Returns how many moved.
     ///
     /// # Errors
     /// A target the services refuse (never one the registry accepted).
     pub fn update(&self, registry: &Registry, roles: &[Role]) -> Result<usize, String> {
+        let mut wanted: Vec<(String, String)> = Vec::new();
+        for role in roles {
+            let instances = registry.of(*role);
+            if *role == Role::Cell {
+                for i in instances {
+                    wanted.push((i.name.clone(), i.rpc.to_string()));
+                }
+            } else if !instances.is_empty() {
+                let targets: Vec<String> = instances.iter().map(|i| i.rpc.to_string()).collect();
+                wanted.push((Self::role_key(*role), targets.join(",")));
+            }
+        }
         let mut map = self.lock();
         let mut moved = 0;
-        let mut keep = std::collections::BTreeSet::new();
-        for i in registry.instances.iter().filter(|i| roles.contains(&i.role)) {
-            keep.insert(i.name.clone());
-            let target = i.rpc.to_string();
-            match map.get(&i.name) {
+        for (key, target) in &wanted {
+            match map.get(key) {
                 Some(e) => {
-                    if e.set(&target)? {
+                    if e.set(target)? {
                         moved += 1;
                     }
                 }
                 None => {
-                    map.insert(i.name.clone(), Endpoint::new(&target)?);
+                    map.insert(key.clone(), Endpoint::new(target)?);
                 }
             }
         }
-        map.retain(|name, _| keep.contains(name));
+        map.retain(|key, _| wanted.iter().any(|(k, _)| k == key));
         Ok(moved)
     }
 }
@@ -354,10 +375,9 @@ impl Node {
     /// `role` is not one this node dials, or the registry has none.
     pub fn endpoint_of(&self, role: Role) -> Result<Endpoint, String> {
         self.rpc_of(role)?;
-        let name = self.registry.one(role)?.name.clone();
         self.endpoints
-            .get(&name)
-            .ok_or_else(|| format!("no address for {name}"))
+            .role(role)
+            .ok_or_else(|| format!("no address for {}", matrix::name(role)))
     }
 
     /// A client of the single instance of `role` over mutual TLS with this
@@ -403,8 +423,15 @@ impl Node {
     pub fn wait_for_dependencies(&self) -> Result<Duration, String> {
         let deps = matrix::dependencies(self.config.role)
             .iter()
-            .map(|r| self.registry.one(*r))
-            .collect::<Result<Vec<&Instance>, String>>()?;
+            .map(|r| {
+                let all = self.registry.of(*r);
+                if all.is_empty() {
+                    Err(format!("the registry has no {} instance", matrix::name(*r)))
+                } else {
+                    Ok(all)
+                }
+            })
+            .collect::<Result<Vec<Vec<&Instance>>, String>>()?;
         if deps.is_empty() {
             return Ok(Duration::ZERO);
         }
@@ -414,7 +441,10 @@ impl Node {
             self.config.ready_timeout,
             &self.drain,
         ))?;
-        let names: Vec<&str> = deps.iter().map(|d| matrix::name(d.role)).collect();
+        let names: Vec<&str> = deps
+            .iter()
+            .filter_map(|d| d.first().map(|i| matrix::name(i.role)))
+            .collect();
         self.say(&format!(
             "dependencies ready after {} ms: {}",
             waited.as_millis(),

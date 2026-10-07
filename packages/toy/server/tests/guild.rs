@@ -119,7 +119,7 @@ fn a_guild_spans_cells_survives_a_social_restart_and_every_cell_replays() {
             ),
             realm: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Realm).unwrap()),
             world: 0,
-            live_key: cluster.ops.public_key(),
+            live_key: cluster.ops().public_key(),
             cells: world::regions()
                 .into_iter()
                 .enumerate()
@@ -172,7 +172,7 @@ fn a_guild_spans_cells_survives_a_social_restart_and_every_cell_replays() {
     let guild = d.u32().unwrap();
     assert_eq!(WireString::<24>::decode(&mut d).unwrap().as_str(), "Lamplighters");
     assert_eq!(d.u8().unwrap(), guild_rank::LEADER);
-    assert_eq!(cluster.social.guild_of(1), Some(guild));
+    assert_eq!(cluster.social().guild_of(1), Some(guild));
 
     // 1 invites 2, who accepts; 1 is told of its new member.
     let target = sim.bots[1].bot.avatar().unwrap();
@@ -186,7 +186,7 @@ fn a_guild_spans_cells_survives_a_social_restart_and_every_cell_replays() {
     until(&mut sim, "joined", &|s| {
         !seen(s, 1, JOINED).is_empty() && !seen(s, 0, CHANGED).is_empty()
     });
-    assert_eq!(cluster.social.guild_rank(2), Some(guild_rank::MEMBER));
+    assert_eq!(cluster.social().guild_rank(2), Some(guild_rank::MEMBER));
 
     // 2 moves to the other cell and is told its guild there.
     let joins_before = seen(&sim, 1, JOINED).len();
@@ -245,7 +245,7 @@ fn a_guild_spans_cells_survives_a_social_restart_and_every_cell_replays() {
     e.u64(1);
     e.bool(true);
     sim.bots[1].bot.feature(ExtensionKind(FRIEND_RESPOND), &accept);
-    until(&mut sim, "friends", &|_| cluster.social.are_friends(1, 2));
+    until(&mut sim, "friends", &|_| cluster.social().are_friends(1, 2));
 
     // The social role restarts: guilds and friends come back from the
     // writer.
@@ -254,9 +254,9 @@ fn a_guild_spans_cells_survives_a_social_restart_and_every_cell_replays() {
         step(&mut sim);
     }
     cluster.start_social(addr).unwrap();
-    assert_eq!(cluster.social.guild_of(2), Some(guild));
-    assert_eq!(cluster.social.guild_rank(2), Some(guild_rank::OFFICER));
-    assert!(cluster.social.are_friends(2, 1));
+    assert_eq!(cluster.social().guild_of(2), Some(guild));
+    assert_eq!(cluster.social().guild_rank(2), Some(guild_rank::OFFICER));
+    assert!(cluster.social().are_friends(2, 1));
     assert!(
         cluster
             .persist

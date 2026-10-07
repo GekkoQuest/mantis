@@ -40,6 +40,7 @@ fn registry(serial: u64, cluster: &str, persist: &str) -> Registry {
                 rpc: Target::parse(persist).unwrap(),
                 health: Target::parse("persist.services.internal:7605").unwrap(),
                 cells: Vec::new(),
+                lease_owner: None,
             },
             Instance {
                 name: "social-1".to_owned(),
@@ -47,6 +48,7 @@ fn registry(serial: u64, cluster: &str, persist: &str) -> Registry {
                 rpc: Target::parse("social.services.internal:7503").unwrap(),
                 health: Target::parse("social.services.internal:7603").unwrap(),
                 cells: Vec::new(),
+                lease_owner: None,
             },
         ],
     }

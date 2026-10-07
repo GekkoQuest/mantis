@@ -218,6 +218,7 @@ pub fn run(config: &LocalConfig, stdin_eof: bool) -> Result<(), String> {
             rpc: rpc.into(),
             health: server.addr().into(),
             cells: Vec::new(),
+            lease_owner: None,
         });
         health.push((status, server));
     }
@@ -228,13 +229,14 @@ pub fn run(config: &LocalConfig, stdin_eof: bool) -> Result<(), String> {
             rpc: (*rpc).into(),
             health: (*health_addr).into(),
             cells: cells.clone(),
+            lease_owner: None,
         });
         for cell in cells {
             cluster.try_add_cell(*cell, *rpc)?;
         }
     }
     let live_key: [u8; keys::PUBLIC_KEY_BYTES] = cluster
-        .ops
+        .ops()
         .public_key()
         .try_into()
         .map_err(|_| "the live-data public key is 32 bytes")?;

@@ -478,7 +478,7 @@ pub fn start_local(opts: &LocalOptions) -> Result<LocalWorld, String> {
             matchmaking: mantis_services::host::rpc::Endpoint::fixed(addr(Role::Matchmaking)?),
             realm: mantis_services::host::rpc::Endpoint::fixed(addr(Role::Realm)?),
             world: 0,
-            live_key: cluster.ops.public_key(),
+            live_key: cluster.ops().public_key(),
             cells: world::regions()
                 .into_iter()
                 .zip(1u64..)

@@ -107,7 +107,7 @@ method!(/// Delete one of an account's characters.
 method!(/// A cell host reports where a character left or arrived.
     PlaceCharacter: CharacterPlaced -> Empty, callers [Cell]);
 method!(/// A role instance takes or renews its role's lease (role failover).
-    Lease: AcquireLease -> LeaseState, callers [Account, Realm, Social, Ops]);
+    Lease: AcquireLease -> LeaseState, callers [Account, Realm, Social, Matchmaking, Ops]);
 
 method!(/// Join a matchmaking queue.
     Queue: Enqueue -> Empty, callers [Gateway, Cell]);

@@ -51,7 +51,7 @@ fn three_bots_log_in_and_are_admitted(
             ),
             realm: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Realm).unwrap()),
             world: 0,
-            live_key: cluster.ops.public_key(),
+            live_key: cluster.ops().public_key(),
             cells: toy_server::world::regions()
                 .into_iter()
                 .zip(1u64..)
@@ -337,7 +337,7 @@ fn logged_in_bots_log_in_again_after_account_and_realm_restart() {
             ),
             realm: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Realm).unwrap()),
             world: 0,
-            live_key: cluster.ops.public_key(),
+            live_key: cluster.ops().public_key(),
             cells: toy_server::world::regions()
                 .into_iter()
                 .zip(1u64..)
@@ -406,7 +406,7 @@ fn logged_in_bots_log_in_again_after_account_and_realm_restart() {
         }
     }
     until(&mut sim, "the cells registered with the new realm", &|_| {
-        cluster.realm.cells().len() == cells.len()
+        cluster.realm().cells().len() == cells.len()
     });
     assert_eq!(characters_in_world(&sim), expected, "nobody left the world");
     for _ in 0..30 {
@@ -428,10 +428,12 @@ fn logged_in_bots_log_in_again_after_account_and_realm_restart() {
     until(&mut sim, "everyone out", &|s| characters_in_world(s).is_empty());
     sim.bots.clear();
     until(&mut sim, "the realm placed every character", &|_| {
-        first
-            .iter()
-            .all(|e| cluster.realm.character(e.character).is_some_and(|c| c.cell != 0))
-            && link.pending() == 0
+        first.iter().all(|e| {
+            cluster
+                .realm()
+                .character(e.character)
+                .is_some_and(|c| c.cell != 0)
+        }) && link.pending() == 0
     });
 
     // The same bots log in again, with the same passwords.
@@ -448,7 +450,7 @@ fn logged_in_bots_log_in_again_after_account_and_realm_restart() {
         assert_ne!(a.token, b.token);
     }
     for (i, e) in second.iter().enumerate() {
-        let row = cluster.realm.character(e.character).unwrap();
+        let row = cluster.realm().character(e.character).unwrap();
         let near = (0..3).all(|k| (row.position[k] - left[i][k]).abs() < 1.0);
         assert!(
             near,

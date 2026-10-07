@@ -146,6 +146,90 @@ services:
     ports:
       - "127.0.0.1:7480:7480/tcp"
 
+  # Standbys: a second instance of each failover role, holding no lease until the active
+  # one's lapses (deploy/compose/config/<role>-2.toml). Ops-2's dashboard is published on
+  # 127.0.0.1:7481 and serves only while it is the active Ops.
+  account-2:
+    <<: *node
+    image: mantis/account:dev
+    build: { context: ../containers, dockerfile: account.Containerfile, args: { RUNTIME: "mantis/runtime-${MANTIS_RUNTIME:-debian}:dev" } }
+    secrets:
+      - cluster_key
+      - { source: account-2_crt, target: tls_cert }
+      - { source: account-2_key, target: tls_key }
+    volumes:
+      - ./config/account-2.toml:/etc/mantis/node.toml:ro
+      - ../local/registry.toml:/etc/mantis/registry.toml:ro
+      - ../local/keys/deploy.pub:/etc/mantis/deploy.pub:ro
+    networks:
+      services: { ipv4_address: 10.77.0.21 }
+
+  realm-2:
+    <<: *node
+    image: mantis/realm:dev
+    build: { context: ../containers, dockerfile: realm.Containerfile, args: { RUNTIME: "mantis/runtime-${MANTIS_RUNTIME:-debian}:dev" } }
+    secrets:
+      - cluster_key
+      - { source: realm-2_crt, target: tls_cert }
+      - { source: realm-2_key, target: tls_key }
+    volumes:
+      - ./config/realm-2.toml:/etc/mantis/node.toml:ro
+      - ../local/registry.toml:/etc/mantis/registry.toml:ro
+      - ../local/keys/deploy.pub:/etc/mantis/deploy.pub:ro
+    networks:
+      services: { ipv4_address: 10.77.0.22 }
+
+  social-2:
+    <<: *node
+    image: mantis/social:dev
+    build: { context: ../containers, dockerfile: social.Containerfile, args: { RUNTIME: "mantis/runtime-${MANTIS_RUNTIME:-debian}:dev" } }
+    secrets:
+      - cluster_key
+      - { source: social-2_crt, target: tls_cert }
+      - { source: social-2_key, target: tls_key }
+    volumes:
+      - ./config/social-2.toml:/etc/mantis/node.toml:ro
+      - ../local/registry.toml:/etc/mantis/registry.toml:ro
+      - ../local/keys/deploy.pub:/etc/mantis/deploy.pub:ro
+    networks:
+      services: { ipv4_address: 10.77.0.23 }
+
+  matchmaking-2:
+    <<: *node
+    image: mantis/matchmaking:dev
+    build: { context: ../containers, dockerfile: matchmaking.Containerfile, args: { RUNTIME: "mantis/runtime-${MANTIS_RUNTIME:-debian}:dev" } }
+    secrets:
+      - cluster_key
+      - { source: matchmaking-2_crt, target: tls_cert }
+      - { source: matchmaking-2_key, target: tls_key }
+    volumes:
+      - ./config/matchmaking-2.toml:/etc/mantis/node.toml:ro
+      - ../local/registry.toml:/etc/mantis/registry.toml:ro
+      - ../local/keys/deploy.pub:/etc/mantis/deploy.pub:ro
+    networks:
+      services: { ipv4_address: 10.77.0.24 }
+
+  ops-2:
+    <<: *node
+    image: mantis/ops:dev
+    build: { context: ../containers, dockerfile: ops.Containerfile, args: { RUNTIME: "mantis/runtime-${MANTIS_RUNTIME:-debian}:dev" } }
+    secrets:
+      - cluster_key
+      - live_key
+      - operator_token
+      - { source: ops-2_crt, target: tls_cert }
+      - { source: ops-2_key, target: tls_key }
+    volumes:
+      - ./config/ops-2.toml:/etc/mantis/node.toml:ro
+      - ../local/registry.toml:/etc/mantis/registry.toml:ro
+      - ../local/keys/deploy.pub:/etc/mantis/deploy.pub:ro
+      - ../local/out:/var/lib/mantis/out
+    networks:
+      services: { ipv4_address: 10.77.0.25 }
+      ops: { ipv4_address: 10.79.0.11, gw_priority: 1 }
+    ports:
+      - "127.0.0.1:7481:7480/tcp"
+
   cell-host:
     <<: *node
     image: mantis/cell-host:dev
@@ -208,6 +292,17 @@ secrets:
   matchmaking-1_key: { file: ../local/certs/matchmaking-1.key }
   ops-1_crt: { file: ../local/certs/ops-1.crt }
   ops-1_key: { file: ../local/certs/ops-1.key }
+  # The standbys' certificates.
+  account-2_crt: { file: ../local/certs/account-2.crt }
+  account-2_key: { file: ../local/certs/account-2.key }
+  realm-2_crt: { file: ../local/certs/realm-2.crt }
+  realm-2_key: { file: ../local/certs/realm-2.key }
+  social-2_crt: { file: ../local/certs/social-2.crt }
+  social-2_key: { file: ../local/certs/social-2.key }
+  matchmaking-2_crt: { file: ../local/certs/matchmaking-2.crt }
+  matchmaking-2_key: { file: ../local/certs/matchmaking-2.key }
+  ops-2_crt: { file: ../local/certs/ops-2.crt }
+  ops-2_key: { file: ../local/certs/ops-2.key }
   cells-1_crt: { file: ../local/certs/cells-1.crt }
   cells-1_key: { file: ../local/certs/cells-1.key }
   # The game listener's chain from the cluster CA (mantisd certs --server game), and the CA

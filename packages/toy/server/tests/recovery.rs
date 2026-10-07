@@ -1,8 +1,9 @@
 //! Recovery and chaos under the simulated network (decision 0007, plan
 //! 7.1): a cell host crashing mid-soak, and a clean shutdown followed by a
 //! deploy, each printing a `budget:` line with its recovery time in ticks;
-//! and a social role restart during party changes (timing-sensitive, see
-//! its comment).
+//! a social role restart during party changes (timing-sensitive, see its
+//! comment); and the toy cluster with two instances of every failover
+//! role, each role's active killed in turn under play.
 
 #![expect(clippy::unwrap_used, clippy::indexing_slicing, clippy::too_many_lines)]
 
@@ -71,15 +72,15 @@ fn link_config(cluster: &LocalCluster) -> CellLinkConfig {
     {
         CellLinkConfig {
             key: cluster.key.clone(),
-            persist: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Persist).unwrap()),
-            ops: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Ops).unwrap()),
-            social: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Social).unwrap()),
-            matchmaking: mantis_services::host::rpc::Endpoint::fixed(
-                cluster.addr(Role::Matchmaking).unwrap(),
-            ),
-            realm: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Realm).unwrap()),
+            // Every instance of each role (one, or the failover roles'
+            // active and standby).
+            persist: cluster.endpoint(Role::Persist).unwrap(),
+            ops: cluster.endpoint(Role::Ops).unwrap(),
+            social: cluster.endpoint(Role::Social).unwrap(),
+            matchmaking: cluster.endpoint(Role::Matchmaking).unwrap(),
+            realm: cluster.endpoint(Role::Realm).unwrap(),
             world: 0,
-            live_key: cluster.ops.public_key(),
+            live_key: cluster.ops().public_key(),
             cells: world::regions()
                 .into_iter()
                 .enumerate()
@@ -482,7 +483,7 @@ fn social_restart_ticks(tls: bool) -> (u64, u64) {
     assert!(!invited(&sim, 2), "nothing answers while the role is down");
     drop(outage);
     cluster.start_social(addr).unwrap();
-    assert_eq!(cluster.social.party_of(1), None, "the new run starts empty");
+    assert_eq!(cluster.social().party_of(1), None, "the new run starts empty");
 
     // The new run gets this host's projection before the invitation, so the
     // invitation lands on the existing party; the third member accepts.
@@ -497,7 +498,7 @@ fn social_restart_ticks(tls: bool) -> (u64, u64) {
         (0..3).all(|b| last_roster(s, b).is_some_and(|r| r == (party, 1, vec![1, 2, 3])))
     });
     for c in 1..=3 {
-        assert_eq!(cluster.social.party_of(c), Some(party), "member {c} lost");
+        assert_eq!(cluster.social().party_of(c), Some(party), "member {c} lost");
     }
     let stats = &link.stats;
     let get = |a: &std::sync::atomic::AtomicU64| a.load(std::sync::atomic::Ordering::Relaxed);
@@ -742,4 +743,210 @@ fn a_log_torn_at_any_byte_of_its_last_tick_recovers_to_the_last_complete_tick() 
         TICKS - 1
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A failover role's lease lifetime in the two-instance cluster.
+const LEASE: Duration = Duration::from_millis(600);
+
+/// One step of the two-instance cluster: a tick of the zone, the clock
+/// advanced by one tick, then the link and every lease task settled.
+/// Returns the live changes the tick queued into cells.
+fn failover_step(
+    sim: &mut Sim,
+    link: &CellLink,
+    cluster: &LocalCluster,
+    clock: &mantis_services::host::clock::ManualClock,
+    tick: Duration,
+) -> usize {
+    let reports = sim.step().unwrap();
+    let live = after_tick(&mut sim.zone, link, &reports).live;
+    clock.advance(tick);
+    let settled = link.settle(Duration::from_secs(30));
+    assert!(settled.is_ok(), "tick {}: {settled:?}", sim.ticks());
+    cluster.settle_leases().unwrap();
+    live
+}
+
+fn chat_enabled(sim: &Sim, cell: usize, key: &str) -> bool {
+    use mantis_server::modules::ModuleStates;
+    let states = sim.zone.cells()[cell].world().resource::<ModuleStates>().unwrap();
+    states.is_enabled(states.id(key).unwrap())
+}
+
+/// The toy cluster with two instances of every failover role, on one
+/// manual clock: each role's active is killed in turn while three
+/// characters play, and its standby takes over within the budget. A party
+/// changing while social fails over converges with no member lost, a flag
+/// set through the new Ops term reaches every cell, and the new realm term
+/// knows every cell again.
+#[test]
+fn the_toy_cluster_keeps_playing_while_every_role_fails_over() {
+    use mantis_core::wire::Wire;
+    use mantis_services::host::clock::{ManualClock, ServiceClock};
+    use mantis_services::ops::Command;
+    if toy_server::world::skip_unless_linked("std.party", "the failover cluster under play") {
+        return;
+    }
+    let clock = ManualClock::new(1_700_000_000_000);
+    let mut config = ClusterConfig::local();
+    config.clock = ServiceClock::manual(&clock);
+    config.instances = 2;
+    config.lease_ttl = LEASE;
+    let mut cluster = LocalCluster::start(&config).unwrap();
+    let t = Tunables::defaults().unwrap();
+    let link = CellLink::start_on(&cluster.handle(), &link_config(&cluster), cluster.clock()).unwrap();
+    for cell in [1, 2] {
+        cluster.add_cell(cell, link.inspector().unwrap());
+    }
+    let mut sim = Sim::new(t, SEED, |_| None).unwrap();
+    for _ in 0..3 {
+        sim.add_bot(Side::Native, Profile::Idle, LinkConfig::RTT100_LOSS2)
+            .unwrap();
+    }
+    let tick = Duration::from_millis(u64::from(1000 / t.tick_rate.hz()));
+    let lease_ticks = u64::try_from(LEASE.as_millis() / tick.as_millis()).unwrap();
+    // The lease lapses at most one lifetime after the kill; the standby
+    // asks every third of one; then its durable load.
+    let takeover_limit = lease_ticks + lease_ticks / 3 + 2;
+    let until = |sim: &mut Sim,
+                 cluster: &LocalCluster,
+                 what: &str,
+                 limit: u64,
+                 done: &dyn Fn(&Sim, &LocalCluster) -> bool|
+     -> (u64, usize) {
+        let (mut ticks, mut live) = (0, 0);
+        while !done(sim, cluster) {
+            assert!(ticks < limit * 4, "{what}: not within {} ticks", limit * 4);
+            live += failover_step(sim, &link, cluster, &clock, tick);
+            ticks += 1;
+        }
+        (ticks, live)
+    };
+    until(&mut sim, &cluster, "everyone in", 60, &|s, _| {
+        s.bots.iter().all(|b| b.bot.avatar().is_some()) && s.ticks() >= 31
+    });
+    let invite = |sim: &mut Sim, from: usize, to: usize| {
+        let target = sim.bots[to].bot.avatar().unwrap();
+        let mut bytes = Vec::new();
+        target.encode(&mut Encoder::new(&mut bytes));
+        sim.bots[from].bot.feature(ExtensionKind(INVITE), &bytes);
+    };
+    let accept = |sim: &mut Sim, who: usize, from_character: u64| {
+        let mut bytes = Vec::new();
+        Encoder::new(&mut bytes).u64(from_character);
+        sim.bots[who].bot.feature(ExtensionKind(ACCEPT), &bytes);
+    };
+    invite(&mut sim, 0, 1);
+    until(&mut sim, &cluster, "the first invitation", 60, &|s, _| {
+        invited(s, 1)
+    });
+    accept(&mut sim, 1, 1);
+    until(&mut sim, &cluster, "the first roster", 60, &|s, _| {
+        (0..2).all(|b| last_roster(s, b).is_some_and(|r| r.2 == vec![1, 2]))
+    });
+    let party = last_roster(&sim, 0).unwrap().0;
+
+    let mut outages = Vec::new();
+    // Social: the leader invites a third member while the active is dead;
+    // the operation is retried until the new term answers, on the party
+    // the cells restore.
+    let social_ticks = {
+        let (killed, _) = cluster.active(Role::Social).unwrap();
+        let addr = cluster.stop_instance(Role::Social, killed).unwrap();
+        outages.push(Outage::at(addr));
+        invite(&mut sim, 0, 2);
+        let (ticks, _) = until(
+            &mut sim,
+            &cluster,
+            "the invitation after the failover",
+            takeover_limit + RESTART_ANSWER_LIMIT,
+            &|s, _| invited(s, 2),
+        );
+        ticks
+    };
+    accept(&mut sim, 2, 1);
+    until(
+        &mut sim,
+        &cluster,
+        "the roster converged",
+        ROSTER_CONVERGED_LIMIT,
+        &|s, _| (0..3).all(|b| last_roster(s, b).is_some_and(|r| r == (party, 1, vec![1, 2, 3]))),
+    );
+    for c in 1..=3 {
+        assert_eq!(cluster.social().party_of(c), Some(party), "member {c} lost");
+    }
+
+    // Kills `role`'s active: its address drops every connection from then
+    // on (a refused loopback connect is slow on Windows). Returns the ticks
+    // until the standby took over, with the next epoch.
+    let mut kill = |sim: &mut Sim, cluster: &mut LocalCluster, role: Role| -> u64 {
+        let (killed, epoch) = cluster.active(role).unwrap();
+        let addr = cluster.stop_instance(role, killed).unwrap();
+        outages.push(Outage::at(addr));
+        let (ticks, _) = until(sim, cluster, role.name(), takeover_limit, &|_, c| {
+            c.active(role).is_some()
+        });
+        let (now, next) = cluster.active(role).unwrap();
+        assert_eq!((now != killed, next), (true, epoch + 1), "{}", role.name());
+        ticks
+    };
+
+    // Ops: the new term's flag reaches every cell.
+    let ops_ticks = kill(&mut sim, &mut cluster, Role::Ops);
+    let key = ["std.chat", "std.titles", "std.vendor"]
+        .into_iter()
+        .find(|k| {
+            sim.zone.cells()[0]
+                .world()
+                .resource::<mantis_server::modules::ModuleStates>()
+                .is_some_and(|s| s.id(k).is_some())
+        })
+        .unwrap();
+    assert!(chat_enabled(&sim, 0, key) && chat_enabled(&sim, 1, key));
+    cluster
+        .execute(
+            "alice",
+            &Command::Flag {
+                name: key.to_owned(),
+                on: false,
+            },
+        )
+        .unwrap();
+    until(
+        &mut sim,
+        &cluster,
+        "the flag from the new Ops term",
+        60,
+        &|s, _| !chat_enabled(s, 0, key) && !chat_enabled(s, 1, key),
+    );
+
+    // Realm: the new term knows every cell again (hosts register again
+    // when they see its epoch).
+    let realm_ticks = kill(&mut sim, &mut cluster, Role::Realm);
+    until(
+        &mut sim,
+        &cluster,
+        "the cells registered with the new realm term",
+        60,
+        &|_, c| c.realm().cells().len() >= 2,
+    );
+
+    let account_ticks = kill(&mut sim, &mut cluster, Role::Account);
+    let matchmaking_ticks = kill(&mut sim, &mut cluster, Role::Matchmaking);
+    // Play went on throughout: every character still in the world.
+    assert!(sim.bots.iter().all(|b| b.bot.avatar().is_some()));
+    let stats = &link.stats;
+    let get = |a: &std::sync::atomic::AtomicU64| a.load(std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(get(&stats.projected_duplicates), 0);
+    assert_eq!(get(&stats.projected_gaps), 0);
+    println!(
+        "budget: two-instance toy cluster under play, ticks of {} ms from an active's kill: social answered the pending invitation after {social_ticks} (limit {}), ops took over after {ops_ticks}, realm {realm_ticks}, account {account_ticks}, matchmaking {matchmaking_ticks} (limit {takeover_limit}: one lease lifetime of {lease_ticks}, a third of one, and the durable load)",
+        tick.as_millis(),
+        takeover_limit + RESTART_ANSWER_LIMIT
+    );
+    assert!(social_ticks <= takeover_limit + RESTART_ANSWER_LIMIT);
+    for ticks in [ops_ticks, realm_ticks, account_ticks, matchmaking_ticks] {
+        assert!(ticks <= takeover_limit);
+    }
+    drop(outages);
 }

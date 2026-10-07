@@ -10,8 +10,9 @@ use std::time::Duration;
 
 use mantis_services::account::AccountService;
 use mantis_services::generated::services as m;
+use mantis_services::host::Fence;
 use mantis_services::host::Role;
-use mantis_services::host::rpc::{Endpoint, Router, RpcClient, RpcError, RpcServer};
+use mantis_services::host::rpc::{Endpoint, Router, RpcClient, RpcError, RpcServer, SeatSlot};
 use mantis_services::methods;
 use mantis_services::tls::TlsHandle;
 use mantis_services::tls::dev::DevCa;
@@ -44,6 +45,8 @@ fn endpoints_parse_host_and_port() {
         "[::1]:7000",
         "localhost:1",
         "realm-1.cluster.example:443",
+        "127.0.0.1:7000,127.0.0.1:7001",
+        "realm-1:7000,[::1]:7001,localhost:7002",
     ] {
         assert!(Endpoint::new(good).is_ok(), "{good}");
     }
@@ -57,6 +60,9 @@ fn endpoints_parse_host_and_port() {
         "[::1]7000",
         "host:70000",
         "-..:1",
+        "127.0.0.1:7000,",
+        ",127.0.0.1:7000",
+        "127.0.0.1:7000, 127.0.0.1:7001",
     ] {
         assert!(Endpoint::new(bad).is_err(), "{bad}");
     }
@@ -184,4 +190,61 @@ async fn a_swapped_identity_closes_old_connections_and_clients_handshake_again()
     .await
     .unwrap();
     drop(account);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_call_passes_a_standby_and_follows_the_active_instance() {
+    // Two instances of a role: the first a standby (an empty seat), the
+    // second active.
+    let first = SeatSlot::default();
+    let second = SeatSlot::default();
+    second.fill(answering(2), Fence::held(1));
+    let a = RpcServer::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        KEY.to_vec(),
+        Router::seated(first.clone()),
+    )
+    .await
+    .unwrap();
+    let b = RpcServer::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        KEY.to_vec(),
+        Router::seated(second.clone()),
+    )
+    .await
+    .unwrap();
+    let endpoint = Endpoint::instances(&[a.addr(), b.addr()]);
+    assert_eq!(endpoint.targets().len(), 2);
+    let client =
+        RpcClient::with_endpoint(endpoint.clone(), Role::Cell, KEY.to_vec(), None, Role::Realm).unwrap();
+    assert_eq!(epoch(&client).await, Ok(2), "the standby passes the call on");
+    assert_eq!(endpoint.preferred(), 1, "calls start at the active one now");
+    assert_eq!(epoch(&client).await, Ok(2));
+
+    // Failover: the second steps down, the first takes over.
+    second.vacate();
+    first.fill(answering(1), Fence::held(2));
+    assert_eq!(epoch(&client).await, Ok(1));
+    assert_eq!(endpoint.preferred(), 0);
+
+    // A lost term answers as a standby at once.
+    let fence = Fence::held(3);
+    first.fill(answering(1), fence.clone());
+    fence.lose();
+    assert_eq!(first.epoch(), None);
+    assert_eq!(
+        epoch(&client).await,
+        Err(RpcError::Standby),
+        "no instance is active"
+    );
+    // One instance only: its answer, as it is.
+    let alone = RpcClient::with_endpoint(
+        Endpoint::fixed(a.addr()),
+        Role::Cell,
+        KEY.to_vec(),
+        None,
+        Role::Realm,
+    )
+    .unwrap();
+    assert_eq!(epoch(&alone).await, Err(RpcError::Standby));
 }

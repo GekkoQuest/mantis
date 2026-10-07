@@ -26,7 +26,7 @@ use ring::{digest, pbkdf2};
 use crate::generated::services as m;
 use crate::host::clock::ServiceClock;
 use crate::host::rpc::{Router, RpcClient, RpcError};
-use crate::host::{RPC_TIMEOUT, Role, refused, until_durable};
+use crate::host::{Fence, RPC_TIMEOUT, Role, refused, until_durable};
 use crate::methods;
 use crate::persist::{AccountRecord, account_record, account_row, name_key};
 
@@ -59,6 +59,8 @@ pub struct AccountService {
     writer: Option<Arc<RpcClient>>,
     /// One change at a time from durable write to answer.
     order: Arc<tokio::sync::Mutex<()>>,
+    /// This instance's lease term (role failover).
+    fence: Fence,
 }
 
 fn derive(salt: &[u8], password: &str, iterations: u32) -> [u8; 32] {
@@ -111,6 +113,15 @@ impl AccountService {
         self
     }
 
+    /// The same role writing under lease term `fence` (role failover):
+    /// once the term is over it writes nothing more and answers
+    /// [`RpcError::Standby`].
+    #[must_use]
+    pub fn fenced(mut self, fence: Fence) -> Self {
+        self.fence = fence;
+        self
+    }
+
     fn lock(&self) -> MutexGuard<'_, State> {
         crate::host::lock(&self.state)
     }
@@ -151,7 +162,10 @@ impl AccountService {
     /// Makes `row` durable (one numbered batch, retried until the writer
     /// answers), then makes it what the role reads. Call with the order
     /// lock held.
-    async fn commit(&self, row: AccountRecord) {
+    ///
+    /// # Errors
+    /// [`RpcError::Standby`]: the lease term is over; nothing was changed.
+    async fn commit(&self, row: AccountRecord) -> Result<(), RpcError> {
         if let Some(writer) = &self.writer {
             let seq = {
                 let mut s = self.lock();
@@ -159,15 +173,16 @@ impl AccountService {
                 s.seq
             };
             let req = m::StoreAccountRows {
-                epoch: 0,
+                epoch: self.fence.epoch(),
                 seq,
                 rows: BoundedArray::from_slice(&[account_row(&row)]).unwrap_or_default(),
             };
-            until_durable::<methods::WriteAccounts>(writer, &req).await;
+            until_durable::<methods::WriteAccounts>(writer, &self.fence, &req).await?;
         }
         let mut s = self.lock();
         s.next = s.next.max(row.id);
         s.by_key.insert(name_key(&row.name), row);
+        Ok(())
     }
 
     fn by_name(&self, name: &str) -> Option<AccountRecord> {
@@ -197,7 +212,7 @@ impl AccountService {
             banned_until_ms: 0,
             ban_reason: String::new(),
         })
-        .await;
+        .await?;
         Ok(m::Registered {
             account: m::AccountId(id),
         })
@@ -228,7 +243,7 @@ impl AccountService {
                 .by_name(req.name.as_str())
                 .ok_or_else(|| refused("bad credentials"))?;
             now.last_login_ms = self.clock.now_ms();
-            self.commit(now).await;
+            self.commit(now).await?;
         }
         let expires = self.clock.now_ms() + TOKEN_MS;
         self.lock().tokens.insert(token, (a.id, expires));
@@ -252,7 +267,7 @@ impl AccountService {
         a.salt = salt;
         a.hash = hash;
         a.iterations = ITERATIONS;
-        self.commit(a).await;
+        self.commit(a).await?;
         Ok(m::Empty {})
     }
 
@@ -287,7 +302,7 @@ impl AccountService {
         } else {
             req.reason.as_str().to_owned()
         };
-        self.commit(a).await;
+        self.commit(a).await?;
         Ok(m::Banned { previous_until_ms })
     }
 

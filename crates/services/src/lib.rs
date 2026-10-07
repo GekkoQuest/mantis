@@ -15,6 +15,7 @@ pub mod generated {
 
 pub mod account;
 pub mod cluster;
+pub mod failover;
 pub mod host;
 pub mod inspect;
 pub mod matchmaking;

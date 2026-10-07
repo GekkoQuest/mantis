@@ -40,6 +40,9 @@ impl Validators for Strict {
     fn validate_goodbye(&self, _: &Goodbye) -> Result<(), ValidationError> {
         Ok(())
     }
+    fn validate_linked(&self, _: &Linked) -> Result<(), ValidationError> {
+        Ok(())
+    }
 }
 
 fn bytes<T: Wire>(m: &T) -> Vec<u8> {

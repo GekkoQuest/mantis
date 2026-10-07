@@ -70,7 +70,7 @@ fn all_roles_run_in_one_process_and_a_cell_host_links_to_them() {
             ),
             realm: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Realm).unwrap()),
             world: 0,
-            live_key: cluster.ops.public_key(),
+            live_key: cluster.ops().public_key(),
             cells: vec![(1, "127.0.0.1:7400".to_owned(), (-1000.0, 0.0))],
             poll: Duration::from_millis(20),
             instances: Vec::new(),
@@ -79,7 +79,7 @@ fn all_roles_run_in_one_process_and_a_cell_host_links_to_them() {
         },
     )
     .unwrap();
-    assert!(cluster.realm.cells().contains_key(&1), "the cell registered");
+    assert!(cluster.realm().cells().contains_key(&1), "the cell registered");
 
     // Outcomes reach the writer, in order, with their ledger rows.
     link.push(1, vec![trade(5, 40, -30), trade(5, 41, 30)]);
@@ -145,7 +145,7 @@ fn link_to(cluster: &LocalCluster, tls: Option<std::sync::Arc<TlsIdentity>>) -> 
             ),
             realm: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Realm).unwrap()),
             world: 0,
-            live_key: cluster.ops.public_key(),
+            live_key: cluster.ops().public_key(),
             cells: vec![(1, "127.0.0.1:7400".to_owned(), (-1000.0, 0.0))],
             poll: Duration::from_millis(20),
             instances: Vec::new(),
@@ -169,7 +169,7 @@ fn every_role_and_a_cell_host_link_run_over_mutual_tls() {
     assert!(link_to(&cluster, Some(ids[&Role::Gateway].clone())).is_err());
 
     let link = link_to(&cluster, Some(ids[&Role::Cell].clone())).unwrap();
-    assert!(cluster.realm.cells().contains_key(&1), "the cell registered");
+    assert!(cluster.realm().cells().contains_key(&1), "the cell registered");
     link.push(1, vec![trade(5, 40, -30), trade(5, 41, 30)]);
     wait_for("a durable batch", || {
         link.stats
@@ -229,7 +229,7 @@ fn a_draining_host_flushes_every_queued_outcome_and_relay_before_it_exits() {
             ),
             realm: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Realm).unwrap()),
             world: 0,
-            live_key: cluster.ops.public_key(),
+            live_key: cluster.ops().public_key(),
             cells: vec![(1, "127.0.0.1:7400".to_owned(), (-1000.0, 0.0))],
             poll: Duration::from_millis(20),
             instances: Vec::new(),
@@ -286,7 +286,7 @@ fn a_restarted_realm_gets_every_cell_registered_again() {
             ),
             realm: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Realm).unwrap()),
             world: 0,
-            live_key: cluster.ops.public_key(),
+            live_key: cluster.ops().public_key(),
             cells: vec![
                 (1, "127.0.0.1:7400".to_owned(), (-1000.0, 0.0)),
                 (2, "127.0.0.1:7400".to_owned(), (0.0, 1000.0)),
@@ -298,24 +298,24 @@ fn a_restarted_realm_gets_every_cell_registered_again() {
         },
     )
     .unwrap();
-    let before = cluster.realm.epoch();
-    assert_eq!(cluster.realm.cells().len(), 3);
+    let before = cluster.realm().epoch();
+    assert_eq!(cluster.realm().cells().len(), 3);
 
     let addr = cluster.stop_role(Role::Realm).unwrap();
     std::thread::sleep(Duration::from_millis(100));
     cluster.start_realm(addr).unwrap();
-    assert_ne!(cluster.realm.epoch(), before, "a new run");
-    assert!(cluster.realm.cells().is_empty());
+    assert_ne!(cluster.realm().epoch(), before, "a new run");
+    assert!(cluster.realm().cells().is_empty());
     // The link counts the restart once every cell is registered into it.
     wait_for("cells registered again", || {
-        cluster.realm.cells().len() == 3
+        cluster.realm().cells().len() == 3
             && link
                 .stats
                 .realm_restarts
                 .load(std::sync::atomic::Ordering::Relaxed)
                 == 1
     });
-    let cells = cluster.realm.cells();
+    let cells = cluster.realm().cells();
     assert!(cells.get(&10).is_some_and(|c| c.instance && !c.busy));
     assert_eq!(
         link.stats
@@ -340,7 +340,7 @@ fn after_an_ops_restart_every_cell_holds_and_re_receives_the_current_flags_and_t
             ),
             realm: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Realm).unwrap()),
             world: 0,
-            live_key: cluster.ops.public_key(),
+            live_key: cluster.ops().public_key(),
             cells: vec![(1, "127.0.0.1:7400".to_owned(), (-1000.0, 0.0))],
             poll: Duration::from_millis(20),
             instances: Vec::new(),
@@ -389,9 +389,9 @@ fn after_an_ops_restart_every_cell_holds_and_re_receives_the_current_flags_and_t
     // the current values again, and the cell host follows the new run.
     let addr = cluster.stop_role(Role::Ops).unwrap();
     std::thread::sleep(Duration::from_millis(60));
-    let before = cluster.ops.live_epoch();
+    let before = cluster.ops().live_epoch();
     cluster.start_ops(addr).unwrap();
-    assert!(cluster.ops.live_epoch() > before, "a newer run");
+    assert!(cluster.ops().live_epoch() > before, "a newer run");
     let mut again = Vec::new();
     wait_for("the current values again", || {
         again.extend(link.live_changes());
@@ -420,7 +420,7 @@ fn a_cluster_runs_with_the_key_files_it_is_given() {
     config.live_pkcs8 = Some(pkcs8);
     let cluster = LocalCluster::start(&config).unwrap();
     assert_eq!(cluster.key, b"the cluster key from a file");
-    assert_eq!(cluster.ops.public_key(), signer.public_key());
+    assert_eq!(cluster.ops().public_key(), signer.public_key());
     config.key = Some(Vec::new());
     assert!(LocalCluster::start(&config).is_err(), "an empty key is refused");
 }
