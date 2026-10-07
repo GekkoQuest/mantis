@@ -202,6 +202,7 @@ pub fn encode_outbound_frame(msg: &Outbound, out: &mut Vec<u8>) {
 
 /// A server-to-client frame, decoded.
 #[expect(clippy::large_enum_variant)] // returned by value from the decoder; never stored in bulk
+#[non_exhaustive]
 pub enum ServerFrame {
     /// A session message.
     Message(Outbound),

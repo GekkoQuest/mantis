@@ -25,6 +25,7 @@ use crate::account::AccountService;
 use crate::generated::services as m;
 use crate::host::clock::ServiceClock;
 use crate::host::lock;
+use crate::host::rpc::Endpoint;
 use crate::host::rpc::{Router, RpcClient, RpcError, RpcServer};
 use crate::host::{RPC_TIMEOUT, Role};
 use crate::inspect::{EntityQuery, InspectorState};
@@ -38,7 +39,7 @@ use crate::persist::pg::PgStore;
 use crate::persist::{LedgerStore, PersistService};
 use crate::realm::RealmService;
 use crate::social::SocialService;
-use crate::tls::{IdentityError, TlsIdentity};
+use crate::tls::{IdentityError, TlsHandle, TlsIdentity};
 
 /// The system of record a cluster writes to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -238,7 +239,7 @@ impl LocalCluster {
                     SocketAddr::new(config.bind, 0),
                     key.clone(),
                     router,
-                    identity,
+                    identity.map(TlsHandle::from),
                 ))
                 .map_err(|e| format!("{}: {e}", role.name()))
         };
@@ -363,7 +364,12 @@ impl LocalCluster {
     fn bind_role(&self, role: Role, addr: SocketAddr, router: Router) -> Result<RpcServer, String> {
         let identity = identity_for(self.tls.as_ref(), role)?;
         self.runtime
-            .block_on(RpcServer::bind_tls(addr, self.key.clone(), router, identity))
+            .block_on(RpcServer::bind_tls(
+                addr,
+                self.key.clone(),
+                router,
+                identity.map(TlsHandle::from),
+            ))
             .map_err(|e| format!("{}: {e}", role.name()))
     }
 
@@ -573,7 +579,28 @@ impl TokenVerifier {
         tls: Option<Arc<TlsIdentity>>,
         cells: &[u64],
     ) -> Result<Self, IdentityError> {
-        let client = RpcClient::with_tls(realm, Role::Cell, key, tls, Role::Realm)?;
+        Self::with_endpoint(
+            handle,
+            Endpoint::fixed(realm),
+            key,
+            tls.map(TlsHandle::from),
+            cells,
+        )
+    }
+
+    /// [`TokenVerifier::new`] with the realm at `realm` (followed when it
+    /// moves) and the cell host's identity `tls` (followed when it changes).
+    ///
+    /// # Errors
+    /// The identity is not a cell host's, or does not make a configuration.
+    pub fn with_endpoint(
+        handle: &tokio::runtime::Handle,
+        realm: Endpoint,
+        key: Vec<u8>,
+        tls: Option<TlsHandle>,
+        cells: &[u64],
+    ) -> Result<Self, IdentityError> {
+        let client = RpcClient::with_endpoint(realm, Role::Cell, key, tls, Role::Realm)?;
         Ok(Self::with_client(handle, client, cells))
     }
 
@@ -639,15 +666,18 @@ pub struct CellLinkConfig {
     /// The cluster key.
     pub key: Vec<u8>,
     /// The persistence writer.
-    pub persist: SocketAddr,
+    pub persist: Endpoint,
     /// Ops (live changes).
-    pub ops: SocketAddr,
+    pub ops: Endpoint,
     /// Social (cross-cell lines and presence).
-    pub social: SocketAddr,
+    pub social: Endpoint,
     /// Matchmaking (placements of hosted characters).
-    pub matchmaking: SocketAddr,
+    pub matchmaking: Endpoint,
     /// The realm (cell registration).
-    pub realm: SocketAddr,
+    pub realm: Endpoint,
+    /// The world this host's cells belong to (registered with the realm and
+    /// reported with every placement).
+    pub world: u32,
     /// The live-data public key (from Ops).
     pub live_key: Vec<u8>,
     /// Cells on this host: id, game address, x range.
@@ -660,7 +690,7 @@ pub struct CellLinkConfig {
     /// Where the inspector listens (port 0 picks one).
     pub inspector: SocketAddr,
     /// The cell host's own TLS identity (role `cell`); `None`: plaintext.
-    pub tls: Option<Arc<TlsIdentity>>,
+    pub tls: Option<TlsHandle>,
 }
 
 impl CellLinkConfig {
@@ -677,9 +707,15 @@ impl CellLinkConfig {
     }
 
     /// A client calling `addr`, served by `server`, as this cell host.
-    fn client(&self, addr: SocketAddr, server: Role) -> Result<RpcClient, String> {
-        RpcClient::with_tls(addr, Role::Cell, self.key.clone(), self.tls.clone(), server)
-            .map_err(|e| e.to_string())
+    fn client(&self, endpoint: &Endpoint, server: Role) -> Result<RpcClient, String> {
+        RpcClient::with_endpoint(
+            endpoint.clone(),
+            Role::Cell,
+            self.key.clone(),
+            self.tls.clone(),
+            server,
+        )
+        .map_err(|e| e.to_string())
     }
 }
 
@@ -736,13 +772,14 @@ pub struct ProjectedUpdate {
     pub payload: Vec<u8>,
 }
 
-fn instance_cell(cell: u64, address: &str) -> m::RegisterCell {
+fn instance_cell(cell: u64, address: &str, world: u32) -> m::RegisterCell {
     m::RegisterCell {
         cell: m::CellNo(cell),
         address: WireString::new(address).unwrap_or_default(),
         lo: 0.0,
         hi: 0.0,
         instance: true,
+        world,
     }
 }
 
@@ -991,23 +1028,23 @@ fn spawn_placement(
     let matches = pace.spawn(
         handle,
         match_task(
-            config.client(config.matchmaking, Role::Matchmaking)?,
-            config.client(config.realm, Role::Realm)?,
+            config.client(&config.matchmaking, Role::Matchmaking)?,
+            config.client(&config.realm, Role::Realm)?,
             match_rx,
-            placed_tx,
+            (placed_tx, config.world),
             Arc::clone(&busy),
             pace.of(Task::Matches),
         ),
     );
     let realm_epoch = handle.block_on(
         config
-            .client(config.realm, Role::Realm)?
+            .client(&config.realm, Role::Realm)?
             .call::<methods::RealmRun>(&m::PollRealm {}, RPC_TIMEOUT),
     );
     let realm_watch = pace.spawn(
         handle,
         realm_task(
-            config.client(config.realm, Role::Realm)?,
+            config.client(&config.realm, Role::Realm)?,
             config.clone(),
             realm_epoch.map_or(0, |e| e.epoch),
             busy,
@@ -1048,6 +1085,7 @@ async fn realm_task(
                 lo: *lo,
                 hi: *hi,
                 instance: false,
+                world: config.world,
             };
             done &= realm
                 .call::<methods::RegisterCellHost>(&req, RPC_TIMEOUT)
@@ -1065,7 +1103,7 @@ async fn realm_task(
         };
         for (cell, address) in &free {
             done &= realm
-                .call::<methods::RegisterCellHost>(&instance_cell(*cell, address), RPC_TIMEOUT)
+                .call::<methods::RegisterCellHost>(&instance_cell(*cell, address, config.world), RPC_TIMEOUT)
                 .await
                 .is_ok();
         }
@@ -1082,7 +1120,7 @@ async fn realm_task(
 
 /// Registers the host's cells and instance cells with the realm.
 fn register(handle: &tokio::runtime::Handle, config: &CellLinkConfig) -> Result<(), String> {
-    let realm = config.client(config.realm, Role::Realm)?;
+    let realm = config.client(&config.realm, Role::Realm)?;
     for (cell, address, (lo, hi)) in &config.cells {
         let req = m::RegisterCell {
             cell: m::CellNo(*cell),
@@ -1090,6 +1128,7 @@ fn register(handle: &tokio::runtime::Handle, config: &CellLinkConfig) -> Result<
             lo: *lo,
             hi: *hi,
             instance: false,
+            world: config.world,
         };
         handle
             .block_on(realm.call::<methods::RegisterCellHost>(&req, RPC_TIMEOUT))
@@ -1097,7 +1136,12 @@ fn register(handle: &tokio::runtime::Handle, config: &CellLinkConfig) -> Result<
     }
     for (cell, address) in &config.instances {
         handle
-            .block_on(realm.call::<methods::RegisterCellHost>(&instance_cell(*cell, address), RPC_TIMEOUT))
+            .block_on(
+                realm.call::<methods::RegisterCellHost>(
+                    &instance_cell(*cell, address, config.world),
+                    RPC_TIMEOUT,
+                ),
+            )
             .map_err(|e| format!("registering instance cell {cell}: {e}"))?;
     }
     Ok(())
@@ -1166,7 +1210,7 @@ fn spawn_social(
     let social_send = pace.spawn(
         handle,
         social_send_task(
-            config.client(config.social, Role::Social)?,
+            config.client(&config.social, Role::Social)?,
             social_rx,
             Arc::clone(stats),
             pace.of(Task::SocialSend),
@@ -1175,7 +1219,7 @@ fn spawn_social(
     let social_poll = pace.spawn(
         handle,
         social_poll_task(
-            config.client(config.social, Role::Social)?,
+            config.client(&config.social, Role::Social)?,
             config.cells.iter().map(|c| c.0).collect(),
             config.poll,
             deliver_tx,
@@ -1189,7 +1233,7 @@ fn spawn_social(
     let relays = pace.spawn(
         handle,
         relay_task(
-            config.client(config.social, Role::Social)?,
+            config.client(&config.social, Role::Social)?,
             relay_rx,
             (Arc::clone(hosted), Arc::clone(&mirror)),
             Arc::clone(stats),
@@ -1200,7 +1244,7 @@ fn spawn_social(
     let projections = pace.spawn(
         handle,
         projection_task(
-            config.client(config.social, Role::Social)?,
+            config.client(&config.social, Role::Social)?,
             config
                 .cells
                 .iter()
@@ -1247,7 +1291,7 @@ fn spawn_whereabouts(
     let task = pace.spawn(
         handle,
         whereabouts_task(
-            config.client(config.realm, Role::Realm)?,
+            config.client(&config.realm, Role::Realm)?,
             rx,
             Arc::clone(stats),
             pace.of(Task::Whereabouts),
@@ -1308,6 +1352,7 @@ pub struct CellLink {
     pace: Pace,
     whereabouts: Mutex<Whereabouts>,
     whereabouts_out: tokio::sync::mpsc::UnboundedSender<m::CharacterPlaced>,
+    world: u32,
     /// Counters.
     pub stats: Arc<LinkStats>,
 }
@@ -1352,7 +1397,7 @@ impl CellLink {
         let push = pace.spawn(
             handle,
             push_task(
-                config.client(config.persist, Role::Persist)?,
+                config.client(&config.persist, Role::Persist)?,
                 rx,
                 Arc::clone(&stats),
                 Arc::clone(&inspection),
@@ -1364,7 +1409,7 @@ impl CellLink {
         let poll = pace.spawn(
             handle,
             poll_task(
-                config.client(config.ops, Role::Ops)?,
+                config.client(&config.ops, Role::Ops)?,
                 LiveFeed::new(config.live_key.clone()),
                 (first_cell, config.poll),
                 live_tx,
@@ -1399,6 +1444,7 @@ impl CellLink {
             pace,
             whereabouts: Mutex::default(),
             whereabouts_out,
+            world: config.world,
             stats,
         })
     }
@@ -1475,12 +1521,13 @@ impl CellLink {
         }
     }
 
-    /// Tells the link which characters `cell` (of `world`) holds now and
+    /// Tells the link which characters `cell` (of this host's world) holds now and
     /// where (each tick): the realm hears, in order, where each character
     /// left the world (gone from every cell of this host) or arrived (new
     /// in a cell, after a transfer or an entry), so a restarted realm
     /// places a returning character where it left.
-    pub fn track(&self, cell: u64, world: u32, here: &[(u64, [f32; 3])]) {
+    pub fn track(&self, cell: u64, here: &[(u64, [f32; 3])]) {
+        let world = self.world;
         let mut w = lock(&self.whereabouts);
         let before = w.here.remove(&cell).unwrap_or_default();
         let now: BTreeMap<u64, [f32; 3]> = here.iter().copied().collect();
@@ -1754,7 +1801,7 @@ async fn match_task(
     matchmaking: RpcClient,
     realm: RpcClient,
     mut rx: tokio::sync::mpsc::UnboundedReceiver<MatchOut>,
-    out: std::sync::mpsc::Sender<Placed>,
+    (out, world): (std::sync::mpsc::Sender<Placed>, u32),
     busy: Arc<Mutex<std::collections::BTreeSet<u64>>>,
     pace: Pace,
 ) {
@@ -1783,7 +1830,7 @@ async fn match_task(
             MatchOut::Release(cell, address) => {
                 lock(&busy).remove(&cell);
                 let _ = realm
-                    .call::<methods::RegisterCellHost>(&instance_cell(cell, &address), RPC_TIMEOUT)
+                    .call::<methods::RegisterCellHost>(&instance_cell(cell, &address, world), RPC_TIMEOUT)
                     .await;
             }
             MatchOut::Withdraw(cell) => {

@@ -155,6 +155,15 @@ pub struct NetStats {
     pub extension_messages_dropped: u64,
     /// Module client-to-server messages sent.
     pub extensions_sent: u64,
+    /// Cell hand-offs ([`NativeSession::rebase`]).
+    pub rebases: u64,
+    /// Reconnects ([`NativeSession::reconnect`]).
+    pub reconnects: u64,
+    /// Server messages this build does not know, ignored.
+    pub unknown_messages: u64,
+    /// Moves not sent because the session was not accepted yet (before `Welcome`, or
+    /// while reconnecting).
+    pub moves_unsent: u64,
 }
 
 /// One native-protocol session.
@@ -162,7 +171,16 @@ pub struct NativeSession<T: Transport> {
     transport: T,
     clock: Arc<dyn HostClock>,
     config: NetConfig,
-    ring: Vec<WireFrame>,
+    ring: Ring,
+    /// Bumped at every [`NativeSession::rebase`] (hand-off) and reconnect.
+    epoch: u32,
+    /// Bumped at every [`NativeSession::reconnect`].
+    connection: u32,
+    /// The first move sent on this connection (stamped on frames: prediction resumes from
+    /// it after a reconnect).
+    first_move: Option<mantis_core::kinematics::InputSeq>,
+    /// The client mods announced in `Hello`, kept for reconnects.
+    hello_modules: Vec<mantis_adapter_contract::ModuleEntry>,
     scratch: WireFrame,
     last_applied: Option<Tick>,
     pending_acks: Vec<Tick>,
@@ -205,7 +223,14 @@ impl<T: Transport> NativeSession<T> {
         let [entered, remotes, removed, markers] = config.frame_capacity;
         let frame = || WireFrame::with_capacity(entered, remotes, removed, markers);
         Self {
-            ring: (0..config.baselines.max(1)).map(|_| frame()).collect(),
+            ring: Ring {
+                frames: (0..config.baselines.max(1)).map(|_| frame()).collect(),
+                live: vec![false; config.baselines.max(1)],
+            },
+            epoch: 0,
+            connection: 0,
+            first_move: None,
+            hello_modules: Vec::new(),
             scratch: frame(),
             last_applied: None,
             pending_acks: Vec::with_capacity(64),
@@ -338,11 +363,43 @@ impl<T: Transport> NativeSession<T> {
         self.start_with_modules(token, &[]);
     }
 
+    /// A cell hand-off: the connection stays up, and the next frames come from another
+    /// host that counts its own ticks and shares no baselines with the last one. Clears the
+    /// baseline ring, the stale filter, and pending acknowledgements, and bumps the epoch
+    /// the simulation sees with the next frame (it restarts its own stale filter and its
+    /// server timeline).
+    pub fn rebase(&mut self) {
+        self.ring.clear();
+        self.last_applied = None;
+        self.pending_acks.clear();
+        self.epoch = self.epoch.wrapping_add(1);
+        self.stats.rebases += 1;
+    }
+
+    /// Reconnects over a new `transport` (to the gateway again) and opens the session
+    /// with `token` (a resume ticket, or a fresh entry token) and the same client mods as
+    /// the first `Hello`. Everything per connection starts over: the baselines, the stale
+    /// filter, the move repeat, the session state; the simulation sees a new epoch and a
+    /// new connection with the next frame and resets prediction to the authoritative
+    /// state, as at spawn.
+    pub fn reconnect(&mut self, transport: T, token: &[u8]) {
+        self.transport = transport;
+        self.rebase();
+        self.connection = self.connection.wrapping_add(1);
+        self.first_move = None;
+        self.previous = None;
+        self.state = SessionState::Connecting;
+        self.stats.reconnects += 1;
+        let modules = core::mem::take(&mut self.hello_modules);
+        self.start_with_modules(token, &modules);
+    }
+
     /// Opens the session with `Hello` carrying `token` and the client mods this client
     /// runs, with their content hashes ([`crate::mods::ModHost::hello_modules`]). The
     /// server refuses a key the package does not permit; the hashes are for
     /// compatibility and support, never trust. At most 32 are sent (the contract's bound).
     pub fn start_with_modules(&mut self, token: &[u8], modules: &[mantis_adapter_contract::ModuleEntry]) {
+        modules.clone_into(&mut self.hello_modules);
         let mut list = BoundedArray::new();
         for m in modules {
             if list.push(*m).is_err() {
@@ -380,6 +437,16 @@ impl<T: Transport> NativeSession<T> {
     /// delay.
     pub fn send_moves(&mut self) {
         while let Ok(input) = self.moves.rx.try_recv() {
+            // Until the session is accepted, a move reaches no session: the server would drop
+            // it. Dropping it here keeps the first move the server applies on a connection
+            // the first one recorded for it.
+            if !matches!(self.state, SessionState::Welcomed { .. }) {
+                self.stats.moves_unsent += 1;
+                continue;
+            }
+            if self.first_move.is_none() {
+                self.first_move = Some(input.seq);
+            }
             self.send(&Inbound::Move(Move { input }), Channel::Unreliable);
             self.stats.moves_sent += 1;
             if self.config.repeat_moves
@@ -409,12 +476,16 @@ impl<T: Transport> NativeSession<T> {
             snapshots,
             state,
             stats,
+            epoch,
+            connection,
+            first_move,
             ..
         } = self;
+        let (epoch, connection, first_move) = (*epoch, *connection, *first_move);
         transport.poll(&mut |event| match event {
             TransportEvent::Frame { bytes, .. } => {
                 scratch.clear();
-                match decode_server_frame(bytes, &ring[..], scratch) {
+                match decode_server_frame(bytes, &*ring, scratch) {
                     Ok(ServerFrame::Snapshot) => {
                         let tick = scratch.header.server_tick;
                         if last_applied.is_some_and(|t| tick <= t) {
@@ -425,27 +496,16 @@ impl<T: Transport> NativeSession<T> {
                         stats.snapshots += 1;
                         stats.overflowed += u64::from(scratch.overflowed);
                         // Keep it as a baseline, overwriting the oldest.
-                        if let Some(oldest) = ring.iter_mut().min_by_key(|f| f.header.server_tick) {
-                            oldest.copy_from(scratch);
-                        }
-                        for (entity, appearance) in scratch.entered.iter() {
-                            if entity_changes.len() < entity_changes.capacity() {
-                                entity_changes.push(crate::modules::EntityChange::Entered {
-                                    entity: *entity,
-                                    appearance: appearance.0,
-                                });
-                            }
-                        }
-                        for entity in scratch.removed.iter() {
-                            if entity_changes.len() < entity_changes.capacity() {
-                                entity_changes.push(crate::modules::EntityChange::Removed(*entity));
-                            }
-                        }
+                        ring.keep(scratch);
+                        push_entity_changes(entity_changes, scratch);
                         if pending_acks.len() < pending_acks.capacity() {
                             pending_acks.push(tick);
                         }
                         match snapshots.acquire() {
                             Some(mut frame) => {
+                                frame.epoch = epoch;
+                                frame.connection = connection;
+                                frame.resume_from = first_move;
                                 stats.overflowed += u64::from(fill(&mut frame, scratch, clock.now()));
                                 let _ = snapshots.send(frame);
                             }
@@ -484,6 +544,9 @@ impl<T: Transport> NativeSession<T> {
                             refusals.push((r.kind, r.request, r.reason));
                         }
                     }
+                    // A message this build does not know (the contract enums are
+                    // non-exhaustive): ignored and counted.
+                    Ok(_) => stats.unknown_messages += 1,
                     Err(_) => stats.undecodable += 1,
                 }
             }
@@ -533,4 +596,66 @@ fn fill(
         overflow += u32::from(!frame.push_marker(*m));
     }
     overflow
+}
+
+/// The delta baselines: the most recently applied snapshots of this epoch. A slot holds a
+/// frame only once one was kept there, so an empty slot (tick 0) never serves as a base.
+struct Ring {
+    frames: Vec<WireFrame>,
+    live: Vec<bool>,
+}
+
+impl Ring {
+    /// Keeps `frame`, overwriting an empty slot or else the oldest frame.
+    fn keep(&mut self, frame: &WireFrame) {
+        let slot = self.live.iter().position(|l| !*l).or_else(|| {
+            self.frames
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, f)| f.header.server_tick)
+                .map(|(i, _)| i)
+        });
+        if let Some(i) = slot
+            && let (Some(f), Some(l)) = (self.frames.get_mut(i), self.live.get_mut(i))
+        {
+            f.copy_from(frame);
+            *l = true;
+        }
+    }
+
+    /// Forgets every frame (a hand-off or a reconnect: no base carries over).
+    fn clear(&mut self) {
+        for (f, l) in self.frames.iter_mut().zip(self.live.iter_mut()) {
+            f.clear();
+            *l = false;
+        }
+    }
+}
+
+impl mantis_adapter_contract::native::BaselineStore for Ring {
+    fn baseline(&self, tick: Tick) -> Option<&WireFrame> {
+        self.frames
+            .iter()
+            .zip(&self.live)
+            .find(|(f, l)| **l && f.header.server_tick == tick)
+            .map(|(f, _)| f)
+    }
+}
+
+/// Queues the entities a snapshot entered and removed, for the module view models (as
+/// many as fit; the queue never grows).
+fn push_entity_changes(out: &mut Vec<crate::modules::EntityChange>, wire: &WireFrame) {
+    for (entity, appearance) in wire.entered.iter() {
+        if out.len() < out.capacity() {
+            out.push(crate::modules::EntityChange::Entered {
+                entity: *entity,
+                appearance: appearance.0,
+            });
+        }
+    }
+    for entity in wire.removed.iter() {
+        if out.len() < out.capacity() {
+            out.push(crate::modules::EntityChange::Removed(*entity));
+        }
+    }
 }

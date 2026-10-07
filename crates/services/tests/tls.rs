@@ -45,7 +45,11 @@ async fn account_server(ca: &DevCa) -> RpcServer {
         "127.0.0.1:0".parse().unwrap(),
         KEY.to_vec(),
         AccountService::new().router(),
-        Some(ca.identity(Role::Account, "account-1", &[local()]).unwrap()),
+        Some(
+            ca.identity(Role::Account, "account-1", &[local()])
+                .unwrap()
+                .into(),
+        ),
     )
     .await
     .unwrap()
@@ -372,7 +376,7 @@ async fn clients_check_the_server_chain_address_cluster_and_role() {
             "127.0.0.1:0".parse().unwrap(),
             KEY.to_vec(),
             AccountService::new().router(),
-            Some(server_id),
+            Some(server_id.into()),
         )
         .await
         .unwrap()
@@ -457,7 +461,11 @@ async fn a_peer_stalled_mid_handshake_costs_one_call_its_timeout() {
             addr,
             KEY.to_vec(),
             AccountService::new().router(),
-            Some(ca.identity(Role::Account, "account-1", &[local()]).unwrap()),
+            Some(
+                ca.identity(Role::Account, "account-1", &[local()])
+                    .unwrap()
+                    .into(),
+            ),
         )
         .await
         {

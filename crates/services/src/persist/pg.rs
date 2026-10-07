@@ -8,7 +8,8 @@ use super::migrate::{MIGRATIONS, Migration, MigrationTarget, migrate};
 use mantis_core::social::{FriendChange, GuildChange};
 
 use super::{
-    AccountRecord, AuditRow, CharacterRecord, LedgerStore, StoreError, StoredLedger, StoredOutcome, name_key,
+    AccountRecord, AuditRow, CharacterRecord, Lease, LedgerStore, StoreError, StoredLedger, StoredOutcome,
+    name_key,
 };
 
 /// A store over one Postgres connection, in one schema.
@@ -644,6 +645,41 @@ impl LedgerStore for PgStore {
                 level: u32_of(r.get::<_, i32>(11)),
             })
             .collect())
+    }
+
+    fn acquire_lease(
+        &mut self,
+        role: u8,
+        owner: &str,
+        now_ms: u64,
+        ttl_ms: u64,
+    ) -> Result<Lease, StoreError> {
+        // One statement: the row lock makes racing instances take turns.
+        self.block(self.client.execute(
+            "INSERT INTO role_leases (role, owner, epoch, expires_ms) VALUES ($1, $2, 1, $3 + $4) \
+             ON CONFLICT (role) DO UPDATE SET owner = EXCLUDED.owner, \
+             epoch = CASE WHEN role_leases.owner = EXCLUDED.owner THEN role_leases.epoch ELSE role_leases.epoch + 1 END, \
+             expires_ms = EXCLUDED.expires_ms \
+             WHERE role_leases.owner = EXCLUDED.owner OR role_leases.expires_ms <= $3",
+            &[&i16::from(role), &owner, &i64_of(now_ms), &i64_of(ttl_ms)],
+        ))
+        .map_err(|e| pg(&e))?;
+        self.lease(role)?
+            .ok_or_else(|| StoreError("the lease row is missing".to_owned()))
+    }
+
+    fn lease(&mut self, role: u8) -> Result<Option<Lease>, StoreError> {
+        let rows = self
+            .block(self.client.query(
+                "SELECT owner, epoch, expires_ms FROM role_leases WHERE role = $1",
+                &[&i16::from(role)],
+            ))
+            .map_err(|e| pg(&e))?;
+        Ok(rows.first().map(|r| Lease {
+            owner: r.get(0),
+            epoch: u64_of(r.get::<_, i64>(1)),
+            expires_ms: u64_of(r.get::<_, i64>(2)),
+        }))
     }
 
     fn set_live(&mut self, name: &str, kind: u8, value: f32) -> Result<(), StoreError> {

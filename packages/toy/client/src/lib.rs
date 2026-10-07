@@ -14,6 +14,7 @@ pub mod editor;
 pub mod modules;
 pub mod package;
 pub mod town;
+pub mod trust;
 pub mod world;
 
 use std::sync::Arc;
@@ -332,6 +333,24 @@ impl<T: Transport, S: FrameSink> ToyClient<T, S> {
 }
 
 impl<S: FrameSink> ToyClient<mantis_net::quic::QuicClient, S> {
+    /// Connects to a toy server over QUIC, verifying it with `trust` (a CA bundle and the
+    /// server name, or a pinned development leaf).
+    ///
+    /// # Errors
+    /// [`ToyClientError::Net`] ([`mantis_net::NetError::Untrusted`] for a refused
+    /// certificate; [`trust::notice`] words it) or a build error.
+    pub fn connect_trusted(
+        runtime: &mantis_net::NetRuntime,
+        addr: std::net::SocketAddr,
+        trust: &mantis_net::quic::ServerTrust,
+        clock: Arc<dyn HostClock>,
+        sink: S,
+    ) -> Result<Self, ToyClientError> {
+        let transport = mantis_net::quic::QuicClient::connect_trusted(runtime, addr, trust)
+            .map_err(ToyClientError::Net)?;
+        Self::new(transport, clock, sink)
+    }
+
     /// Connects to a toy server over QUIC, trusting exactly `server_cert_der`.
     ///
     /// # Errors

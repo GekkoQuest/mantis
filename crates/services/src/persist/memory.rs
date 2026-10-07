@@ -7,7 +7,8 @@ use super::migrate::{MIGRATIONS, Migration, MigrationTarget, migrate};
 use mantis_core::social::{FriendBook, FriendChange, GuildBook, GuildChange};
 
 use super::{
-    AccountRecord, AuditRow, CharacterRecord, LedgerStore, StoreError, StoredLedger, StoredOutcome, name_key,
+    AccountRecord, AuditRow, CharacterRecord, Lease, LedgerStore, StoreError, StoredLedger, StoredOutcome,
+    name_key,
 };
 
 /// Everything in memory.
@@ -27,6 +28,7 @@ pub struct MemoryStore {
     account_seq: u64,
     characters: BTreeMap<u64, CharacterRecord>,
     character_seq: u64,
+    leases: BTreeMap<u8, Lease>,
     /// Name -> (order, kind, value).
     live: BTreeMap<String, (u64, u8, f32)>,
     live_seq: u64,
@@ -250,6 +252,39 @@ impl LedgerStore for MemoryStore {
 
     fn character_rows(&mut self) -> Result<Vec<CharacterRecord>, StoreError> {
         Ok(self.characters.values().cloned().collect())
+    }
+
+    fn acquire_lease(
+        &mut self,
+        role: u8,
+        owner: &str,
+        now_ms: u64,
+        ttl_ms: u64,
+    ) -> Result<Lease, StoreError> {
+        let expires_ms = now_ms.saturating_add(ttl_ms);
+        let lease = match self.leases.get(&role) {
+            None => Lease {
+                owner: owner.to_owned(),
+                epoch: 1,
+                expires_ms,
+            },
+            Some(l) if l.owner == owner => Lease {
+                expires_ms,
+                ..l.clone()
+            },
+            Some(l) if l.expires_ms <= now_ms => Lease {
+                owner: owner.to_owned(),
+                epoch: l.epoch + 1,
+                expires_ms,
+            },
+            Some(l) => return Ok(l.clone()),
+        };
+        self.leases.insert(role, lease.clone());
+        Ok(lease)
+    }
+
+    fn lease(&mut self, role: u8) -> Result<Option<Lease>, StoreError> {
+        Ok(self.leases.get(&role).cloned())
     }
 
     fn set_live(&mut self, name: &str, kind: u8, value: f32) -> Result<(), StoreError> {

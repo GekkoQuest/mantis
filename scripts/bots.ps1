@@ -1,7 +1,8 @@
 # Owner: server-engine
 # Connects headless bots to a running server (scripts/serve.ps1 or scripts/cluster.ps1)
 # with `toy-server bots`. Native bots use QUIC and pin the certificate the server wrote
-# (-Cert, the server's -CertOut); -Legacy uses the TCP protocol instead. Profiles:
+# (-Cert, the server's -CertOut), or verify its chain against a CA bundle (-Ca, PEM) for
+# the address they dial; -Legacy uses the TCP protocol instead. Profiles:
 # honest, idle, speedhack (meaningful on -Legacy, where the server corrects it).
 #
 # Against a cluster running -VerifyTokens, pass -Login with the file `cluster.ps1`
@@ -17,6 +18,7 @@ param(
     [string]$Quic = '127.0.0.1:7400',
     [string]$Tcp = '127.0.0.1:7401',
     [string]$Cert = 'dev-cert.der',
+    [string]$Ca = '',
     [switch]$Legacy,
     [string]$Cooked = 'packages/toy/cooked',
     [string]$Key = 'packages/toy/cooked/keys/dev.pub',
@@ -31,7 +33,13 @@ param(
 
 $a = (Get-ToyServerArgs -Release:$Release) + @('bots', '--profile', $Profile, '--count', "$Count",
     '--seconds', "$Seconds", '--seed', "$Seed", '--cooked', $Cooked, '--key', $Key)
-if ($Legacy) { $a += @('--tcp', $Tcp) } else { $a += @('--quic', $Quic, '--cert', $Cert) }
+if ($Legacy) {
+    $a += @('--tcp', $Tcp)
+} elseif ($Ca) {
+    $a += @('--quic', $Quic, '--ca', $Ca)
+} else {
+    $a += @('--quic', $Quic, '--cert', $Cert)
+}
 if ($Login) { $a += @('--login', $Login) }
 $tls = @($TlsCa, $TlsCert, $TlsKey) | Where-Object { $_ }
 if ($tls.Count -eq 3) {

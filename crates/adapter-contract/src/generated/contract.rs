@@ -88,6 +88,7 @@ impl ::mantis_core::wire::FuzzSample for AppearanceId {
 /// Who owns a mover's position (decision 0011).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 #[repr(u8)]
+#[non_exhaustive]
 pub enum MovementMode {
     /// Native clients: inputs in, the server integrates, the client predicts.
     Predictive = 0,
@@ -120,6 +121,7 @@ impl ::mantis_core::wire::FuzzSample for MovementMode {
 /// Why a package-defined intent extension was refused.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 #[repr(u8)]
+#[non_exhaustive]
 pub enum ExtensionRefusal {
     /// The module that handles it is disabled (feature flag); clients show
     /// the feature as unavailable.
@@ -159,6 +161,7 @@ impl ::mantis_core::wire::FuzzSample for ExtensionRefusal {
 /// helpers acting for the player).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 #[repr(u8)]
+#[non_exhaustive]
 pub enum ModTier {
     /// Presentation only.
     Presentation = 0,
@@ -191,6 +194,7 @@ impl ::mantis_core::wire::FuzzSample for ModTier {
 /// Why a session was refused.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 #[repr(u8)]
+#[non_exhaustive]
 pub enum RefuseReason {
     /// The protocol version is not supported.
     VersionMismatch = 0,
@@ -915,6 +919,7 @@ impl ::mantis_core::wire::Message for PermittedModules {
 /// Every client to server message of this schema.
 #[derive(Clone, Copy, PartialEq, Debug)]
 #[allow(clippy::large_enum_variant)] // inline, allocation-free values; transient on network threads
+#[non_exhaustive]
 pub enum Inbound {
     /// See [`Hello`].
     Hello(Hello),
@@ -1083,6 +1088,7 @@ pub fn decode_inbound(
 /// Every server to client message of this schema.
 #[derive(Clone, Copy, PartialEq, Debug)]
 #[allow(clippy::large_enum_variant)] // inline, allocation-free values; transient on network threads
+#[non_exhaustive]
 pub enum Outbound {
     /// See [`Welcome`].
     Welcome(Welcome),

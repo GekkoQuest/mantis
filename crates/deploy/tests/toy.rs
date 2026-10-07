@@ -89,8 +89,10 @@ fn bots(cluster: &Cluster, legacy: bool, count: u32, seconds: u32, seed: u32) ->
     if legacy {
         cmd.args(["--tcp", &tcp.to_string()]);
     } else {
-        cmd.args(["--quic", &quic.to_string(), "--cert"])
-            .arg(cluster.dir.join("toy-cert.der"));
+        // The listener presents a chain from the cluster CA; bots trust the
+        // CA bundle, never one pinned leaf, so they follow a rotation.
+        cmd.args(["--quic", &quic.to_string(), "--ca"])
+            .arg(cluster.dir.join("keys").join(mantis_deploy::keys::files::CA));
     }
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()
 }
@@ -279,6 +281,7 @@ fn bots_play_through_a_process_per_role_cluster_and_a_killed_cell_host_comes_bac
             name: HOST,
             cells: vec![1, 2, 3],
             package,
+            game_tls: true,
         }],
     );
     // The game listeners the registry does not carry: fill them in.
@@ -315,10 +318,43 @@ fn bots_play_through_a_process_per_role_cluster_and_a_killed_cell_host_comes_bac
     );
 
     // Native and legacy bots play; the cell host grants every 30 ticks.
+    // While they play, the game listener's certificate is rotated in place
+    // (new files from the cluster CA): open sessions keep their connection,
+    // only new handshakes get the new chain.
     let native = bots(&cluster, false, 4, 8, 1);
     let legacy = bots(&cluster, true, 4, 8, 2);
+    std::thread::sleep(Duration::from_secs(3));
+    let keys_dir = cluster.dir.join("keys");
+    let ca = mantis_deploy::keys::read_ca(&keys_dir).unwrap();
+    let renewed = mantis_deploy::pki::issue_server(
+        &ca,
+        "game",
+        &[quic.ip().to_string()],
+        mantis_deploy::pki::Validity::starting_now(std::time::SystemTime::now(), 7),
+    )
+    .unwrap();
+    std::fs::write(keys_dir.join(format!("game-{HOST}.key")), &renewed.key_pem).unwrap();
+    std::fs::write(keys_dir.join(format!("game-{HOST}.crt")), &renewed.cert_pem).unwrap();
+    wait_for("the game certificate rotated", Duration::from_secs(10), || {
+        cluster
+            .metrics(HOST)
+            .get("game_tls_rotations")
+            .copied()
+            .unwrap_or(0)
+            == 1
+    });
     let native = bots_output(native);
     let legacy = bots_output(legacy);
+    let final_line = native
+        .lines()
+        .rev()
+        .find(|l| l.contains(" in world"))
+        .unwrap_or("");
+    assert!(
+        most_in_world(final_line) == 4 && final_line.contains(" 0 refused"),
+        "native bots across the game certificate rotation lost a session:\n{native}"
+    );
+    println!("native bots across a game certificate rotation: {final_line}");
     assert!(most_in_world(&native) >= 3, "native bots:\n{native}");
     assert!(most_in_world(&legacy) >= 3, "legacy bots:\n{legacy}");
     let before = cluster.metrics(HOST);

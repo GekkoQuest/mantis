@@ -166,13 +166,32 @@ pub struct LeafFiles {
 /// IP alternative name for each of `ips`, signed by `ca`.
 ///
 /// # Errors
-/// The CA files do not parse, or a name is not a valid identity part.
+/// [`issue_for`].
 pub fn issue(
     ca: &CaFiles,
     cluster: &str,
     role: Role,
     instance: &str,
     ips: &[IpAddr],
+    validity: Validity,
+) -> Result<LeafFiles, String> {
+    let hosts: Vec<String> = ips.iter().map(IpAddr::to_string).collect();
+    issue_for(ca, cluster, role, instance, &hosts, validity)
+}
+
+/// Issues the leaf of `instance` with an alternative name for each of
+/// `hosts`: an IP literal becomes an IP name, anything else a DNS name
+/// (what callers dial, so what they verify).
+///
+/// # Errors
+/// The CA files do not parse, a name is not a valid identity part, or a
+/// host is neither an IP literal nor a DNS name.
+pub fn issue_for(
+    ca: &CaFiles,
+    cluster: &str,
+    role: Role,
+    instance: &str,
+    hosts: &[String],
     validity: Validity,
 ) -> Result<LeafFiles, String> {
     for (what, part) in [("cluster", cluster), ("instance", instance)] {
@@ -184,6 +203,56 @@ pub fn issue(
             return Err(format!("{what} {part:?}: 1 to 32 of a-z, 0-9 and -"));
         }
     }
+    let uri = identity(cluster, role, instance)
+        .try_into()
+        .map_err(|_| "the identity is not ASCII".to_owned())?;
+    leaf(
+        ca,
+        &format!("{}.{instance}", role.name()),
+        Some(SanType::URI(uri)),
+        hosts,
+        &[
+            ExtendedKeyUsagePurpose::ServerAuth,
+            ExtendedKeyUsagePurpose::ClientAuth,
+        ],
+        validity,
+    )
+}
+
+/// Issues a plain TLS server certificate for `hosts` (no node identity):
+/// for the registry server (`mantisd registry serve`) and for a game
+/// listener signed by the cluster CA.
+///
+/// # Errors
+/// The CA files do not parse, there is no host, or a host is neither an IP
+/// literal nor a DNS name.
+pub fn issue_server(
+    ca: &CaFiles,
+    name: &str,
+    hosts: &[String],
+    validity: Validity,
+) -> Result<LeafFiles, String> {
+    if hosts.is_empty() {
+        return Err("a server certificate names at least one host".to_owned());
+    }
+    leaf(
+        ca,
+        name,
+        None,
+        hosts,
+        &[ExtendedKeyUsagePurpose::ServerAuth],
+        validity,
+    )
+}
+
+fn leaf(
+    ca: &CaFiles,
+    common_name: &str,
+    identity: Option<SanType>,
+    hosts: &[String],
+    usages: &[ExtendedKeyUsagePurpose],
+    validity: Validity,
+) -> Result<LeafFiles, String> {
     let ca_key = KeyPair::from_pem(&ca.key_pem).map_err(|e| format!("the CA key: {e}"))?;
     let ca_der = pem_certs(ca.cert_pem.as_bytes())?
         .into_iter()
@@ -194,19 +263,26 @@ pub fn issue(
     let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).map_err(|e| e.to_string())?;
     let mut p = CertificateParams::default();
     let mut dn = DistinguishedName::new();
-    dn.push(DnType::CommonName, format!("{}.{instance}", role.name()));
+    dn.push(DnType::CommonName, common_name);
     p.distinguished_name = dn;
     p.is_ca = IsCa::ExplicitNoCa;
     p.key_usages = vec![KeyUsagePurpose::DigitalSignature];
-    p.extended_key_usages = vec![
-        ExtendedKeyUsagePurpose::ServerAuth,
-        ExtendedKeyUsagePurpose::ClientAuth,
-    ];
-    let uri = identity(cluster, role, instance)
-        .try_into()
-        .map_err(|_| "the identity is not ASCII".to_owned())?;
-    p.subject_alt_names = std::iter::once(SanType::URI(uri))
-        .chain(ips.iter().map(|ip| SanType::IpAddress(*ip)))
+    p.extended_key_usages = usages.to_vec();
+    p.subject_alt_names = identity
+        .into_iter()
+        .chain(
+            hosts
+                .iter()
+                .map(|h| match h.parse::<IpAddr>() {
+                    Ok(ip) => Ok(SanType::IpAddress(ip)),
+                    Err(_) => h
+                        .clone()
+                        .try_into()
+                        .map(SanType::DnsName)
+                        .map_err(|_| format!("{h:?} is not a host name")),
+                })
+                .collect::<Result<Vec<_>, String>>()?,
+        )
         .collect();
     set_validity(&mut p, validity);
     p.serial_number = Some(serial()?);
@@ -247,7 +323,14 @@ pub fn issue_registry(
         if only.is_some_and(|o| o != i.name) {
             continue;
         }
-        let leaf = issue(ca, &registry.cluster, i.role, &i.name, &[i.rpc.ip()], validity)?;
+        let leaf = issue_for(
+            ca,
+            &registry.cluster,
+            i.role,
+            &i.name,
+            &[i.rpc.host().to_owned()],
+            validity,
+        )?;
         keys::write_secret(&out.join(keys::files::cert(&i.name)), leaf.cert_pem.as_bytes())?;
         keys::write_secret(&out.join(keys::files::key(&i.name)), leaf.key_pem.as_bytes())?;
         issued.push(i.name.clone());

@@ -23,6 +23,7 @@ pub enum Channel {
 
 /// Which transport an adapter's clients speak.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[non_exhaustive]
 pub enum TransportKind {
     /// QUIC: reliable streams plus RFC 9221 datagrams.
     Quic,
@@ -32,6 +33,7 @@ pub enum TransportKind {
 
 /// Why a connection ended.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[non_exhaustive]
 pub enum DisconnectReason {
     /// The peer closed cleanly.
     Closed,
@@ -70,6 +72,7 @@ pub enum TransportEvent<'a> {
 
 /// A send failed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
 pub enum TransportError {
     /// No such connection (closed or never existed).
     UnknownConnection(ConnectionId),

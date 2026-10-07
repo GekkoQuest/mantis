@@ -22,6 +22,8 @@ use mantis_services::host::Metrics;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+use crate::target::Target;
+
 /// Where a node is in its life.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Phase {
@@ -192,14 +194,26 @@ async fn respond(stream: &mut TcpStream, code: u16, body: &str) -> std::io::Resu
     stream.shutdown().await
 }
 
-/// Asks `addr` for `path`: the status code and the body.
+/// Asks `target` for `path`: the status code and the body. A host name is
+/// resolved now, and each address it resolves to is tried in turn.
 ///
 /// # Errors
 /// No connection, no answer within `deadline`, or not HTTP.
-pub async fn probe(addr: SocketAddr, path: &str, deadline: Duration) -> Result<(u16, String), String> {
+pub async fn probe(target: &Target, path: &str, deadline: Duration) -> Result<(u16, String), String> {
     let ask = async {
-        let mut s = TcpStream::connect(addr).await.map_err(|e| e.to_string())?;
-        let req = format!("GET {path} HTTP/1.1\r\nhost: {addr}\r\nconnection: close\r\n\r\n");
+        let mut last = format!("{target}: no address");
+        let mut stream = None;
+        for addr in target.resolve().await? {
+            match TcpStream::connect(addr).await {
+                Ok(s) => {
+                    stream = Some(s);
+                    break;
+                }
+                Err(e) => last = format!("{addr}: {e}"),
+            }
+        }
+        let mut s = stream.ok_or(last)?;
+        let req = format!("GET {path} HTTP/1.1\r\nhost: {target}\r\nconnection: close\r\n\r\n");
         s.write_all(req.as_bytes()).await.map_err(|e| e.to_string())?;
         let mut out = Vec::new();
         s.read_to_end(&mut out).await.map_err(|e| e.to_string())?;
@@ -221,12 +235,12 @@ pub async fn probe(addr: SocketAddr, path: &str, deadline: Duration) -> Result<(
 ///
 /// # Errors
 /// [`probe`], or no runtime could be built.
-pub fn probe_blocking(addr: SocketAddr, path: &str, deadline: Duration) -> Result<(u16, String), String> {
+pub fn probe_blocking(target: &Target, path: &str, deadline: Duration) -> Result<(u16, String), String> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?
-        .block_on(probe(addr, path, deadline))
+        .block_on(probe(target, path, deadline))
 }
 
 #[cfg(test)]
@@ -244,7 +258,8 @@ mod tests {
             let server = HealthServer::bind("127.0.0.1:0".parse().unwrap(), status.clone())
                 .await
                 .unwrap();
-            let get = |path: &'static str| probe(server.addr(), path, Duration::from_secs(2));
+            let at = Target::from(server.addr());
+            let get = |path: &'static str| probe(&at, path, Duration::from_secs(2));
             assert_eq!(
                 get("/live").await.unwrap(),
                 (200, "live social social-1\n".to_owned())

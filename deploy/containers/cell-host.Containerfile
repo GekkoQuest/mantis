@@ -3,7 +3,7 @@
 # carries the package's server binary from the shared build stage and runs its node
 # subcommand: `toy-server node cell-host` (the toy package; another package swaps the
 # binary and the content mount). mantisd is in the image for the health check.
-ARG RUNTIME=mantis/runtime:dev
+ARG RUNTIME=mantis/runtime-debian:dev
 ARG BUILD=mantis/build:dev
 FROM ${BUILD} AS build
 FROM ${RUNTIME}

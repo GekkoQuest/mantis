@@ -62,6 +62,9 @@
 //! |-----:|-------|
 //! | 8 | server tick `u64` |
 //! | 8 | received at, host nanoseconds `u64` |
+//! | 4 | session epoch `u32` (bumped at every hand-off and reconnect) |
+//! | 4 | connection `u32` (bumped at every reconnect) |
+//! | 1 (+4) | resume from: 0 none, 1 present then the first input seq sent on the connection `u32` |
 //! | 1 (+4) | ack: 0 none, 1 present then input seq `u32` |
 //! | 1 (+8+n) | local: 0 none, 1 present then entity and the state ([`RecordState`], 27 bytes for [`MotionState`]) |
 //! | 12 | local modifiers: speed, jump, gravity scale `f32` |
@@ -83,6 +86,13 @@
 //! an unknown marker kind, an axis count above `MAX_ACTIONS`, a count that cannot fit in
 //! the bytes left, ticks not strictly increasing, a start tick other than the first
 //! record's, an end count that disagrees, a missing end record, or bytes after it.
+//!
+//! **Versions.** Version 2 added the session epoch, the connection, and the first input of
+//! the connection to each frame; version 1 is not read. That is acceptable for this
+//! format only: a recording is a development artifact already bound to the build that
+//! made it (its header holds the build id), so a version 1 file comes from a build that
+//! no longer exists and could not be replayed anyway. It is no precedent against the
+//! rule that shipped asset formats keep reading their older versions.
 
 use std::marker::PhantomData;
 use std::sync::OnceLock;
@@ -107,7 +117,7 @@ use crate::time::HostInstant;
 /// File magic.
 pub const MAGIC: [u8; 4] = *b"MCRC";
 /// The version this module writes and reads.
-pub const VERSION: u16 = 1;
+pub const VERSION: u16 = 2;
 /// Header size in bytes.
 pub const HEADER_LEN: usize = 80;
 /// End record size in bytes, tag included.
@@ -128,7 +138,7 @@ const ENTERED_LEN: usize = ENTITY_LEN + 4;
 /// Smallest encoded marker (cast start, no target).
 const MARKER_MIN_LEN: usize = 4 + 2 + 1 + 8 + 4 + ENTITY_LEN + 1 + 8;
 /// Smallest encoded frame (no ack, no local, no lists).
-const FRAME_MIN_LEN: usize = 8 + 8 + 1 + 1 + 12 + 4 * 4;
+const FRAME_MIN_LEN: usize = 8 + 8 + 4 + 4 + 1 + 1 + 1 + 12 + 4 * 4;
 
 // ---------------------------------------------------------------------------------------
 // State encoding
@@ -311,6 +321,9 @@ fn u128_to_bits(raw: u128) -> ActionBits {
 struct FrameView<'f, S> {
     server_tick: Tick,
     received_at: HostInstant,
+    epoch: u32,
+    connection: u32,
+    resume_from: Option<InputSeq>,
     ack: Option<InputSeq>,
     local: Option<&'f (EntityId, S)>,
     local_mods: MotionModifiers,
@@ -325,6 +338,9 @@ impl<'f, S> FrameView<'f, S> {
         Self {
             server_tick: f.server_tick,
             received_at: f.received_at,
+            epoch: f.epoch,
+            connection: f.connection,
+            resume_from: f.resume_from,
             ack: f.ack,
             local: f.local.as_ref(),
             local_mods: f.local_mods,
@@ -339,6 +355,9 @@ impl<'f, S> FrameView<'f, S> {
         Self {
             server_tick: f.server_tick,
             received_at: f.received_at,
+            epoch: f.epoch,
+            connection: f.connection,
+            resume_from: f.resume_from,
             ack: f.ack,
             local: f.local.as_ref(),
             local_mods: f.local_mods,
@@ -353,6 +372,12 @@ impl<'f, S> FrameView<'f, S> {
 fn put_frame<S: RecordState>(w: &mut RecordWriter<'_>, f: &FrameView<'_, S>) {
     w.u64(f.server_tick.0);
     w.u64(f.received_at.as_nanos());
+    w.u32(f.epoch);
+    w.u32(f.connection);
+    w.presence(f.resume_from.is_some());
+    if let Some(seq) = f.resume_from {
+        w.u32(seq.0);
+    }
     w.presence(f.ack.is_some());
     if let Some(ack) = f.ack {
         w.u32(ack.0);
@@ -687,6 +712,12 @@ pub struct RecordedFrame<S> {
     pub server_tick: Tick,
     /// Host arrival instant.
     pub received_at: HostInstant,
+    /// Session epoch.
+    pub epoch: u32,
+    /// Connection.
+    pub connection: u32,
+    /// The first input sent on the connection.
+    pub resume_from: Option<InputSeq>,
     /// Last applied input.
     pub ack: Option<InputSeq>,
     /// The avatar and its state.
@@ -709,6 +740,9 @@ impl<S: Copy> RecordedFrame<S> {
     pub fn fill(&self, frame: &mut SnapshotFrame<S>) -> bool {
         frame.server_tick = self.server_tick;
         frame.received_at = self.received_at;
+        frame.epoch = self.epoch;
+        frame.connection = self.connection;
+        frame.resume_from = self.resume_from;
         frame.ack = self.ack;
         frame.local = self.local;
         frame.local_mods = self.local_mods;
@@ -994,6 +1028,13 @@ fn read_tick<S: RecordState>(r: &mut Reader<'_>) -> Result<TickRecord<S>, Format
 fn read_frame<S: RecordState>(r: &mut Reader<'_>) -> Result<RecordedFrame<S>, FormatError> {
     let server_tick = Tick(read_u64(r)?);
     let received_at = HostInstant::from_nanos(read_u64(r)?);
+    let epoch = r.u32()?;
+    let connection = r.u32()?;
+    let resume_from = if read_flag(r)? {
+        Some(InputSeq(r.u32()?))
+    } else {
+        None
+    };
     let ack = if read_flag(r)? {
         Some(InputSeq(r.u32()?))
     } else {
@@ -1038,6 +1079,9 @@ fn read_frame<S: RecordState>(r: &mut Reader<'_>) -> Result<RecordedFrame<S>, Fo
     Ok(RecordedFrame {
         server_tick,
         received_at,
+        epoch,
+        connection,
+        resume_from,
         ack,
         local,
         local_mods,

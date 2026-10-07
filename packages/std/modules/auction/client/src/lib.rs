@@ -414,6 +414,7 @@ fn refusal_text(reason: ExtensionRefusal) -> &'static str {
         ExtensionRefusal::NotAllowed => "not allowed by the server",
         ExtensionRefusal::Invalid => "the server could not read the request",
         ExtensionRefusal::FeatureDisabled => "the auction house is switched off",
+        _ => "refused by the server",
     }
 }
 

@@ -22,6 +22,8 @@ ring = { workspace = true }
 # are already in the lock through the services.
 rcgen = { workspace = true, features = ["x509-parser"] }
 rustls = { workspace = true }
+# Fetching the registry from an HTTPS source with a pinned CA.
+tokio-rustls = { workspace = true }
 
 [dev-dependencies]
 # Reads the cell logs a package cell host writes, to check the recovery

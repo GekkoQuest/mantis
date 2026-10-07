@@ -12,8 +12,8 @@ use mantis_services::cluster::{CellLink, CellLinkConfig, CellOutcome, ClusterCon
 use mantis_services::generated::services as m;
 use mantis_services::host::Role;
 use mantis_services::ops::Command;
-use mantis_services::tls::TlsIdentity;
 use mantis_services::tls::dev::DevCa;
+use mantis_services::tls::{TlsHandle, TlsIdentity};
 
 fn wait_for(what: &str, mut ok: impl FnMut() -> bool) {
     let start = Instant::now();
@@ -62,11 +62,14 @@ fn all_roles_run_in_one_process_and_a_cell_host_links_to_them() {
         &cluster.handle(),
         &CellLinkConfig {
             key: cluster.key.clone(),
-            persist: cluster.addr(Role::Persist).unwrap(),
-            ops: cluster.addr(Role::Ops).unwrap(),
-            social: cluster.addr(Role::Social).unwrap(),
-            matchmaking: cluster.addr(Role::Matchmaking).unwrap(),
-            realm: cluster.addr(Role::Realm).unwrap(),
+            persist: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Persist).unwrap()),
+            ops: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Ops).unwrap()),
+            social: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Social).unwrap()),
+            matchmaking: mantis_services::host::rpc::Endpoint::fixed(
+                cluster.addr(Role::Matchmaking).unwrap(),
+            ),
+            realm: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Realm).unwrap()),
+            world: 0,
             live_key: cluster.ops.public_key(),
             cells: vec![(1, "127.0.0.1:7400".to_owned(), (-1000.0, 0.0))],
             poll: Duration::from_millis(20),
@@ -134,17 +137,20 @@ fn link_to(cluster: &LocalCluster, tls: Option<std::sync::Arc<TlsIdentity>>) -> 
         &cluster.handle(),
         &CellLinkConfig {
             key: cluster.key.clone(),
-            persist: cluster.addr(Role::Persist).unwrap(),
-            ops: cluster.addr(Role::Ops).unwrap(),
-            social: cluster.addr(Role::Social).unwrap(),
-            matchmaking: cluster.addr(Role::Matchmaking).unwrap(),
-            realm: cluster.addr(Role::Realm).unwrap(),
+            persist: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Persist).unwrap()),
+            ops: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Ops).unwrap()),
+            social: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Social).unwrap()),
+            matchmaking: mantis_services::host::rpc::Endpoint::fixed(
+                cluster.addr(Role::Matchmaking).unwrap(),
+            ),
+            realm: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Realm).unwrap()),
+            world: 0,
             live_key: cluster.ops.public_key(),
             cells: vec![(1, "127.0.0.1:7400".to_owned(), (-1000.0, 0.0))],
             poll: Duration::from_millis(20),
             instances: Vec::new(),
             inspector: "127.0.0.1:0".parse().unwrap(),
-            tls,
+            tls: tls.map(TlsHandle::from),
         },
     )
 }
@@ -215,11 +221,14 @@ fn a_draining_host_flushes_every_queued_outcome_and_relay_before_it_exits() {
         &cluster.handle(),
         &CellLinkConfig {
             key: cluster.key.clone(),
-            persist: cluster.addr(Role::Persist).unwrap(),
-            ops: cluster.addr(Role::Ops).unwrap(),
-            social: cluster.addr(Role::Social).unwrap(),
-            matchmaking: cluster.addr(Role::Matchmaking).unwrap(),
-            realm: cluster.addr(Role::Realm).unwrap(),
+            persist: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Persist).unwrap()),
+            ops: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Ops).unwrap()),
+            social: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Social).unwrap()),
+            matchmaking: mantis_services::host::rpc::Endpoint::fixed(
+                cluster.addr(Role::Matchmaking).unwrap(),
+            ),
+            realm: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Realm).unwrap()),
+            world: 0,
             live_key: cluster.ops.public_key(),
             cells: vec![(1, "127.0.0.1:7400".to_owned(), (-1000.0, 0.0))],
             poll: Duration::from_millis(20),
@@ -269,11 +278,14 @@ fn a_restarted_realm_gets_every_cell_registered_again() {
         &cluster.handle(),
         &CellLinkConfig {
             key: cluster.key.clone(),
-            persist: cluster.addr(Role::Persist).unwrap(),
-            ops: cluster.addr(Role::Ops).unwrap(),
-            social: cluster.addr(Role::Social).unwrap(),
-            matchmaking: cluster.addr(Role::Matchmaking).unwrap(),
-            realm: cluster.addr(Role::Realm).unwrap(),
+            persist: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Persist).unwrap()),
+            ops: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Ops).unwrap()),
+            social: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Social).unwrap()),
+            matchmaking: mantis_services::host::rpc::Endpoint::fixed(
+                cluster.addr(Role::Matchmaking).unwrap(),
+            ),
+            realm: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Realm).unwrap()),
+            world: 0,
             live_key: cluster.ops.public_key(),
             cells: vec![
                 (1, "127.0.0.1:7400".to_owned(), (-1000.0, 0.0)),
@@ -320,11 +332,14 @@ fn after_an_ops_restart_every_cell_holds_and_re_receives_the_current_flags_and_t
         &cluster.handle(),
         &CellLinkConfig {
             key: cluster.key.clone(),
-            persist: cluster.addr(Role::Persist).unwrap(),
-            ops: cluster.addr(Role::Ops).unwrap(),
-            social: cluster.addr(Role::Social).unwrap(),
-            matchmaking: cluster.addr(Role::Matchmaking).unwrap(),
-            realm: cluster.addr(Role::Realm).unwrap(),
+            persist: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Persist).unwrap()),
+            ops: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Ops).unwrap()),
+            social: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Social).unwrap()),
+            matchmaking: mantis_services::host::rpc::Endpoint::fixed(
+                cluster.addr(Role::Matchmaking).unwrap(),
+            ),
+            realm: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Realm).unwrap()),
+            world: 0,
             live_key: cluster.ops.public_key(),
             cells: vec![(1, "127.0.0.1:7400".to_owned(), (-1000.0, 0.0))],
             poll: Duration::from_millis(20),

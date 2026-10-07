@@ -2,7 +2,7 @@
 # The matchmaking role: one process, `mantisd matchmaking`, built from the shared base
 # (base.Containerfile). Its configuration is mounted at /etc/mantis/node.toml, the signed
 # registry and the deploy public key beside it; secrets arrive as files under /run/secrets.
-ARG RUNTIME=mantis/runtime:dev
+ARG RUNTIME=mantis/runtime-debian:dev
 FROM ${RUNTIME}
 # 7504: RPC between roles (the services network only). 7604: /live, /ready, /metrics.
 EXPOSE 7504/tcp 7604/tcp

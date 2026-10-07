@@ -34,3 +34,8 @@ mantis-testkit = { path = "../../../crates/testkit" }
 
 [lints]
 workspace = true
+
+[features]
+# Trust public CAs on the game listener (`--public-roots`): the Mozilla root set via
+# mantis-net's `public-roots` (webpki-roots). Off by default; the toy runs on the cluster CA.
+public-roots = ["mantis-net/public-roots"]

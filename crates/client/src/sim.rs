@@ -270,6 +270,11 @@ pub struct ClientSimStats {
     pub resets: u64,
     /// Remote entities refused because tracking was full.
     pub remotes_refused: u64,
+    /// New hosts seen (cell hand-offs and reconnects): the stale filter and the timeline
+    /// started over.
+    pub rebases: u64,
+    /// Reconnects: prediction was reset to the authoritative state.
+    pub reconnects: u64,
 }
 
 /// The client simulation for one world session.
@@ -292,6 +297,12 @@ pub struct ClientSim<M: MotionStep, O: IntentSink> {
     remotes: RemoteTracks,
     corrections: CorrectionHistogram,
     last_server_tick: Option<Tick>,
+    /// The epoch and connection of the last applied frame.
+    epoch: Option<(u32, u32)>,
+    /// A new connection was seen; prediction resumes at its next authoritative state.
+    resume_pending: bool,
+    /// The first input sent on the newest connection (from its frames).
+    resume_from: Option<InputSeq>,
     stats: ClientSimStats,
     #[cfg(debug_assertions)]
     recorder: Option<Box<dyn SimRecorder<M::State>>>,
@@ -368,6 +379,9 @@ impl<M: MotionStep, O: IntentSink> ClientSim<M, O> {
             remotes: RemoteTracks::with_capacity(c.remote_capacity),
             corrections: CorrectionHistogram::new(),
             last_server_tick: None,
+            epoch: None,
+            resume_pending: false,
+            resume_from: None,
             stats: ClientSimStats::default(),
             #[cfg(debug_assertions)]
             recorder: None,
@@ -531,7 +545,10 @@ impl<M: MotionStep, O: IntentSink> ClientSim<M, O> {
     fn drain_snapshots(&mut self, shown: HostInstant) -> Option<Authoritative<M::State>> {
         let max_extrapolation = self.config.max_remote_extrapolation;
         let mut newest_local = None;
-        let (last_server_tick, stats, timeline, jitter, remotes, markers) = (
+        let mut new_connection = false;
+        let (epoch, resume_from, last_server_tick, stats, timeline, jitter, remotes, markers) = (
+            &mut self.epoch,
+            &mut self.resume_from,
             &mut self.last_server_tick,
             &mut self.stats,
             &mut self.timeline,
@@ -545,6 +562,20 @@ impl<M: MotionStep, O: IntentSink> ClientSim<M, O> {
             #[cfg(debug_assertions)]
             if let Some(r) = recorder.as_mut() {
                 r.frame(frame);
+            }
+            // A new epoch is a new host (a hand-off or a reconnect): it counts its own ticks,
+            // so the stale filter and the timeline start over. A new connection also resets
+            // prediction (below), as at spawn.
+            let this = (frame.epoch, frame.connection);
+            *resume_from = frame.resume_from;
+            if *epoch != Some(this) {
+                if epoch.is_some() {
+                    *last_server_tick = None;
+                    timeline.rebase();
+                    stats.rebases = stats.rebases.saturating_add(1);
+                    new_connection |= epoch.is_some_and(|(_, c)| c != this.1);
+                }
+                *epoch = Some(this);
             }
             if last_server_tick.is_some_and(|t| frame.server_tick <= t) {
                 stats.stale_snapshots = stats.stale_snapshots.saturating_add(1);
@@ -586,6 +617,9 @@ impl<M: MotionStep, O: IntentSink> ClientSim<M, O> {
                 });
             }
         });
+        if new_connection {
+            self.resume_pending = true;
+        }
         newest_local
     }
 
@@ -661,7 +695,19 @@ impl<M: MotionStep, O: IntentSink> TickHandler for ClientSim<M, O> {
             // Future predictions integrate with the authoritative modifiers; replays use
             // the modifiers each input was originally predicted with.
             self.mods = auth.mods;
-            self.apply_authoritative(tick_time, auth.ack, auth.id, &auth.state);
+            if self.resume_pending && self.local == Some(auth.id) {
+                // A resumed connection: the server restored this state and applies inputs
+                // again from the first one sent on the new connection.
+                self.resume_pending = false;
+                let keep_from = self.resume_from.unwrap_or_else(|| self.predictor.next_seq());
+                self.predictor
+                    .resume(&self.ground, &auth.state, auth.ack, keep_from);
+                self.correction = Correction::NONE;
+                self.stats.reconnects = self.stats.reconnects.saturating_add(1);
+            } else {
+                self.resume_pending = false;
+                self.apply_authoritative(tick_time, auth.ack, auth.id, &auth.state);
+            }
         }
         self.remotes
             .evict_older_than(tick_time.saturating_sub(self.config.remote_timeout));

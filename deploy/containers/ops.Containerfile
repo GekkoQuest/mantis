@@ -2,7 +2,7 @@
 # The ops role: one process, `mantisd ops`, built from the shared base
 # (base.Containerfile). Its configuration is mounted at /etc/mantis/node.toml, the signed
 # registry and the deploy public key beside it; secrets arrive as files under /run/secrets.
-ARG RUNTIME=mantis/runtime:dev
+ARG RUNTIME=mantis/runtime-debian:dev
 FROM ${RUNTIME}
 # 7506: RPC between roles (the services network only). 7606: /live, /ready, /metrics.
 # 7480: the HTTPS dashboard, on its own listener and its own network, never a game port.

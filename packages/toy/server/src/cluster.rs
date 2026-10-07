@@ -78,7 +78,7 @@ pub fn after_tick(zone: &mut Zone, link: &CellLink, reports: &[TickReport]) -> M
         // Where each character is: the realm hears where characters leave
         // the world and arrive, to place a returning character where it
         // left.
-        link.track(id, TOY_WORLD, &whereabouts(cell.world()));
+        link.track(id, &whereabouts(cell.world()));
         // Messages for service roles: outputs, never logged.
         cell.service_messages(|topic, payload| match topic {
             SOCIAL_PUBLISH => {
@@ -127,9 +127,6 @@ pub fn after_tick(zone: &mut Zone, link: &CellLink, reports: &[TickReport]) -> M
     answer_inspector(zone, link);
     moved
 }
-
-/// The toy's one world, as the realm records it.
-pub const TOY_WORLD: u32 = 1;
 
 /// The characters a cell holds and where their avatars are.
 fn whereabouts(world: &mantis_core::ecs::World) -> Vec<(u64, [f32; 3])> {
@@ -475,11 +472,12 @@ pub fn start_local(opts: &LocalOptions) -> Result<LocalWorld, String> {
         &cluster.handle(),
         &CellLinkConfig {
             key: cluster.key.clone(),
-            persist: addr(Role::Persist)?,
-            ops: addr(Role::Ops)?,
-            social: addr(Role::Social)?,
-            matchmaking: addr(Role::Matchmaking)?,
-            realm: addr(Role::Realm)?,
+            persist: mantis_services::host::rpc::Endpoint::fixed(addr(Role::Persist)?),
+            ops: mantis_services::host::rpc::Endpoint::fixed(addr(Role::Ops)?),
+            social: mantis_services::host::rpc::Endpoint::fixed(addr(Role::Social)?),
+            matchmaking: mantis_services::host::rpc::Endpoint::fixed(addr(Role::Matchmaking)?),
+            realm: mantis_services::host::rpc::Endpoint::fixed(addr(Role::Realm)?),
+            world: 0,
             live_key: cluster.ops.public_key(),
             cells: world::regions()
                 .into_iter()

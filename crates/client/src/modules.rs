@@ -810,17 +810,18 @@ impl ClientModules {
             self.stats.refusals_answered += 1;
             return;
         }
-        match reason {
-            ExtensionRefusal::FeatureDisabled => self.set_enabled(&key, false, props),
-            ExtensionRefusal::NotAllowed | ExtensionRefusal::Invalid => {
-                let text = if reason == ExtensionRefusal::NotAllowed {
-                    "not allowed"
-                } else {
-                    "invalid"
-                };
-                let id = props.intern(&format!("{key}.refusal"));
-                let _ = props.set_text(id, text);
-            }
+        if reason == ExtensionRefusal::FeatureDisabled {
+            self.set_enabled(&key, false, props);
+        } else {
+            // A reason this build does not know (the contract enum is non-exhaustive) reads
+            // as a refusal all the same.
+            let text = match reason {
+                ExtensionRefusal::NotAllowed => "not allowed",
+                ExtensionRefusal::Invalid => "invalid",
+                _ => "refused",
+            };
+            let id = props.intern(&format!("{key}.refusal"));
+            let _ = props.set_text(id, text);
         }
     }
 

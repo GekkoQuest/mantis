@@ -193,6 +193,14 @@ pub struct Rig {
     pub sent: VecDeque<MoveInput>,
     /// Attach a timeline marker to every snapshot whose server tick is a multiple of this.
     pub marker_every: Option<u64>,
+    /// The session epoch and connection stamped on delivered frames (the network
+    /// session bumps them at a hand-off and at a reconnect).
+    pub epoch: u32,
+    pub connection: u32,
+    /// The first input sent on the current connection, stamped on frames (as the
+    /// network session does); `track_first` records the next one sent.
+    pub resume_from: Option<mantis_client::core_api::InputSeq>,
+    pub track_first: bool,
 }
 
 pub fn ground() -> Arc<FlatGround> {
@@ -261,6 +269,10 @@ impl Rig {
             client_tick: 0,
             sent: VecDeque::with_capacity(1024),
             marker_every: None,
+            epoch: 0,
+            connection: 0,
+            resume_from: None,
+            track_first: false,
         })
     }
 
@@ -284,6 +296,9 @@ impl Rig {
             };
             frame.server_tick = server_tick;
             frame.received_at = self.clock.now();
+            frame.epoch = self.epoch;
+            frame.connection = self.connection;
+            frame.resume_from = self.resume_from;
             frame.ack = ack;
             frame.local = Some((AVATAR, state));
             frame.local_mods = mods;
@@ -327,6 +342,10 @@ impl Rig {
         let _ = self.session.sim.run_due(self.clock.now());
         self.outbox.drain_into(&mut self.sent);
         while let Some(m) = self.sent.pop_front() {
+            if self.track_first {
+                self.track_first = false;
+                self.resume_from = Some(m.seq);
+            }
             self.server
                 .uplink
                 .push_back((self.client_tick + self.server.up_ticks, m));

@@ -253,7 +253,9 @@ pub fn encode_inbound(msg: &Inbound, build: u32, out: &mut Vec<u8>) -> bool {
                 e.bytes(&bytes);
             });
         }
-        Inbound::Move(_) | Inbound::SnapshotAck(_) => return false,
+        // Native movement and acknowledgements, and messages a newer
+        // contract adds: the protocol has no form for them.
+        _ => return false,
     }
     true
 }

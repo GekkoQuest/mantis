@@ -2,7 +2,7 @@
 # in the serial, the live-data public key and the cluster CA, then signs it with the deploy key: any change
 # after signing is refused by every node.
 format = "mantis.registry"
-version = 2
+version = 3
 serial = @SERIAL@
 cluster = "compose-local"
 live_key = "@LIVE_KEY@"

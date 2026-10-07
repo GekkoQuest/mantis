@@ -2,7 +2,7 @@
 # The realm role: one process, `mantisd realm`, built from the shared base
 # (base.Containerfile). Its configuration is mounted at /etc/mantis/node.toml, the signed
 # registry and the deploy public key beside it; secrets arrive as files under /run/secrets.
-ARG RUNTIME=mantis/runtime:dev
+ARG RUNTIME=mantis/runtime-debian:dev
 FROM ${RUNTIME}
 # 7502: RPC between roles (the services network only). 7602: /live, /ready, /metrics.
 EXPOSE 7502/tcp 7602/tcp

@@ -452,6 +452,7 @@ impl ::mantis_core::wire::Message for MailResult {
 /// Every client to server message of this schema.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[allow(clippy::large_enum_variant)] // inline, allocation-free values; transient on network threads
+#[non_exhaustive]
 pub enum Inbound {
     /// See [`ReadMail`].
     ReadMail(ReadMail),
@@ -576,6 +577,7 @@ pub fn decode_inbound(
 /// Every server to client message of this schema.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[allow(clippy::large_enum_variant)] // inline, allocation-free values; transient on network threads
+#[non_exhaustive]
 pub enum Outbound {
     /// See [`MailText`].
     MailText(MailText),

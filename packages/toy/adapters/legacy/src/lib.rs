@@ -428,6 +428,9 @@ impl WireAdapter for LegacyAdapter {
                     e.u32(tick32(p.tick));
                 });
             }
+            // A message a newer contract adds: this protocol has no form
+            // for it.
+            _ => return Err(AdapterError::Unsupported("message")),
         }
         Ok(())
     }

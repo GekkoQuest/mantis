@@ -2,18 +2,19 @@
 //!
 //! ```text
 //! toy-server serve   [--quic ADDR] [--tcp ADDR] [--cert-out FILE] [--seed N] [--ticks N]
+//!                    [--game-cert FILE --game-key FILE]
 //!                    [--cooked DIR] [--key FILE] [--snapshots DIR]
 //! toy-server cluster (serve's options) [--ops ADDR] [--ops-token-file FILE]
 //!                    [--ops-cert-out FILE] [--postgres CONN] [--verify-tokens]
 //!                    [--login-out FILE]
 //! toy-server soak   --out DIR [--ticks N] [--bots N] [--seed N]
-//! toy-server replay LOG...
+//! toy-server replay LOG... [--first-cell N]
 //!
 //! Every subcommand takes [--cooked DIR] [--key FILE]: the content it runs
 //! with is the cooked package (default the checked-in cook), verified, so
 //! logs any subcommand writes replay with the defaults.
 //! toy-server node   <role> --config FILE   (a deployed node: cell-host, or any service role)
-//! toy-server bots   [--quic ADDR --cert FILE | --tcp ADDR] [--profile P] [--count N]
+//! toy-server bots   [--quic ADDR (--cert FILE | --ca FILE) | --tcp ADDR] [--profile P] [--count N]
 //!                   [--seconds N] [--seed N] [--cooked DIR] [--key FILE]
 //!                   [--login FILE [--tls-ca FILE --tls-cert FILE --tls-key FILE]]
 //! ```
@@ -21,6 +22,10 @@
 //! - `serve` listens for native clients over QUIC and legacy clients over
 //!   TCP and runs the zone at the package tick rate on the wall clock. The
 //!   development certificate native clients pin is written to `--cert-out`.
+//!   With `--game-cert` and `--game-key` (PEM: the chain, leaf first, and
+//!   its PKCS#8 key) the QUIC listener presents that chain instead, and
+//!   reloads it when the files change (checked once a second): sessions
+//!   already open keep theirs, new connections get the new chain.
 //!   With `--snapshots DIR`, every cell is snapshotted every 150 ticks and
 //!   at a clean shutdown (decision 0007).
 //! - `cluster` is `serve` with every service role in the same process
@@ -62,7 +67,7 @@ use mantis_core::log::{LogHeader, LogReader, LogWriter};
 use mantis_core::replay::replay;
 use mantis_core::time::Tick;
 use mantis_net::NetRuntime;
-use mantis_net::quic::{DevCertificate, QuicServer};
+use mantis_net::quic::{CertWatcher, QuicServer, ServerCertificate};
 use mantis_net::tcp::TcpServer;
 use mantis_server::bots::Profile;
 use mantis_server::cell::BoxedSink;
@@ -204,11 +209,12 @@ fn link_cells(cluster: &LocalCluster, game: SocketAddr) -> Result<CellLink, Stri
         &cluster.handle(),
         &CellLinkConfig {
             key: cluster.key.clone(),
-            persist: need(Role::Persist)?,
-            ops: need(Role::Ops)?,
-            social: need(Role::Social)?,
-            matchmaking: need(Role::Matchmaking)?,
-            realm: need(Role::Realm)?,
+            persist: mantis_services::host::rpc::Endpoint::fixed(need(Role::Persist)?),
+            ops: mantis_services::host::rpc::Endpoint::fixed(need(Role::Ops)?),
+            social: mantis_services::host::rpc::Endpoint::fixed(need(Role::Social)?),
+            matchmaking: mantis_services::host::rpc::Endpoint::fixed(need(Role::Matchmaking)?),
+            realm: mantis_services::host::rpc::Endpoint::fixed(need(Role::Realm)?),
+            world: 0,
             live_key: cluster.ops.public_key(),
             cells,
             poll: Duration::from_millis(500),
@@ -226,6 +232,34 @@ fn link_cells(cluster: &LocalCluster, game: SocketAddr) -> Result<CellLink, Stri
     Ok(link)
 }
 
+/// The QUIC game listener: the chain in `--game-cert` / `--game-key`,
+/// watched for changes, or a development certificate (written to
+/// `--cert-out`).
+fn game_listener(
+    args: &Args,
+    runtime: &NetRuntime,
+    quic_addr: SocketAddr,
+) -> Result<(QuicServer, Option<CertWatcher>), String> {
+    let files = match (args.value("--game-cert"), args.value("--game-key")) {
+        (Some(c), Some(k)) => Some((PathBuf::from(c), PathBuf::from(k))),
+        (None, None) => None,
+        _ => return Err("--game-cert and --game-key go together".to_owned()),
+    };
+    let cert = match &files {
+        Some((c, k)) => {
+            let read = |p: &Path| std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()));
+            ServerCertificate::from_pem(&read(c)?, &read(k)?).map_err(|e| e.to_string())?
+        }
+        None => ServerCertificate::localhost().map_err(|e| format!("{e:?}"))?,
+    };
+    if let Some(path) = args.value("--cert-out") {
+        std::fs::write(path, &cert.cert_der).map_err(|e| format!("{path}: {e}"))?;
+    }
+    let quic = QuicServer::bind(runtime, quic_addr, &cert).map_err(|e| format!("{e:?}"))?;
+    let watcher = files.map(|(c, k)| CertWatcher::new(c, k, quic.reloader(), Duration::from_secs(1)));
+    Ok((quic, watcher))
+}
+
 fn serve(args: &Args, with_cluster: bool) -> Result<(), String> {
     let t = cooked_tunables(args)?;
     let quic_addr: SocketAddr = args
@@ -241,11 +275,7 @@ fn serve(args: &Args, with_cluster: bool) -> Result<(), String> {
     let seed = args.number("--seed", 1)?;
     let max_ticks = args.number("--ticks", u64::MAX)?;
     let runtime = NetRuntime::new(2).map_err(|e| format!("{e:?}"))?;
-    let cert = DevCertificate::localhost().map_err(|e| format!("{e:?}"))?;
-    if let Some(path) = args.value("--cert-out") {
-        std::fs::write(path, &cert.cert_der).map_err(|e| format!("{path}: {e}"))?;
-    }
-    let quic = QuicServer::bind(&runtime, quic_addr, &cert).map_err(|e| format!("{e:?}"))?;
+    let (quic, mut watcher) = game_listener(args, &runtime, quic_addr)?;
     let tcp = TcpServer::bind(&runtime, tcp_addr).map_err(|e| format!("{e:?}"))?;
     println!(
         "toy-server: native (QUIC) on {}, legacy (TCP) on {}",
@@ -316,6 +346,14 @@ fn serve(args: &Args, with_cluster: bool) -> Result<(), String> {
                 host.sessions_in_world(),
                 host.stats
             );
+        }
+        if let Some(result) = watcher.as_mut().and_then(CertWatcher::poll) {
+            match result {
+                Ok(()) => println!("toy-server: the game certificate was reloaded"),
+                Err(e) => eprintln!(
+                    "toy-server: the game certificate files changed but do not load ({e}); the old chain stays"
+                ),
+            }
         }
         toy_server::cluster::pace(&mut next, period, &mut host, &mut zone);
         if ticks.is_multiple_of(SNAPSHOT_EVERY) {
@@ -397,6 +435,8 @@ fn replay_logs(args: &Args) -> Result<(), String> {
     // A log records the content hash it ran with; replay loads the same
     // cook every subcommand does by default and explains a mismatch.
     let loaded = loaded_content(args)?;
+    // Logs of a host numbering its cells from another first cell.
+    world::set_first_cell(args.number("--first-cell", 1)?);
     let mut any = false;
     for path in args.positional() {
         any = true;
@@ -426,7 +466,7 @@ fn replay_one(loaded: &toy_server::content::Loaded, path: &Path) -> Result<(), S
         Err(e) => return Err(format!("{}: {e}", path.display())),
     };
     let header = *reader.header();
-    let index = usize::try_from(header.cell.0.saturating_sub(1)).map_err(|_| "cell id")?;
+    let index = usize::try_from(header.cell.0.saturating_sub(world::first_cell())).map_err(|_| "cell id")?;
     // Cell seeds are the zone seed mixed with the cell id (world::cell_config).
     let zone_seed = header.seed.0 ^ header.cell.0;
     let mut cell =
@@ -485,6 +525,24 @@ fn gateway_login(
     Ok(Some((runtime, gateway)))
 }
 
+/// How `bots` trusts the game listener.
+enum BotTrust {
+    /// Exactly this development certificate.
+    Pinned(Vec<u8>),
+    /// Any chain to a CA of this PEM bundle, valid for the address dialled.
+    Ca(Vec<u8>),
+}
+
+impl BotTrust {
+    fn for_addr(&self, addr: SocketAddr) -> Result<mantis_net::quic::ServerTrust, String> {
+        match self {
+            Self::Pinned(der) => Ok(mantis_net::quic::ServerTrust::Pinned(der.clone())),
+            Self::Ca(pem) => mantis_net::quic::ServerTrust::from_pem_bundle(pem, &addr.ip().to_string())
+                .map_err(|e| format!("--ca: {e}")),
+        }
+    }
+}
+
 /// Headless bots against a running server (`bots`).
 fn bots(args: &Args) -> Result<(), String> {
     let t = cooked_tunables(args)?;
@@ -503,13 +561,21 @@ fn bots(args: &Args) -> Result<(), String> {
         .map(str::parse::<SocketAddr>)
         .transpose()
         .map_err(|_| "--tcp: not an address")?;
-    let cert = if legacy.is_none() {
-        let path = args
-            .value("--cert")
-            .ok_or("--cert FILE (written by serve --cert-out) is required for QUIC")?;
-        std::fs::read(path).map_err(|e| format!("{path}: {e}"))?
-    } else {
-        Vec::new()
+    // How native bots trust the listener: a pinned development
+    // certificate, or a CA bundle checked for the address each bot dials.
+    let trust = match (legacy, args.value("--cert"), args.value("--ca")) {
+        (Some(_), _, _) => BotTrust::Pinned(Vec::new()),
+        (None, Some(_), Some(_)) => return Err("--cert and --ca are alternatives".to_owned()),
+        (None, Some(path), None) => {
+            BotTrust::Pinned(std::fs::read(path).map_err(|e| format!("{path}: {e}"))?)
+        }
+        (None, None, Some(path)) => BotTrust::Ca(std::fs::read(path).map_err(|e| format!("{path}: {e}"))?),
+        (None, None, None) => {
+            return Err(
+                "--cert FILE (written by serve --cert-out) or --ca FILE (a CA bundle) is required for QUIC"
+                    .to_owned(),
+            );
+        }
     };
     let quic: SocketAddr = args
         .value("--quic")
@@ -545,8 +611,8 @@ fn bots(args: &Args) -> Result<(), String> {
             None => (
                 Box::new(mantis_server::bots::NativeWire::default()),
                 Box::new(
-                    mantis_net::quic::QuicClient::connect(&runtime, quic, &cert)
-                        .map_err(|e| format!("{e:?}"))?,
+                    mantis_net::quic::QuicClient::connect_trusted(&runtime, quic, &trust.for_addr(quic)?)
+                        .map_err(|e| e.to_string())?,
                 ),
             ),
         };

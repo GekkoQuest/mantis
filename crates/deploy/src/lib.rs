@@ -13,7 +13,13 @@
 //! - [`cell`]: the cell-host role, adopted by a package's server binary.
 //! - [`local`]: every service role in one process, for development.
 //! - [`keys`]: key and secret files (never environment variables).
+//! - [`publish`]: `mantisd registry serve`, registries over HTTPS.
 //! - [`pki`]: the cluster CA and per-node certificates for mutual TLS.
+//! - [`source`]: where the registry comes from (file, directory, HTTPS),
+//!   and following newer ones without a restart.
+//! - [`target`]: `host:port` targets, names resolved at connect time.
+//! - [`game_tls`]: the game listener's certificate from operator files.
+//! - [`watch`]: noticing rotated certificate and key files.
 //! - [`tls`]: a node's own mutual-TLS material, checked at start.
 //! - [`cli`]: the command line of `mantisd` and of a package's `node`
 //!   subcommand.
@@ -25,13 +31,18 @@ pub mod cli;
 pub mod config;
 pub mod drain;
 pub mod fields;
+pub mod game_tls;
 pub mod health;
 pub mod keys;
 pub mod local;
 pub mod matrix;
 pub mod node;
 pub mod pki;
+pub mod publish;
 pub mod ready;
 pub mod registry;
 pub mod roles;
+pub mod source;
+pub mod target;
 pub mod tls;
+pub mod watch;

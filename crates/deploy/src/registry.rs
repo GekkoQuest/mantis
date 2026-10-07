@@ -3,7 +3,7 @@
 //!
 //! ```toml
 //! format = "mantis.registry"
-//! version = 2            # the format version this build reads
+//! version = 3            # the format version this build reads
 //! serial = 7             # raised with every registry published
 //! cluster = "dev"
 //! live_key = "<64 hex>"  # Ops's live-data public key; cells verify live changes with it
@@ -32,13 +32,14 @@
 //! trusts one deploy public key, from a file; the registry in turn carries
 //! the live-data public key, so cells learn it from a signed source.
 //!
-//! Addresses are `ip:port`, never names: a name resolved once would go
-//! stale when the instance behind it moves, and the RPC clients reconnect
-//! to the address they were given.
+//! Addresses are `host:port`, where the host is an IP literal or a DNS
+//! name ([`Target`]). A name is resolved each time a connection is made,
+//! so an instance that moves behind its name is followed; an instance that
+//! moves to another name or port is followed when a registry with a higher
+//! serial says so (nodes reload it without restarting, [`crate::source`]).
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
-use std::net::SocketAddr;
 
 use mantis_core::module::toml;
 use mantis_services::host::Role;
@@ -47,12 +48,14 @@ use ring::signature::{ED25519, Ed25519KeyPair, UnparsedPublicKey};
 use crate::fields::{FieldError, Fields};
 use crate::keys::{PUBLIC_KEY_BYTES, hex, unhex};
 use crate::matrix;
+use crate::target::Target;
 
 /// The `format` value.
 pub const FORMAT: &str = "mantis.registry";
 
-/// The registry format version this build reads (2: the cluster CAs).
-pub const VERSION: i64 = 2;
+/// The registry format version this build reads (2: the cluster CAs; 3:
+/// addresses may be DNS names).
+pub const VERSION: i64 = 3;
 
 /// The most CAs a registry carries: the current one and, while rotating,
 /// the next.
@@ -105,9 +108,9 @@ pub struct Instance {
     /// Its role.
     pub role: Role,
     /// Where its RPC listens (a cell host: its inspector).
-    pub rpc: SocketAddr,
+    pub rpc: Target,
     /// Where its health endpoint listens.
-    pub health: SocketAddr,
+    pub health: Target,
     /// The cells it hosts (cell hosts only).
     pub cells: Vec<u64>,
 }
@@ -267,8 +270,8 @@ impl Registry {
                     "one of account, realm, social, matchmaking, persist, ops, cell-host",
                 )
             })?;
-            let rpc = f.addr("rpc")?;
-            let health = f.addr("health")?;
+            let rpc = f.target("rpc")?;
+            let health = f.target("health")?;
             let cells = if role == Role::Cell {
                 let cells = f.uints("cells")?;
                 if cells.is_empty() || cells.contains(&0) {
@@ -305,8 +308,8 @@ impl Registry {
         let mut addrs = BTreeSet::new();
         let mut cells = BTreeSet::new();
         for i in &self.instances {
-            for a in [i.rpc, i.health] {
-                if !addrs.insert(a) {
+            for a in [&i.rpc, &i.health] {
+                if !addrs.insert(a.clone()) {
                     return invalid(format!("{a} is listed twice ({})", i.name));
                 }
             }
@@ -405,7 +408,7 @@ mod tests {
     use crate::keys::new_key_pair;
 
     fn sample() -> Registry {
-        let at = |p: u16| SocketAddr::from(([127, 0, 0, 1], p));
+        let at = |p: u16| Target::from(std::net::SocketAddr::from(([127, 0, 0, 1], p)));
         Registry {
             serial: 3,
             cluster: "dev".to_owned(),
@@ -475,22 +478,22 @@ mod tests {
     fn inconsistent_registries_are_refused_even_when_signed() {
         let (key, public) = keys();
         let mut r = sample();
-        r.instances[1].rpc = r.instances[0].rpc;
+        r.instances[1].rpc = r.instances[0].rpc.clone();
         let e = Registry::verify(&sign(&r.render(), &key), &public).unwrap_err();
         assert!(e.to_string().contains("listed twice"), "{e}");
 
         let mut r = sample();
         let mut twin = r.instances[0].clone();
         twin.name = "persist-2".to_owned();
-        twin.rpc = SocketAddr::from(([127, 0, 0, 1], 9000));
-        twin.health = SocketAddr::from(([127, 0, 0, 1], 9001));
+        twin.rpc = Target::parse("persist-b.internal:9000").unwrap();
+        twin.health = Target::parse("persist-b.internal:9001").unwrap();
         r.instances.push(twin);
         let e = Registry::verify(&sign(&r.render(), &key), &public).unwrap_err();
         assert!(e.to_string().contains("one instance each"), "{e}");
 
-        let body = sample().render().replace("version = 2", "version = 1");
+        let body = sample().render().replace("version = 3", "version = 2");
         let e = Registry::verify(&sign(&body, &key), &public).unwrap_err();
-        assert!(e.to_string().contains("format 2, not 1"), "{e}");
+        assert!(e.to_string().contains("format 3, not 2"), "{e}");
 
         let body = sample().render().replace("ca = [\"30820102\"]", "ca = []");
         let e = Registry::verify(&sign(&body, &key), &public).unwrap_err();

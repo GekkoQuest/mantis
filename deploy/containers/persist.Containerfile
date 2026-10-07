@@ -2,7 +2,7 @@
 # The persist role: one process, `mantisd persist`, built from the shared base
 # (base.Containerfile). Its configuration is mounted at /etc/mantis/node.toml, the signed
 # registry and the deploy public key beside it; secrets arrive as files under /run/secrets.
-ARG RUNTIME=mantis/runtime:dev
+ARG RUNTIME=mantis/runtime-debian:dev
 FROM ${RUNTIME}
 # 7505: RPC between roles (the services network only). 7605: /live, /ready, /metrics.
 EXPOSE 7505/tcp 7605/tcp

@@ -1,0 +1,188 @@
+# Owner: deploy-engine
+# The multi-host demonstration, part one: the service roles every "host" shares, as if on a
+# machine of their own (compose project mantis-svc). The two cell-host projects
+# (host.yaml, projects mantis-host-a and mantis-host-b) pretend to be two more machines.
+#
+# The three projects meet only on `wan` (external, created by scripts/deploy-multihost.ps1),
+# by DNS name: every address in the signed registry is a name (persist.svc.mantis:7505, ...),
+# resolved when a connection is made. Nothing here knows another project's container
+# addresses. On real machines `wan` is the network between them and the names are DNS
+# records; the nodes and their configuration are the same.
+#
+# The registry is served over HTTPS by `mantisd registry serve` (registry.svc.mantis:8443),
+# pinned by every node to the cluster CA, and re-read every 5 s: publishing a new signed
+# registry (a higher serial) into deploy/local/multihost/published moves the cluster without
+# a restart.
+
+name: mantis-svc
+
+x-node: &node
+  restart: unless-stopped
+  stop_grace_period: 30s
+  read_only: true
+  security_opt: ["no-new-privileges:true"]
+  tmpfs: ["/tmp"]
+
+services:
+  postgres:
+    image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mantis
+      POSTGRES_DB: mantis
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg_password
+    secrets: [pg_password]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    networks: [db]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "mantis", "-d", "mantis"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  registry:
+    <<: *node
+    image: mantis/runtime-${MANTIS_RUNTIME:-debian}:dev
+    command:
+      - mantisd
+      - registry
+      - serve
+      - --dir
+      - /var/lib/mantis/published
+      - --listen
+      - 0.0.0.0:8443
+      - --cert
+      - /run/secrets/registry_crt
+      - --key
+      - /run/secrets/registry_key
+    secrets: [registry_crt, registry_key]
+    volumes:
+      - ../local/multihost/published:/var/lib/mantis/published:ro
+    networks:
+      wan: { aliases: [registry.svc.mantis] }
+
+  persist:
+    <<: *node
+    image: mantis/persist:dev
+    depends_on: { postgres: { condition: service_healthy } }
+    secrets:
+      - cluster_key
+      - pg_conn
+      - { source: persist-1_crt, target: tls_cert }
+      - { source: persist-1_key, target: tls_key }
+    volumes:
+      - ./config/persist-1.toml:/etc/mantis/node.toml:ro
+      - ../local/multihost/keys/deploy.pub:/etc/mantis/deploy.pub:ro
+      - ../local/multihost/keys/ca.crt:/etc/mantis/ca.crt:ro
+    networks:
+      db: {}
+      wan: { aliases: [persist.svc.mantis] }
+
+  account:
+    <<: *node
+    image: mantis/account:dev
+    secrets:
+      - cluster_key
+      - { source: account-1_crt, target: tls_cert }
+      - { source: account-1_key, target: tls_key }
+    volumes:
+      - ./config/account-1.toml:/etc/mantis/node.toml:ro
+      - ../local/multihost/keys/deploy.pub:/etc/mantis/deploy.pub:ro
+      - ../local/multihost/keys/ca.crt:/etc/mantis/ca.crt:ro
+    networks:
+      wan: { aliases: [account.svc.mantis] }
+
+  realm:
+    <<: *node
+    image: mantis/realm:dev
+    secrets:
+      - cluster_key
+      - { source: realm-1_crt, target: tls_cert }
+      - { source: realm-1_key, target: tls_key }
+    volumes:
+      - ./config/realm-1.toml:/etc/mantis/node.toml:ro
+      - ../local/multihost/keys/deploy.pub:/etc/mantis/deploy.pub:ro
+      - ../local/multihost/keys/ca.crt:/etc/mantis/ca.crt:ro
+    networks:
+      wan: { aliases: [realm.svc.mantis] }
+
+  social:
+    <<: *node
+    image: mantis/social:dev
+    secrets:
+      - cluster_key
+      - { source: social-1_crt, target: tls_cert }
+      - { source: social-1_key, target: tls_key }
+    volumes:
+      - ./config/social-1.toml:/etc/mantis/node.toml:ro
+      - ../local/multihost/keys/deploy.pub:/etc/mantis/deploy.pub:ro
+      - ../local/multihost/keys/ca.crt:/etc/mantis/ca.crt:ro
+    networks:
+      wan: { aliases: [social.svc.mantis] }
+
+  matchmaking:
+    <<: *node
+    image: mantis/matchmaking:dev
+    secrets:
+      - cluster_key
+      - { source: matchmaking-1_crt, target: tls_cert }
+      - { source: matchmaking-1_key, target: tls_key }
+    volumes:
+      - ./config/matchmaking-1.toml:/etc/mantis/node.toml:ro
+      - ../local/multihost/keys/deploy.pub:/etc/mantis/deploy.pub:ro
+      - ../local/multihost/keys/ca.crt:/etc/mantis/ca.crt:ro
+    networks:
+      wan: { aliases: [matchmaking.svc.mantis] }
+
+  ops:
+    <<: *node
+    image: mantis/ops:dev
+    secrets:
+      - cluster_key
+      - live_key
+      - operator_token
+      - { source: ops-1_crt, target: tls_cert }
+      - { source: ops-1_key, target: tls_key }
+    volumes:
+      - ./config/ops-1.toml:/etc/mantis/node.toml:ro
+      - ../local/multihost/keys/deploy.pub:/etc/mantis/deploy.pub:ro
+      - ../local/multihost/keys/ca.crt:/etc/mantis/ca.crt:ro
+      - ../local/multihost/out-svc:/var/lib/mantis/out
+    networks:
+      wan: { aliases: [ops.svc.mantis] }
+      ops: { ipv4_address: 10.89.0.10, gw_priority: 1 }
+    ports:
+      - "127.0.0.1:7480:7480/tcp"
+
+networks:
+  wan:
+    external: true
+    name: mantis_wan
+  db:
+    internal: true
+  ops:
+    ipam: { config: [{ subnet: 10.89.0.0/24 }] }
+
+volumes:
+  pgdata:
+
+secrets:
+  cluster_key: { file: ../local/multihost/keys/cluster.key }
+  live_key: { file: ../local/multihost/keys/live.pk8 }
+  operator_token: { file: ../local/multihost/keys/operator.token }
+  pg_password: { file: ../local/multihost/secrets/pg_password }
+  pg_conn: { file: ../local/multihost/secrets/pg.conn }
+  registry_crt: { file: ../local/multihost/certs/registry.crt }
+  registry_key: { file: ../local/multihost/certs/registry.key }
+  persist-1_crt: { file: ../local/multihost/certs/persist-1.crt }
+  persist-1_key: { file: ../local/multihost/certs/persist-1.key }
+  account-1_crt: { file: ../local/multihost/certs/account-1.crt }
+  account-1_key: { file: ../local/multihost/certs/account-1.key }
+  realm-1_crt: { file: ../local/multihost/certs/realm-1.crt }
+  realm-1_key: { file: ../local/multihost/certs/realm-1.key }
+  social-1_crt: { file: ../local/multihost/certs/social-1.crt }
+  social-1_key: { file: ../local/multihost/certs/social-1.key }
+  matchmaking-1_crt: { file: ../local/multihost/certs/matchmaking-1.crt }
+  matchmaking-1_key: { file: ../local/multihost/certs/matchmaking-1.key }
+  ops-1_crt: { file: ../local/multihost/certs/ops-1.crt }
+  ops-1_key: { file: ../local/multihost/certs/ops-1.key }

@@ -1,0 +1,53 @@
+# Owner: deploy-engine
+# The multi-host demonstration, part two: one "machine" with its own cell host, its own
+# private network and its own game ports (compose projects mantis-host-a and
+# mantis-host-b, from this one file):
+#
+#   MANTIS_HOST=a  MANTIS_QUIC_PORT=7400  MANTIS_TCP_PORT=7401  docker compose -p mantis-host-a -f host.yaml up -d
+#   MANTIS_HOST=b  MANTIS_QUIC_PORT=7410  MANTIS_TCP_PORT=7411  docker compose -p mantis-host-b -f host.yaml up -d
+#
+# (scripts/deploy-multihost.ps1 does this.) The cell host reaches the service roles only
+# over the shared `wan` network, by the names the signed registry lists, and is reached
+# there as cells.host-<x>.mantis. Its game ports are published on 127.0.0.1 only.
+
+services:
+  cell-host:
+    image: mantis/cell-host:dev
+    restart: unless-stopped
+    stop_grace_period: 30s
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    secrets:
+      - cluster_key
+      - { source: cell_crt, target: tls_cert }
+      - { source: cell_key, target: tls_key }
+    volumes:
+      - ./config/cells-${MANTIS_HOST:?a or b}.toml:/etc/mantis/node.toml:ro
+      - ../local/multihost/keys/deploy.pub:/etc/mantis/deploy.pub:ro
+      - ../local/multihost/keys/ca.crt:/etc/mantis/ca.crt:ro
+      - ../../packages/toy/cooked:/content/toy:ro
+      - cells:/var/lib/mantis/state
+      - ../local/multihost/out-${MANTIS_HOST}:/var/lib/mantis/out
+    networks:
+      lan: {}
+      wan: { aliases: ["cells.host-${MANTIS_HOST}.mantis"] }
+    ports:
+      - "127.0.0.1:${MANTIS_QUIC_PORT:?}:7400/udp"
+      - "127.0.0.1:${MANTIS_TCP_PORT:?}:7401/tcp"
+
+networks:
+  wan:
+    external: true
+    name: mantis_wan
+  # This machine's own network: the game ports are published from here.
+  lan:
+    driver_opts: { com.docker.network.bridge.enable_ip_masquerade: "false" }
+
+volumes:
+  cells:
+
+secrets:
+  cluster_key: { file: ../local/multihost/keys/cluster.key }
+  cell_crt: { file: "../local/multihost/certs/cells-${MANTIS_HOST}.crt" }
+  cell_key: { file: "../local/multihost/certs/cells-${MANTIS_HOST}.key" }

@@ -83,10 +83,12 @@ impl Kind {
     pub fn of(m: &Inbound) -> Option<Self> {
         Some(match m {
             Inbound::Move(_) | Inbound::MoveClaim(_) => Self::Input,
-            Inbound::Cast(_) | Inbound::Interact(_) | Inbound::Choose(_) => Self::Action,
             Inbound::Extension(x) => Self::Extension(x.kind.0),
             Inbound::SnapshotAck(_) => Self::Ack,
             Inbound::Hello(_) | Inbound::Goodbye(_) => return None,
+            // Casts, interactions, choices, and any message a newer
+            // contract adds: limited as actions.
+            _ => Self::Action,
         })
     }
 

@@ -13,12 +13,17 @@
 #   certs/     each node's mutual-TLS certificate and key (`mantisd certs`, 7 days)
 # -Fresh writes a new registry (a higher serial) and new certificates, without touching
 # keys or data.
-# -Renew is certificate renewal: new certificates for every node from the same CA, then
-# each container restarted one at a time, waiting for it to be healthy before the next.
-# Run it before the certificates expire (they are valid 7 days; the script warns when
-# fewer than 2 remain).
+# -Renew is certificate renewal with no restart: new certificates for every node and the
+# game listener from the same CA are written over the mounted files; every node takes its
+# new one up within a second (internal RPC connections handshake again; game sessions stay
+# on their connection, only new ones get the new chain). The script waits until every
+# node reports the renewal on /metrics. Run it before the certificates expire (valid 7
+# days; the script warns when fewer than 2 remain).
 #
-# Images: rust:1.98.1-bookworm and debian:bookworm-slim (pinned by digest in
+# -BuildOnly builds the images and stops (scripts/deploy-multihost.ps1 -Build uses it).
+# -Runtime debian (default) or distroless picks the runtime image every role is built on
+# (MANTIS_RUNTIME for compose).
+# Images: rust:1.98.1-bookworm, debian:bookworm-slim and gcr.io/distroless/cc-debian12 (pinned by digest in
 # deploy/containers/base.Containerfile) and postgres:17-alpine. This script builds; it does
 # not pull anything the build does not name. Every published port binds 127.0.0.1:
 #   7400/udp  native clients (QUIC)       7401/tcp  legacy clients (TCP)
@@ -27,12 +32,15 @@
 # Bots: scripts/bots.ps1 -Cert deploy/local/out/toy-cert.der   (add -Legacy for TCP)
 # Stop: scripts/deploy-down.ps1
 param(
+    [ValidateSet('debian', 'distroless')][string]$Runtime = 'debian',
     [switch]$Fresh,
     [switch]$Renew,
     [switch]$NoBuild,
+    [switch]$BuildOnly,
     [int]$WaitSeconds = 600
 )
 . "$PSScriptRoot/common.ps1"
+$env:MANTIS_RUNTIME = $Runtime
 
 $Local = Join-Path $Root 'deploy/local'
 $Compose = 'deploy/compose/compose.yaml'
@@ -40,6 +48,24 @@ $Compose = 'deploy/compose/compose.yaml'
 function Invoke-Mantisd {
     param([string[]]$Arguments)
     Invoke-Checked cargo (@('run', '-q', '-p', 'mantis-deploy', '--bin', 'mantisd', '--') + $Arguments)
+}
+
+# Every node: its compose service and its health port inside the container.
+$Nodes = @(
+    @{ Service = 'persist'; Health = 7605 }, @{ Service = 'account'; Health = 7601 },
+    @{ Service = 'realm'; Health = 7602 }, @{ Service = 'social'; Health = 7603 },
+    @{ Service = 'matchmaking'; Health = 7604 }, @{ Service = 'ops'; Health = 7606 },
+    @{ Service = 'cell-host'; Health = 7620 })
+
+# A counter from a node's /metrics (0 when absent), read inside its container with
+# `mantisd probe` (no shell needed: works on distroless).
+function Get-NodeMetric {
+    param($Node, [string]$Name)
+    $id = (& docker compose -f $Compose ps -q $Node.Service 2>$null | Select-Object -First 1)
+    if (-not $id) { return 0 }
+    $text = (& docker exec $id mantisd probe "127.0.0.1:$($Node.Health)" /metrics 2>$null) -join "`n"
+    $line = ($text -split "`n") | Where-Object { $_ -like "$Name *" } | Select-Object -First 1
+    if ($line) { return [int64]($line.Split(' ')[1]) } else { return 0 }
 }
 
 function New-Hex {
@@ -68,7 +94,11 @@ if (-not (Test-Path $pgPassword)) {
     Write-Secret (Join-Path $Local 'secrets/pg.conn') "host=10.77.0.4 port=5432 user=mantis dbname=mantis password=$password"
     Write-Host 'secrets: a new database password in deploy/local/secrets (files, never environment variables)'
 }
+# The certificates containers write for clients are regenerated at every start; old ones are
+# removed first, since a file a container of another runtime (another uid) wrote cannot be
+# overwritten by this one.
 New-Item -ItemType Directory -Force (Join-Path $Local 'out') | Out-Null
+Get-ChildItem (Join-Path $Local 'out') -File | Remove-Item -Force
 
 # The registry: the live-data public key and a serial filled in, then signed.
 $registry = Join-Path $Local 'registry.toml'
@@ -88,9 +118,18 @@ if ($Fresh -or -not (Test-Path $registry)) {
 
 # Certificates: one per node, from the CA the registry carries.
 $certs = Join-Path $Local 'certs'
-$issue = $Fresh -or $Renew -or -not (Test-Path (Join-Path $certs 'cells-1.crt'))
+$issue = $Fresh -or $Renew -or -not (Test-Path (Join-Path $certs 'game.crt'))
+# What each node has taken up so far (a renewal is counted when it raises these).
+$before = @{}
+if ($Renew) {
+    foreach ($n in $Nodes) { $before[$n.Service] = Get-NodeMetric $n 'tls_renewals' }
+    $before['game'] = Get-NodeMetric $Nodes[-1] 'game_tls_rotations'
+}
 if ($issue) {
     Invoke-Mantisd @('certs', '--keys', 'deploy/local/keys', '--registry', 'deploy/local/registry.toml',
+        '--out', 'deploy/local/certs')
+    # The game listener's chain, from the cluster CA, for the address clients dial.
+    Invoke-Mantisd @('certs', '--keys', 'deploy/local/keys', '--server', 'game', '--hosts', '127.0.0.1',
         '--out', 'deploy/local/certs')
 } else {
     $age = (Get-Date) - (Get-Item (Join-Path $certs 'cells-1.crt')).LastWriteTime
@@ -99,12 +138,22 @@ if ($issue) {
     }
 }
 if ($Renew) {
-    # Rolling restart: each node reads its certificate at start.
-    foreach ($svc in @('persist', 'account', 'realm', 'social', 'matchmaking', 'ops', 'cell-host')) {
-        Invoke-Checked docker @('compose', '-f', $Compose, 'restart', $svc)
-        Invoke-Checked docker @('compose', '-f', $Compose, 'up', '-d', '--wait', '--wait-timeout', "$WaitSeconds", $svc)
+    # No restart: wait until every node has taken its new certificate up.
+    $deadline = (Get-Date).AddSeconds(60)
+    foreach ($n in $Nodes) {
+        while ((Get-NodeMetric $n 'tls_renewals') -le $before[$n.Service]) {
+            if ((Get-Date) -gt $deadline) { throw "$($n.Service) did not take its renewed certificate up" }
+            Start-Sleep -Milliseconds 500
+        }
+        Write-Host "  $($n.Service): renewed in place"
     }
-    Write-Host 'renewed: every node restarted on its new certificate'
+    while ((Get-NodeMetric $Nodes[-1] 'game_tls_rotations') -le $before['game']) {
+        if ((Get-Date) -gt $deadline) { throw 'the game listener did not take its renewed certificate up' }
+        Start-Sleep -Milliseconds 500
+    }
+    Write-Host '  cell-host game listener: rotated (open sessions kept)'
+    Invoke-Checked docker @('compose', '-f', $Compose, 'ps', '--format', 'table {{.Service}}\t{{.Status}}')
+    Write-Host 'renewed: every node on its new certificate, no restart'
     exit 0
 }
 
@@ -112,10 +161,12 @@ if ($Renew) {
 if (-not $NoBuild) {
     Invoke-Checked docker @('build', '-f', 'deploy/containers/base.Containerfile', '--target', 'build',
         '-t', 'mantis/build:dev', '.')
-    Invoke-Checked docker @('build', '-f', 'deploy/containers/base.Containerfile', '--target', 'runtime',
-        '-t', 'mantis/runtime:dev', '.')
+    $stage = if ($Runtime -eq 'distroless') { 'runtime-distroless' } else { 'runtime' }
+    Invoke-Checked docker @('build', '-f', 'deploy/containers/base.Containerfile', '--target', $stage,
+        '-t', "mantis/runtime-${Runtime}:dev", '.')
     Invoke-Checked docker @('compose', '-f', $Compose, 'build')
 }
+if ($BuildOnly) { Write-Host "images built on the $Runtime runtime"; exit 0 }
 
 # Start, and wait until every container's health check (its /ready) passes. Readiness
 # order is the nodes' own: persist before social and Ops, realm before matchmaking, every

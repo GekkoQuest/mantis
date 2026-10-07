@@ -71,11 +71,14 @@ fn link_config(cluster: &LocalCluster) -> CellLinkConfig {
     {
         CellLinkConfig {
             key: cluster.key.clone(),
-            persist: cluster.addr(Role::Persist).unwrap(),
-            ops: cluster.addr(Role::Ops).unwrap(),
-            social: cluster.addr(Role::Social).unwrap(),
-            matchmaking: cluster.addr(Role::Matchmaking).unwrap(),
-            realm: cluster.addr(Role::Realm).unwrap(),
+            persist: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Persist).unwrap()),
+            ops: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Ops).unwrap()),
+            social: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Social).unwrap()),
+            matchmaking: mantis_services::host::rpc::Endpoint::fixed(
+                cluster.addr(Role::Matchmaking).unwrap(),
+            ),
+            realm: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Realm).unwrap()),
+            world: 0,
             live_key: cluster.ops.public_key(),
             cells: world::regions()
                 .into_iter()
@@ -420,7 +423,7 @@ fn social_restart_ticks(tls: bool) -> (u64, u64) {
     let mut cluster = LocalCluster::start(&config).unwrap();
     let t = Tunables::defaults().unwrap();
     let mut link_config = link_config(&cluster);
-    link_config.tls = ids.map(|ids| ids[&Role::Cell].clone());
+    link_config.tls = ids.map(|ids| mantis_services::tls::TlsHandle::from(ids[&Role::Cell].clone()));
     let link = CellLink::start_on(&cluster.handle(), &link_config, cluster.clock()).unwrap();
     let mut sim = Sim::new(t, SEED, |_| None).unwrap();
     // Three characters in the first cell, on lossy links.

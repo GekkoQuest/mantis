@@ -50,13 +50,13 @@ fn serve(node: &Node, router: Router) -> Result<RpcServer, String> {
         node.config.listen_rpc,
         node.key.clone(),
         router,
-        Some(Arc::clone(&node.tls)),
+        Some(node.tls.clone()),
     ))
     .map_err(|e| format!("rpc {}: {e}", node.config.listen_rpc))
 }
 
 fn client(node: &Node, to: Role) -> Result<RpcClient, String> {
-    node.client(node.rpc_of(to)?, to)
+    node.client_of(to)
 }
 
 fn persist(node: &Node) -> Result<Router, String> {
@@ -138,6 +138,89 @@ fn matchmaking(node: &Node) -> Result<Router, String> {
     Ok(service.router())
 }
 
+/// What Ops needs to make a client of a cell host after start.
+struct CellClients {
+    endpoints: crate::node::Endpoints,
+    key: Vec<u8>,
+    tls: mantis_services::tls::TlsHandle,
+}
+
+impl CellClients {
+    fn client(&self, instance: &str) -> Result<Arc<RpcClient>, String> {
+        let endpoint = self
+            .endpoints
+            .get(instance)
+            .ok_or_else(|| format!("no address for {instance}"))?;
+        RpcClient::with_endpoint(
+            endpoint,
+            Role::Ops,
+            self.key.clone(),
+            Some(self.tls.clone()),
+            Role::Cell,
+        )
+        .map(Arc::new)
+        .map_err(|e| e.to_string())
+    }
+}
+
+/// Which cells each cell host serves, by instance.
+type Hosted = std::collections::BTreeMap<String, Vec<u64>>;
+
+/// Gives Ops a client for every cell of every cell host in `registry`,
+/// and takes away the cells no host serves any more. Returns what is
+/// hosted now.
+fn sync_cells(
+    node: &Node,
+    ops: &OpsService,
+    registry: &crate::registry::Registry,
+    before: &Hosted,
+) -> Result<Hosted, String> {
+    let mut now = Hosted::new();
+    for host in registry.of(Role::Cell) {
+        let client = Arc::new(node.client_to(host)?);
+        for cell in &host.cells {
+            ops.add_cell(*cell, Arc::clone(&client));
+        }
+        now.insert(host.name.clone(), host.cells.clone());
+    }
+    for cell in before.values().flatten() {
+        if !now.values().flatten().any(|c| c == cell) {
+            ops.remove_cell(*cell);
+        }
+    }
+    Ok(now)
+}
+
+/// Keeps Ops's cell clients in step with newer registries: a new cell host
+/// is added, a gone one removed (a moved one is followed by its endpoint).
+async fn follow_cells(
+    ops: OpsService,
+    mut registries: tokio::sync::watch::Receiver<Arc<crate::registry::Registry>>,
+    mut hosted: Hosted,
+    clients: CellClients,
+) {
+    while registries.changed().await.is_ok() {
+        let next = Arc::clone(&registries.borrow_and_update());
+        let mut now = Hosted::new();
+        for host in next.of(Role::Cell) {
+            if hosted.get(&host.name) != Some(&host.cells)
+                && let Ok(client) = clients.client(&host.name)
+            {
+                for cell in &host.cells {
+                    ops.add_cell(*cell, Arc::clone(&client));
+                }
+            }
+            now.insert(host.name.clone(), host.cells.clone());
+        }
+        for cell in hosted.values().flatten() {
+            if !now.values().flatten().any(|c| c == cell) {
+                ops.remove_cell(*cell);
+            }
+        }
+        hosted = now;
+    }
+}
+
 fn ops(node: &Node) -> Result<(Router, Dashboard), String> {
     let config = node.config.ops.as_ref().ok_or("an ops node needs [ops]")?;
     let signer = LiveSigner::from_pkcs8(&keys::read_pkcs8(&config.live_key)?)
@@ -162,12 +245,17 @@ fn ops(node: &Node) -> Result<(Router, Dashboard), String> {
         "{values} durable live values published again (run {})",
         ops.live_epoch()
     ));
-    for host in node.registry.of(Role::Cell) {
-        let inspector = Arc::new(node.client(host.rpc, Role::Cell)?);
-        for cell in &host.cells {
-            ops.add_cell(*cell, Arc::clone(&inspector));
-        }
-    }
+    let hosts = sync_cells(node, &ops, &node.registry, &std::collections::BTreeMap::new())?;
+    node.handle().spawn(follow_cells(
+        ops.clone(),
+        node.live.subscribe(),
+        hosts,
+        CellClients {
+            endpoints: node.endpoints.clone(),
+            key: node.key.clone(),
+            tls: node.tls.clone(),
+        },
+    ));
     let token = keys::read_operator_token(&config.operator_token)?;
     let mut dashboard = DashboardConfig::loopback();
     dashboard.listen = config.dashboard;

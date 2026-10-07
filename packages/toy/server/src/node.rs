@@ -12,10 +12,14 @@
 //! seed = 1                    # the zone seed
 //! grant_every_ticks = 0       # optional test load: std.containers grants 5 gold to every
 //!                             # character in the world every N ticks (0: off)
+//! first_cell = 1              # optional: the id of this host's first cell (default 1)
+//! world = 0                   # optional: the world this host's cells belong to (default 0)
 //! ```
 //!
-//! Cells are the world regions (ids 1..=n) and one instance cell (n+1), as
-//! `toy-server cluster` runs them. In the node's state directory each cell
+//! Cells are the world regions (ids `first_cell` to `first_cell + n - 1`) and one
+//! instance cell (`first_cell + n`), as `toy-server cluster` runs them (from 1).
+//! Several hosts serve one cluster with distinct first cells, each a world
+//! of its own. In the node's state directory each cell
 //! keeps `cell-<id>.snapshot` (written beside, then renamed) and one log
 //! per run, `cell-<id>-<start tick>.log`. At start each cell comes back
 //! from its snapshot and the log that covers the ticks after it (decision
@@ -39,7 +43,7 @@ use mantis_core::time::Tick;
 use mantis_core::wire::Encoder;
 use mantis_deploy::cell::{CellHost, CellNode};
 use mantis_net::NetRuntime;
-use mantis_net::quic::{DevCertificate, QuicServer};
+use mantis_net::quic::{QuicServer, ServerCertificate};
 use mantis_net::tcp::TcpServer;
 use mantis_server::cell::{BoxedSink, Cell};
 use mantis_server::jobs::WorkerSet;
@@ -67,6 +71,8 @@ struct Settings {
     key: Option<PathBuf>,
     seed: u64,
     grant_every_ticks: u64,
+    first_cell: u64,
+    world: u32,
 }
 
 impl CellHost for ToyCells {
@@ -85,11 +91,16 @@ impl CellHost for ToyCells {
                 seed: f.uint("seed", 0..=u64::MAX)?,
                 grant_every_ticks: u64::try_from(f.int_or("grant_every_ticks", 0..=1_000_000, 0)?)
                     .unwrap_or(0),
+                first_cell: u64::try_from(f.int_or("first_cell", 1..=i64::from(u32::MAX), 1)?).unwrap_or(1),
+                world: u32::try_from(f.int_or("world", 0..=i64::from(u32::MAX), 0)?).unwrap_or(0),
             })
         })?;
         let t = crate::content::load(Some(&s.cooked), s.key.as_deref())?.tunables;
-        let world_cells: Vec<(u64, (f32, f32))> = (1u64..).zip(world::regions()).collect();
-        let instance = world_cells.len() as u64 + 1;
+        // Cells numbered from this host's first: several hosts of the
+        // package serve one cluster without colliding.
+        world::set_first_cell(s.first_cell);
+        let world_cells: Vec<(u64, (f32, f32))> = (s.first_cell..).zip(world::regions()).collect();
+        let instance = s.first_cell + world_cells.len() as u64;
         let state = node.state_dir().to_path_buf();
         std::fs::create_dir_all(&state).map_err(|e| format!("{}: {e}", state.display()))?;
 
@@ -107,13 +118,23 @@ impl CellHost for ToyCells {
         write_snapshots(&state, &zone, &t)?;
 
         let runtime = NetRuntime::new(2).map_err(|e| format!("{e:?}"))?;
-        let cert = DevCertificate::localhost().map_err(|e| format!("{e:?}"))?;
+        // The deployment's chain when its files are named (reloaded on
+        // rotation below), else a development certificate.
+        let cert = match node.game_tls()? {
+            Some(g) => ServerCertificate::from_der(g.chain, g.key).map_err(|e| e.to_string())?,
+            None => ServerCertificate::localhost().map_err(|e| format!("{e:?}"))?,
+        };
         std::fs::write(&s.cert_out, &cert.cert_der).map_err(|e| format!("{}: {e}", s.cert_out.display()))?;
         let quic = QuicServer::bind(&runtime, s.quic, &cert).map_err(|e| format!("{e:?}"))?;
+        let reloader = quic.reloader();
         let tcp = TcpServer::bind(&runtime, s.tcp).map_err(|e| format!("{e:?}"))?;
         let mut host = world::host(&t, Box::new(quic), Box::new(tcp));
 
-        let link = node.link(&world_cells, &[instance])?;
+        // This host's world: registered with its cells and reported with
+        // every placement.
+        let mut link_config = node.link_config(&world_cells, &[instance])?;
+        link_config.world = s.world;
+        let link = mantis_services::cluster::CellLink::start(&node.handle(), &link_config)?;
         // What the logs hold goes to the writer again: it keeps each batch
         // once, so nothing acknowledged is doubled and nothing is lost.
         for (cell, outcomes) in backlog {
@@ -148,6 +169,17 @@ impl CellHost for ToyCells {
                 write_snapshots(&state, &zone, &t)?;
             }
             // Overran: re-anchor, never burst (docs/SERVER.md section 2).
+            // A rotated chain: open sessions keep theirs, new handshakes
+            // get it.
+            if let Some(g) = node.game_tls_changed() {
+                let rotated = ServerCertificate::from_der(g.chain, g.key).and_then(|c| reloader.reload(&c));
+                match rotated {
+                    Ok(()) => println!("toy-server node: the game certificate was reloaded"),
+                    Err(e) => eprintln!(
+                        "toy-server node: the rotated game certificate does not load ({e}); the old chain stays"
+                    ),
+                }
+            }
             cluster::pace(&mut next, period, &mut host, &mut zone);
         }
         // A clean shutdown always ends in a snapshot (decision 0007).

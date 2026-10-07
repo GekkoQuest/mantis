@@ -142,9 +142,10 @@ impl Rig {
 
     fn add(&mut self, mode: MovementMode, profile: Profile, link: LinkConfig) {
         let n = self.bots.len() as u64;
-        let transport = match mode {
-            MovementMode::Predictive => self.predictive_net.connect(link),
-            MovementMode::Validated => self.validated_net.connect(link),
+        let transport = if mode == MovementMode::Predictive {
+            self.predictive_net.connect(link)
+        } else {
+            self.validated_net.connect(link)
         };
         let mut bot = Bot::new(
             Box::new(NativeWire::new(mode)),
@@ -228,12 +229,11 @@ fn honest_bots_play_through_both_adapters_at_100ms_rtt_and_2pct_loss() {
         assert!(b.welcomed() && b.synced(), "every bot entered the world");
         assert!(b.stats.snapshots > 400, "snapshots flow ({})", b.stats.snapshots);
         assert!(b.stats.last_remotes > 0, "bots see each other");
-        match mode {
-            MovementMode::Predictive => reconcile.extend_from_slice(&b.stats.reconcile),
-            MovementMode::Validated => {
-                claims += b.stats.claims;
-                corrections += b.stats.corrections;
-            }
+        if *mode == MovementMode::Predictive {
+            reconcile.extend_from_slice(&b.stats.reconcile);
+        } else {
+            claims += b.stats.claims;
+            corrections += b.stats.corrections;
         }
     }
     // Predictive: reconciliation error stays under 10 cm at p99.

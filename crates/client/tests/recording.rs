@@ -273,6 +273,9 @@ fn bare_frame(server_tick: u64) -> RecordedFrame<MotionState> {
     RecordedFrame {
         server_tick: Tick(server_tick),
         received_at: at(server_tick),
+        epoch: 2,
+        connection: 1,
+        resume_from: Some(InputSeq(7)),
         ack: None,
         local: None,
         local_mods: MotionModifiers::default(),
@@ -326,7 +329,8 @@ fn with(bytes: &[u8], off: usize, patch: &[u8]) -> Result<Vec<u8>, Box<dyn std::
 const REC: usize = HEADER_LEN; // tag
 const FRAME_COUNT: usize = REC + 1 + 8 + 8;
 const FRAME: usize = FRAME_COUNT + 4;
-const ACK_TAG: usize = FRAME + 16;
+const RESUME_TAG: usize = FRAME + 24;
+const ACK_TAG: usize = RESUME_TAG + 1 + 4;
 const LOCAL_TAG: usize = ACK_TAG + 1;
 const REMOTE_COUNT: usize = LOCAL_TAG + 1 + 12;
 const REMOVED_COUNT: usize = REMOTE_COUNT + 4;
@@ -373,7 +377,7 @@ fn every_rejection_rule_rejects_the_whole_recording() -> TestResult {
         }
         assert_eq!(parse(&b), Err(FormatError::Magic));
     }
-    for v in [0u16, 2, VERSION + 1, u16::MAX] {
+    for v in [0u16, 1, VERSION + 1, u16::MAX] {
         assert_eq!(
             parse(&with(&good, 4, &v.to_le_bytes())?),
             Err(FormatError::Version(v))
@@ -429,6 +433,7 @@ fn every_rejection_rule_rejects_the_whole_recording() -> TestResult {
     // Tags, presence bytes, enums, and bit sets.
     assert_eq!(parse(&with(&good, REC, &[9])?), Err(FormatError::Encoding(9)));
     assert_eq!(parse(&with(&good, REC, &[0])?), Err(FormatError::Encoding(0)));
+    assert_eq!(parse(&with(&good, RESUME_TAG, &[2])?), Err(FormatError::Validity));
     assert_eq!(parse(&with(&good, ACK_TAG, &[2])?), Err(FormatError::Validity));
     assert_eq!(parse(&with(&good, LOCAL_TAG, &[7])?), Err(FormatError::Validity));
     assert_eq!(

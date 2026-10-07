@@ -54,6 +54,7 @@ impl NetRuntime {
 
 /// A transport could not be created.
 #[derive(Clone, PartialEq, Eq, Debug)]
+#[non_exhaustive]
 pub enum NetError {
     /// A socket operation failed.
     Io(std::io::ErrorKind),
@@ -61,6 +62,8 @@ pub enum NetError {
     Tls(String),
     /// Connecting failed.
     Connect(String),
+    /// The server's certificate was not trusted, and why.
+    Untrusted(quic::TrustFailure),
 }
 
 impl fmt::Display for NetError {
@@ -69,6 +72,7 @@ impl fmt::Display for NetError {
             Self::Io(k) => write!(f, "network I/O failed: {k}"),
             Self::Tls(e) => write!(f, "TLS setup failed: {e}"),
             Self::Connect(e) => write!(f, "connect failed: {e}"),
+            Self::Untrusted(why) => write!(f, "the server is not trusted: {why}"),
         }
     }
 }

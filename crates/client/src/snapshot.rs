@@ -36,6 +36,16 @@ pub struct SnapshotFrame<S> {
     pub server_tick: Tick,
     /// Host instant it arrived.
     pub received_at: HostInstant,
+    /// The session epoch: bumped at every cell hand-off and every reconnect. A frame of a
+    /// new epoch restarts the stale-snapshot filter and the server timeline (the new
+    /// host counts its own ticks).
+    pub epoch: u32,
+    /// The connection: bumped at every reconnect. A frame of a new connection resumes
+    /// prediction from the authoritative state (the server's restored state).
+    pub connection: u32,
+    /// The first input sent on this connection, once one was: the server applies inputs
+    /// from it on, and every earlier unacknowledged one was lost with the old connection.
+    pub resume_from: Option<InputSeq>,
     /// Last input sequence the server applied for this client's avatar.
     pub ack: Option<InputSeq>,
     /// The avatar and its full-precision state: exactly the result of applying every
@@ -59,6 +69,9 @@ impl<S> SnapshotFrame<S> {
         Self {
             server_tick: Tick::ZERO,
             received_at: HostInstant::ZERO,
+            epoch: 0,
+            connection: 0,
+            resume_from: None,
             ack: None,
             local: None,
             local_mods: MotionModifiers::default(),
@@ -74,6 +87,9 @@ impl<S> SnapshotFrame<S> {
     pub fn clear(&mut self) {
         self.server_tick = Tick::ZERO;
         self.received_at = HostInstant::ZERO;
+        self.epoch = 0;
+        self.connection = 0;
+        self.resume_from = None;
         self.ack = None;
         self.local = None;
         self.local_mods = MotionModifiers::default();

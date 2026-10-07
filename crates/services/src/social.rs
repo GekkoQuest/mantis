@@ -306,6 +306,7 @@ impl SocialService {
                     };
                     let rows: Vec<m::GuildRow> = o.changes.iter().map(guild_row).collect();
                     let req = m::StoreGuildRows {
+                        epoch: 0,
                         seq,
                         rows: BoundedArray::from_slice(&rows).unwrap_or_default(),
                     };
@@ -319,6 +320,7 @@ impl SocialService {
                     };
                     let rows: Vec<m::FriendRow> = o.changes.iter().map(friend_row).collect();
                     let req = m::StoreFriendRows {
+                        epoch: 0,
                         seq,
                         rows: BoundedArray::from_slice(&rows).unwrap_or_default(),
                     };

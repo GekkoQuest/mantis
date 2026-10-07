@@ -4,7 +4,9 @@
 //! [node]
 //! role = "social"                   # account, realm, social, matchmaking, persist, ops, cell-host
 //! instance = "social-1"             # its name in the registry
-//! registry = "registry.toml"        # the signed registry
+//! registry = "registry.toml"        # the signed registry: a file, "dir:DIR", or "https://host[:port]/path"
+//! registry_ca = "keys/deploy-ca.pem" # https only: the CA its server's certificate must chain to
+//! registry_refresh_s = 10           # how often the source is read again (0: never; read once at start)
 //! deploy_key = "keys/deploy.pub"    # the public key the registry must verify with
 //! registry_min_serial = 1           # optional: refuse an older registry (rollback)
 //! cluster_key = "keys/cluster.key"  # the RPC cluster key (a file, never an environment variable)
@@ -38,6 +40,9 @@
 //! state = "state/cells"             # snapshots and logs survive here across restarts
 //! poll_ms = 100                     # how often the link polls the service roles
 //! snapshot_every_ticks = 150
+//! game_cert = "tls/game.crt"        # optional: the game listener's chain (PEM, leaf first);
+//! game_key = "tls/game.key"         #   both or neither; without them the package's development issuer
+//! game_ca = "tls/clients-trust.pem" # optional: chains must verify against it for the advertised host
 //!
 //! [package]                         # only for role = "cell-host": the package's own keys,
 //!                                   # read as strictly by the package (PackageSettings)
@@ -121,6 +126,22 @@ pub struct CellHostConfig {
     pub poll: Duration,
     /// Ticks between snapshots.
     pub snapshot_every_ticks: u64,
+    /// The game listener's certificate chain and key (PEM), when the
+    /// operator provides them; `None`: the package's development issuer.
+    pub game_tls: Option<GameTlsFiles>,
+}
+
+/// The game listener's certificate files.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GameTlsFiles {
+    /// The chain, leaf first (PEM).
+    pub cert: PathBuf,
+    /// Its private key (PKCS#8 PEM).
+    pub key: PathBuf,
+    /// Optional: the CA bundle (PEM) clients trust; when set, every chain
+    /// (at start and on each rotation) must verify against it for the
+    /// advertised host before it is used.
+    pub ca: Option<PathBuf>,
 }
 
 /// A node's configuration.
@@ -132,8 +153,10 @@ pub struct NodeConfig {
     pub role: Role,
     /// Its instance name in the registry.
     pub instance: String,
-    /// The signed registry.
-    pub registry: PathBuf,
+    /// Where the signed registry comes from.
+    pub registry: crate::source::Source,
+    /// How often the registry source is read again (`ZERO`: never).
+    pub registry_refresh: Duration,
     /// The deploy public key file.
     pub deploy_key: PathBuf,
     /// The oldest registry serial accepted.
@@ -257,6 +280,7 @@ impl NodeConfig {
             role,
             instance: n.instance,
             registry: n.registry,
+            registry_refresh: n.registry_refresh,
             deploy_key: n.deploy_key,
             registry_min_serial: n.registry_min_serial,
             cluster_key: n.cluster_key,
@@ -291,7 +315,8 @@ impl NodeConfig {
 struct NodeTable {
     role: Role,
     instance: String,
-    registry: PathBuf,
+    registry: crate::source::Source,
+    registry_refresh: Duration,
     deploy_key: PathBuf,
     registry_min_serial: u64,
     cluster_key: PathBuf,
@@ -313,7 +338,11 @@ fn node_table(file: &str, base: &Path, node: &Table) -> Result<NodeTable, FieldE
         )
     })?;
     let instance = f.str("instance")?.to_owned();
-    let registry = f.path("registry", base)?;
+    let registry_ca = f.opt_path("registry_ca", base)?;
+    let spec = f.str("registry")?;
+    let registry =
+        crate::source::Source::parse(spec, base, registry_ca).map_err(|e| f.error("registry", &e))?;
+    let registry_refresh = f.duration_or("registry_refresh_s", 0..=86_400, 10)?;
     let deploy_key = f.path("deploy_key", base)?;
     let registry_min_serial = u64::try_from(f.int_or("registry_min_serial", 1..=i64::MAX, 1)?).unwrap_or(1);
     let cluster_key = f.path("cluster_key", base)?;
@@ -331,6 +360,7 @@ fn node_table(file: &str, base: &Path, node: &Table) -> Result<NodeTable, FieldE
         role,
         instance,
         registry,
+        registry_refresh,
         deploy_key,
         registry_min_serial,
         cluster_key,
@@ -423,18 +453,33 @@ fn cidr(text: &str) -> Option<(std::net::IpAddr, u8)> {
 fn cell_config(file: &str, base: &Path, t: &Table) -> Result<CellHostConfig, FieldError> {
     let mut f = Fields::new(file, t);
     let advertise = f.str("advertise")?.to_owned();
-    if advertise.parse::<SocketAddr>().is_err() {
-        return Err(f.error("advertise", "the game address clients dial, ip:port"));
+    if crate::target::Target::parse(&advertise).is_err() {
+        return Err(f.error("advertise", "the game address clients dial, host:port"));
     }
     let state = f.path("state", base)?;
     let poll = f.duration_or("poll_ms", 5..=10_000, 100)?;
     let snapshot_every_ticks = f.uint("snapshot_every_ticks", 1..=1_000_000)?;
+    let game_tls = match (f.opt_path("game_cert", base)?, f.opt_path("game_key", base)?) {
+        (Some(cert), Some(key)) => Some(GameTlsFiles {
+            cert,
+            key,
+            ca: f.opt_path("game_ca", base)?,
+        }),
+        (None, None) => {
+            if t.get("game_ca").is_some() {
+                return Err(f.error("game_ca", "only with game_cert and game_key"));
+            }
+            None
+        }
+        _ => return Err(f.error("game_cert", "game_cert and game_key come together")),
+    };
     f.finish()?;
     Ok(CellHostConfig {
         advertise,
         state,
         poll,
         snapshot_every_ticks,
+        game_tls,
     })
 }
 
@@ -487,7 +532,11 @@ mod tests {
     fn a_minimal_node_reads_with_defaults_and_relative_paths() {
         let c = parse(NODE).unwrap();
         assert_eq!(c.role, Role::Social);
-        assert_eq!(c.registry, Path::new("cfg").join("r.toml"));
+        assert_eq!(
+            c.registry,
+            crate::source::Source::File(Path::new("cfg").join("r.toml"))
+        );
+        assert_eq!(c.registry_refresh, Duration::from_secs(10));
         assert_eq!(c.ready_timeout, Duration::from_secs(120));
         assert_eq!(c.drain_grace, Duration::from_millis(10_000));
         assert!(c.persist.is_none() && c.cell_host.is_none());

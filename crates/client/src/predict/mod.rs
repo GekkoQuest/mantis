@@ -35,6 +35,8 @@ pub struct PredictionStats {
     pub stale: u64,
     /// Acknowledgements rejected as invalid (acking an input never sent).
     pub invalid: u64,
+    /// Resumed connections ([`Predictor::resume`]).
+    pub resumed: u64,
 }
 
 /// Outcome of one reconciliation.
@@ -237,6 +239,32 @@ impl<M: MotionStep> Predictor<M> {
             correction: before - s.position(),
             gap,
         }
+    }
+
+    /// A resumed connection: the server restored `authoritative` (its state before the
+    /// disconnect) and applies inputs again from `keep_from`, the first sent on the new
+    /// connection; every earlier unacknowledged input was lost with the old one. Drops
+    /// those and replays the rest from `authoritative`. `ack` is what that state carries
+    /// (the last input applied before the disconnect, if any): later states with the same
+    /// acknowledgement are stale, the next newer one is reconciled as usual. Not a
+    /// correction: the server will agree with every prediction from here on.
+    pub fn resume(
+        &mut self,
+        ground: &M::Ground,
+        authoritative: &M::State,
+        ack: Option<InputSeq>,
+        keep_from: InputSeq,
+    ) {
+        let before_kept = InputSeq(keep_from.0.wrapping_sub(1));
+        self.buffer.ack(before_kept);
+        let mut s = *authoritative;
+        for rec in self.buffer.after_mut(before_kept) {
+            s = self.motion.step(ground, &s, &rec.input, &rec.mods, self.dt);
+            rec.predicted = s;
+        }
+        self.state = s;
+        self.last_ack = ack.filter(|a| keep_from.is_newer_than(*a));
+        self.stats.resumed = self.stats.resumed.saturating_add(1);
     }
 
     /// Hard reset (spawn, teleport, zone change): adopts `state`, drops history, and

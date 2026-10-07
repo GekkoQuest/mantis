@@ -282,6 +282,105 @@ impl TlsIdentity {
     }
 }
 
+/// A node's TLS identity, swappable while it runs (certificate renewal, a
+/// change of trusted CAs): servers handshake with the current one and close
+/// the connections accepted under an earlier one; clients rebuild their
+/// configuration from the current one at each connect and drop a
+/// connection made under an earlier one before their next call. Cheap to
+/// clone; every clone is the same handle.
+#[derive(Clone)]
+pub struct TlsHandle(Arc<TlsShared>);
+
+struct TlsShared {
+    current: std::sync::RwLock<Arc<TlsIdentity>>,
+    /// Bumped on every change; receivers wake on it.
+    generation: tokio::sync::watch::Sender<u64>,
+}
+
+impl std::fmt::Debug for TlsHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TlsHandle")
+            .field("generation", &self.generation())
+            .finish_non_exhaustive()
+    }
+}
+
+impl From<Arc<TlsIdentity>> for TlsHandle {
+    fn from(id: Arc<TlsIdentity>) -> Self {
+        Self::new(id)
+    }
+}
+
+impl TlsHandle {
+    /// A handle holding `id`.
+    #[must_use]
+    pub fn new(id: Arc<TlsIdentity>) -> Self {
+        Self(Arc::new(TlsShared {
+            current: std::sync::RwLock::new(id),
+            generation: tokio::sync::watch::Sender::new(0),
+        }))
+    }
+
+    /// Replaces the identity. Connections made under the old one close
+    /// (servers) or are dropped before the next call (clients).
+    ///
+    /// # Errors
+    /// [`IdentityError::WrongRole`] or [`IdentityError::Malformed`] for an
+    /// identity of another role or cluster than the current one (a node
+    /// keeps who it is), or the new identity's own errors.
+    pub fn set(&self, id: Arc<TlsIdentity>) -> Result<(), IdentityError> {
+        let next = id.identity()?;
+        let now = self.current().identity()?;
+        if next.role != now.role {
+            return Err(IdentityError::WrongRole {
+                expected: now.role,
+                found: next.role,
+            });
+        }
+        if next.cluster != now.cluster {
+            return Err(IdentityError::Malformed(format!(
+                "{} is of cluster {}, not {}",
+                next.uri(),
+                next.cluster,
+                now.cluster
+            )));
+        }
+        // A configuration must build before the swap.
+        id.server_config()?;
+        id.client_config()?;
+        *self
+            .0
+            .current
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = id;
+        self.0.generation.send_modify(|g| *g += 1);
+        Ok(())
+    }
+
+    /// The identity in force.
+    #[must_use]
+    pub fn current(&self) -> Arc<TlsIdentity> {
+        Arc::clone(
+            &self
+                .0
+                .current
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    /// How many times the identity changed.
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        *self.0.generation.borrow()
+    }
+
+    /// Wakes on every change.
+    pub(crate) fn changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.0.generation.subscribe()
+    }
+}
+
 /// The identity of a connection's peer: its leaf, already verified by the
 /// handshake.
 pub(crate) fn peer_identity(certs: Option<&[CertificateDer<'_>]>) -> Result<PeerIdentity, IdentityError> {

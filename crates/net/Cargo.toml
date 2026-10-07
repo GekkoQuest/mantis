@@ -13,6 +13,12 @@ tokio = { workspace = true }
 rustls = { workspace = true }
 rcgen = { workspace = true }
 bytes = { workspace = true }
+# The public web PKI roots, for clients trusting a publicly issued game
+# certificate (feature `public-roots`, off by default).
+webpki-roots = { workspace = true, optional = true }
+
+[features]
+public-roots = ["dep:webpki-roots"]
 
 [dev-dependencies]
 mantis-testkit = { path = "../testkit" }

@@ -8,12 +8,32 @@
 //! use, and its identity is exactly `mantis://<cluster>/<role>/<instance>`
 //! for this node. A node whose certificate fails any of these exits with
 //! the reason instead of failing every handshake later.
+//!
+//! **Live, without a restart** ([`maintain`]):
+//!
+//! - **Renewal.** When the certificate and key files change, the new pair
+//!   is checked as at start and swapped into the node's [`TlsHandle`]. A
+//!   pair that fails is refused once (logged, `tls_refused`), and the
+//!   running identity stays.
+//! - **Revocation.** When a newer registry changes the CA list, the node's
+//!   trust becomes exactly the new list. Peers from a removed CA are then
+//!   refused at the handshake, within one registry refresh. If this node's
+//!   own certificate is from a removed CA, the new list is applied anyway
+//!   (the node is revoked; its peers refuse it) and the node reports
+//!   itself not ready until its certificate is renewed.
+//! - **What a swap does to connections.** The internal RPC closes every
+//!   connection accepted under the old identity, and clients drop theirs
+//!   before their next call, so every peer handshakes again against the new
+//!   material. That is right for RPC, where every caller reconnects by
+//!   design. It is never done to game sessions: the game listener's own
+//!   rotation ([`crate::cell::CellNode::game_tls_changed`]) keeps open
+//!   sessions and gives only new handshakes the new chain.
 
 use std::path::Path;
 use std::sync::Arc;
 
 use mantis_services::host::Role;
-use mantis_services::tls::{TlsIdentity, identity_of};
+use mantis_services::tls::{TlsHandle, TlsIdentity, identity_of};
 use rustls::pki_types::{CertificateDer, UnixTime};
 use rustls::server::WebPkiClientVerifier;
 
@@ -89,6 +109,118 @@ pub fn verify(cas: &[Vec<u8>], chain: &[Vec<u8>]) -> Result<(), String> {
         )
         .map(|_| ())
         .map_err(|e| format!("refused as a peer would refuse it: {e}"))
+}
+
+/// How often [`maintain`] looks at the certificate files.
+pub const LOOK: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// What [`maintain`] keeps current.
+pub struct Maintain {
+    /// The node's live identity.
+    pub tls: TlsHandle,
+    /// The node's live registry (its CA list).
+    pub live: crate::source::Live,
+    /// The node's role.
+    pub role: Role,
+    /// The node's instance name.
+    pub instance: String,
+    /// The certificate file.
+    pub cert: std::path::PathBuf,
+    /// The key file.
+    pub key: std::path::PathBuf,
+    /// Where it reports (log, `/metrics`, `/ready`).
+    pub status: crate::health::Status,
+}
+
+/// Keeps the node's TLS identity current: renewed certificate files, and
+/// the registry's CA list (revocation). Runs for the life of the node.
+pub async fn maintain(m: Maintain) {
+    let mut files = crate::watch::FileWatch::new(vec![m.cert.clone(), m.key.clone()], LOOK);
+    let mut registries = m.live.subscribe();
+    let mut trusted: Vec<Vec<u8>> = m.live.current().cas.clone();
+    // Set when this node marked itself not ready for an untrusted own
+    // certificate; cleared (ready again) by a renewal.
+    let mut untrusted = false;
+    let say = |line: &str| crate::node::say(m.role, &m.instance, line);
+    let mut tick = tokio::time::interval(LOOK);
+    loop {
+        tokio::select! {
+            _ = tick.tick() => {}
+            changed = registries.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+            }
+        }
+        let registry = m.live.current();
+        if files.changed() {
+            match load(&registry, m.role, &m.instance, &m.cert, &m.key) {
+                Ok(id) => match m.tls.set(id) {
+                    Ok(()) => {
+                        files.accept();
+                        trusted.clone_from(&registry.cas);
+                        m.status.metrics.add("tls_renewals", 1);
+                        if std::mem::take(&mut untrusted) {
+                            m.status.set(crate::health::Phase::Ready, "");
+                        }
+                        say("certificate renewed: every RPC connection handshakes again with it");
+                        continue;
+                    }
+                    Err(e) => {
+                        files.refuse();
+                        m.status.metrics.add("tls_refused", 1);
+                        say(&format!(
+                            "certificate renewal refused, the running one stays: {e}"
+                        ));
+                    }
+                },
+                Err(e) => {
+                    files.refuse();
+                    m.status.metrics.add("tls_refused", 1);
+                    say(&format!(
+                        "certificate renewal refused, the running one stays: {e}"
+                    ));
+                }
+            }
+        }
+        if registry.cas != trusted {
+            // Revocation (or a rotation's overlap): trust exactly the new list.
+            let current = m.tls.current();
+            let next = TlsIdentity {
+                cas: registry.cas.clone(),
+                chain: current.chain.clone(),
+                key: current.key.clone(),
+            };
+            match m.tls.set(Arc::new(next)) {
+                Ok(()) => {
+                    trusted.clone_from(&registry.cas);
+                    m.status.metrics.add("tls_ca_changes", 1);
+                    say(&format!(
+                        "registry serial {}: trusting {} CA(s); every RPC connection handshakes again",
+                        registry.serial,
+                        registry.cas.len()
+                    ));
+                    if let Err(e) = verify(&registry.cas, &current.chain) {
+                        m.status.metrics.add("tls_own_certificate_untrusted", 1);
+                        untrusted = true;
+                        m.status.set(
+                            crate::health::Phase::Starting,
+                            format!(
+                                "this node's certificate is not from a CA the registry lists: renew it ({e})"
+                            ),
+                        );
+                        say(
+                            "this node's own certificate is from a CA the registry no longer lists: peers refuse it until it is renewed",
+                        );
+                    }
+                }
+                Err(e) => say(&format!(
+                    "registry serial {}: the new CA list does not apply: {e}",
+                    registry.serial
+                )),
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -159,6 +159,7 @@ impl AccountService {
                 s.seq
             };
             let req = m::StoreAccountRows {
+                epoch: 0,
                 seq,
                 rows: BoundedArray::from_slice(&[account_row(&row)]).unwrap_or_default(),
             };

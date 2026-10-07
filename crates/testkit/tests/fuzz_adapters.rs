@@ -219,6 +219,7 @@ fn native_server(bytes: &[u8], baselines: &(impl BaselineStore + ?Sized)) -> Res
     match decode_server_frame(bytes, baselines, &mut scratch).map_err(|_| ())? {
         ServerFrame::Message(m) => encode_outbound_frame(&m, &mut out),
         ServerFrame::Snapshot => a.encode_snapshot(&scratch, None, &mut out).map_err(|_| ())?,
+        _ => return Err(()),
     }
     Ok(out)
 }

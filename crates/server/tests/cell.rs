@@ -87,6 +87,7 @@ impl Client {
                 self.latest = Some(f);
             }
             ServerFrame::Message(m) => self.corrections.push(m),
+            _ => {}
         }
     }
 }

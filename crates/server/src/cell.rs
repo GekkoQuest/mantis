@@ -1928,56 +1928,56 @@ fn movement_system(
         let Some(mut body) = components.get_mut::<Body>(avatar) else {
             continue;
         };
-        match s.mode {
-            mantis_adapter_contract::MovementMode::Predictive => {
-                if let Some(input) = next_input(s, inputs) {
-                    body.0 = motion.step(ground, &body.0, &input, &mods, dt);
-                }
+        if s.mode == mantis_adapter_contract::MovementMode::Predictive {
+            if let Some(input) = next_input(s, inputs) {
+                body.0 = motion.step(ground, &body.0, &input, &mods, dt);
             }
-            mantis_adapter_contract::MovementMode::Validated => {
-                let start = body.0.position;
-                let mut moved = false;
-                for (claim, client_ms) in s.claims.iter().copied() {
-                    match handle_claim(
-                        &mut s.envelope,
-                        envelope,
-                        motion,
-                        &mods,
-                        ground,
-                        Claim {
-                            position: claim,
-                            client_ms,
-                            server_ms,
-                        },
-                    ) {
-                        Ok(Some(p)) => {
-                            body.0.position = p;
-                            moved = true;
-                        }
-                        Ok(None) => {}
-                        Err(_) => {
-                            s.cheats += 1;
-                            let _ = corrections.push((
-                                s.id,
-                                mantis_adapter_contract::SetPosition {
-                                    entity: s.repl.0,
-                                    position: s.envelope.last_pos,
-                                    yaw: body.0.yaw,
-                                    tick: c.tick,
-                                },
-                            ));
-                            body.0.position = s.envelope.last_pos;
-                            break;
-                        }
+        } else {
+            // Validated, and any mode a newer contract adds: claims checked
+            // against the envelope (the stricter path).
+
+            let start = body.0.position;
+            let mut moved = false;
+            for (claim, client_ms) in s.claims.iter().copied() {
+                match handle_claim(
+                    &mut s.envelope,
+                    envelope,
+                    motion,
+                    &mods,
+                    ground,
+                    Claim {
+                        position: claim,
+                        client_ms,
+                        server_ms,
+                    },
+                ) {
+                    Ok(Some(p)) => {
+                        body.0.position = p;
+                        moved = true;
+                    }
+                    Ok(None) => {}
+                    Err(_) => {
+                        s.cheats += 1;
+                        let _ = corrections.push((
+                            s.id,
+                            mantis_adapter_contract::SetPosition {
+                                entity: s.repl.0,
+                                position: s.envelope.last_pos,
+                                yaw: body.0.yaw,
+                                tick: c.tick,
+                            },
+                        ));
+                        body.0.position = s.envelope.last_pos;
+                        break;
                     }
                 }
-                s.claims.clear();
-                body.0.velocity = if moved && dt > 0.0 {
-                    (body.0.position - start) / dt
-                } else {
-                    Vec3::ZERO
-                };
             }
+            s.claims.clear();
+            body.0.velocity = if moved && dt > 0.0 {
+                (body.0.position - start) / dt
+            } else {
+                Vec3::ZERO
+            };
         }
     }
     Ok(())

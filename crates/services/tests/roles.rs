@@ -39,7 +39,7 @@ fn id(role: Role) -> Arc<TlsIdentity> {
 
 /// `router` served as `role`, over mutual TLS.
 async fn serve_at(addr: SocketAddr, role: Role, key: &[u8], router: Router) -> RpcServer {
-    RpcServer::bind_tls(addr, key.to_vec(), router, Some(id(role)))
+    RpcServer::bind_tls(addr, key.to_vec(), router, Some(id(role).into()))
         .await
         .unwrap()
 }
@@ -274,6 +274,7 @@ async fn the_realm_places_characters_and_issues_single_use_tokens() {
         lo,
         hi,
         instance: false,
+        world: 0,
     };
     call::<methods::RegisterCellHost>(&cell, &world(1, -1000.0, 0.0))
         .await
@@ -293,6 +294,7 @@ async fn the_realm_places_characters_and_issues_single_use_tokens() {
         lo: 0.0,
         hi: 0.0,
         instance: true,
+        world: 0,
     };
     call::<methods::RegisterCellHost>(&cell, &instance).await.unwrap();
     assert_eq!(realm.cells().len(), 3);

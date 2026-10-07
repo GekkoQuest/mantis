@@ -422,6 +422,7 @@ fn on_refused(ctx: &mut ModuleContext<'_>, kind: u16, _request: u32, reason: Ext
         ExtensionRefusal::NotAllowed => "not allowed",
         ExtensionRefusal::Invalid => "invalid",
         ExtensionRefusal::FeatureDisabled => return false,
+        _ => "refused",
     };
     refused(ctx, op, why);
     true

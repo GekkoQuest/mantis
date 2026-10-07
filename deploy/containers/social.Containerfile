@@ -2,7 +2,7 @@
 # The social role: one process, `mantisd social`, built from the shared base
 # (base.Containerfile). Its configuration is mounted at /etc/mantis/node.toml, the signed
 # registry and the deploy public key beside it; secrets arrive as files under /run/secrets.
-ARG RUNTIME=mantis/runtime:dev
+ARG RUNTIME=mantis/runtime-debian:dev
 FROM ${RUNTIME}
 # 7503: RPC between roles (the services network only). 7603: /live, /ready, /metrics.
 EXPOSE 7503/tcp 7603/tcp

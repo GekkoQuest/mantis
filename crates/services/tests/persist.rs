@@ -222,6 +222,7 @@ fn social_rows_contract(writer: &PersistService) {
     use mantis_core::social::{FriendChange, GuildChange, guild_rank};
     use mantis_services::persist::{friend_row, guild_row};
     let guilds = |seq, rows: &[GuildChange]| m::StoreGuildRows {
+        epoch: 0,
         seq,
         rows: BoundedArray::from_slice(&rows.iter().map(guild_row).collect::<Vec<_>>()).unwrap(),
     };
@@ -261,6 +262,7 @@ fn social_rows_contract(writer: &PersistService) {
     );
 
     let friends = |seq, rows: &[FriendChange]| m::StoreFriendRows {
+        epoch: 0,
         seq,
         rows: BoundedArray::from_slice(&rows.iter().map(friend_row).collect::<Vec<_>>()).unwrap(),
     };
@@ -287,6 +289,7 @@ fn social_rows_contract(writer: &PersistService) {
     assert_eq!(writer.with_store(|s| s.friend_seq()).unwrap(), 2);
     // A friendship not stored lower id first is refused at the boundary.
     let backwards = m::StoreFriendRows {
+        epoch: 0,
         seq: 3,
         rows: BoundedArray::from_slice(&[m::FriendRow { kind: 1, a: 9, b: 4 }]).unwrap(),
     };

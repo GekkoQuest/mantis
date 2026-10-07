@@ -38,11 +38,14 @@ fn the_zone_pushes_outcomes_and_applies_signed_live_changes() {
         &cluster.handle(),
         &CellLinkConfig {
             key: cluster.key.clone(),
-            persist: cluster.addr(Role::Persist).unwrap(),
-            ops: cluster.addr(Role::Ops).unwrap(),
-            social: cluster.addr(Role::Social).unwrap(),
-            matchmaking: cluster.addr(Role::Matchmaking).unwrap(),
-            realm: cluster.addr(Role::Realm).unwrap(),
+            persist: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Persist).unwrap()),
+            ops: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Ops).unwrap()),
+            social: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Social).unwrap()),
+            matchmaking: mantis_services::host::rpc::Endpoint::fixed(
+                cluster.addr(Role::Matchmaking).unwrap(),
+            ),
+            realm: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Realm).unwrap()),
+            world: 0,
             live_key: cluster.ops.public_key(),
             cells: world::regions()
                 .into_iter()
@@ -158,11 +161,14 @@ fn link(cluster: &LocalCluster) -> CellLink {
         &cluster.handle(),
         &CellLinkConfig {
             key: cluster.key.clone(),
-            persist: cluster.addr(Role::Persist).unwrap(),
-            ops: cluster.addr(Role::Ops).unwrap(),
-            social: cluster.addr(Role::Social).unwrap(),
-            matchmaking: cluster.addr(Role::Matchmaking).unwrap(),
-            realm: cluster.addr(Role::Realm).unwrap(),
+            persist: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Persist).unwrap()),
+            ops: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Ops).unwrap()),
+            social: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Social).unwrap()),
+            matchmaking: mantis_services::host::rpc::Endpoint::fixed(
+                cluster.addr(Role::Matchmaking).unwrap(),
+            ),
+            realm: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Realm).unwrap()),
+            world: 0,
             live_key: cluster.ops.public_key(),
             cells: world::regions()
                 .into_iter()
@@ -455,11 +461,14 @@ fn a_party_survives_an_instance_round_trip_and_the_instance_releases_itself() {
         &cluster.handle(),
         &CellLinkConfig {
             key: cluster.key.clone(),
-            persist: cluster.addr(Role::Persist).unwrap(),
-            ops: cluster.addr(Role::Ops).unwrap(),
-            social: cluster.addr(Role::Social).unwrap(),
-            matchmaking: cluster.addr(Role::Matchmaking).unwrap(),
-            realm: cluster.addr(Role::Realm).unwrap(),
+            persist: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Persist).unwrap()),
+            ops: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Ops).unwrap()),
+            social: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Social).unwrap()),
+            matchmaking: mantis_services::host::rpc::Endpoint::fixed(
+                cluster.addr(Role::Matchmaking).unwrap(),
+            ),
+            realm: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Realm).unwrap()),
+            world: 0,
             live_key: cluster.ops.public_key(),
             cells: world::regions()
                 .into_iter()
@@ -651,11 +660,14 @@ fn a_competitive_instance_permits_presentation_modules_only_and_replays() {
         &cluster.handle(),
         &CellLinkConfig {
             key: cluster.key.clone(),
-            persist: cluster.addr(Role::Persist).unwrap(),
-            ops: cluster.addr(Role::Ops).unwrap(),
-            social: cluster.addr(Role::Social).unwrap(),
-            matchmaking: cluster.addr(Role::Matchmaking).unwrap(),
-            realm: cluster.addr(Role::Realm).unwrap(),
+            persist: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Persist).unwrap()),
+            ops: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Ops).unwrap()),
+            social: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Social).unwrap()),
+            matchmaking: mantis_services::host::rpc::Endpoint::fixed(
+                cluster.addr(Role::Matchmaking).unwrap(),
+            ),
+            realm: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Realm).unwrap()),
+            world: 0,
             live_key: cluster.ops.public_key(),
             cells: world::regions()
                 .into_iter()

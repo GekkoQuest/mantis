@@ -82,6 +82,7 @@ impl Callers<'_> {
                     lo,
                     hi,
                     instance: false,
+                    world: 0,
                 },
             )
             .unwrap();
@@ -360,4 +361,61 @@ fn an_account_or_realm_role_without_its_store_does_not_start() {
     assert!(rt.block_on(account.load_durable()).is_err());
     let realm = mantis_services::realm::RealmService::new();
     assert!(rt.block_on(realm.load_durable()).is_err());
+}
+
+/// Two hosts serving the same regions as two worlds register without
+/// colliding; a new character enters the lowest-numbered world, a returning
+/// one the cell it left in whichever world.
+#[test]
+fn worlds_register_side_by_side_and_new_characters_enter_the_first() {
+    let cluster = LocalCluster::start(&ClusterConfig::local()).unwrap();
+    let c = Callers { cluster: &cluster };
+    for (cell, lo, hi, world) in [
+        (11, -1000.0, 0.0, 2),
+        (12, 0.0, 1000.0, 2),
+        (1, -1000.0, 0.0, 1),
+        (2, 0.0, 1000.0, 1),
+    ] {
+        c.realm::<methods::RegisterCellHost>(
+            Role::Cell,
+            &m::RegisterCell {
+                cell: m::CellNo(cell),
+                address: s(&format!("127.0.0.1:{}", 7400 + cell)),
+                lo,
+                hi,
+                instance: false,
+                world,
+            },
+        )
+        .unwrap();
+    }
+    assert_eq!(cluster.realm.cells().len(), 4);
+    let hero = create_on(&c, 5, "Wanderer").unwrap().character.0;
+    let select = || {
+        c.realm::<methods::Select>(
+            Role::Gateway,
+            &m::SelectCharacter {
+                account: m::AccountId(5),
+                character: m::CharacterId(hero),
+            },
+        )
+        .unwrap()
+        .cell
+        .0
+    };
+    assert_eq!(select(), 2, "the cell owning x = 0 in world 1");
+    c.realm::<methods::PlaceCharacter>(
+        Role::Cell,
+        &m::CharacterPlaced {
+            character: m::CharacterId(hero),
+            cell: m::CellNo(12),
+            world: 2,
+            x: 5.0,
+            y: 0.0,
+            z: 0.0,
+            level: 0,
+        },
+    )
+    .unwrap();
+    assert_eq!(select(), 12, "back in world 2, where it left");
 }

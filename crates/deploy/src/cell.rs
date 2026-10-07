@@ -57,7 +57,11 @@ pub trait CellHost {
 pub struct CellNode {
     node: Node,
     config: CellHostConfig,
+    game_watch: Option<std::sync::Mutex<crate::watch::FileWatch>>,
 }
+
+/// How often the game certificate files are looked at.
+pub const GAME_TLS_LOOK: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl CellNode {
     /// Wraps a started node of the cell-host role.
@@ -70,7 +74,71 @@ impl CellNode {
             .cell_host
             .clone()
             .ok_or("a cell-host node needs [cell_host]")?;
-        Ok(Self { node, config })
+        let game_watch = config.game_tls.as_ref().map(|f| {
+            std::sync::Mutex::new(crate::watch::FileWatch::new(
+                vec![f.cert.clone(), f.key.clone()],
+                GAME_TLS_LOOK,
+            ))
+        });
+        Ok(Self {
+            node,
+            config,
+            game_watch,
+        })
+    }
+
+    /// The game listener's certificate from the operator's files, checked
+    /// ([`crate::game_tls::load`]); `Ok(None)` when the configuration names
+    /// none (the package's development issuer applies). Read once at bind.
+    ///
+    /// # Errors
+    /// The files are named but do not make a good chain.
+    pub fn game_tls(&self) -> Result<Option<crate::game_tls::GameTls>, String> {
+        let Some(files) = &self.config.game_tls else {
+            return Ok(None);
+        };
+        let advertise = crate::target::Target::parse(&self.config.advertise)?;
+        let tls = crate::game_tls::load(files, &advertise)?;
+        self.node
+            .say(&format!("game certificate from {}", files.cert.display()));
+        Ok(Some(tls))
+    }
+
+    /// A new game certificate when the operator rotated the files and the
+    /// new pair checks out; poll it once per tick (it looks at the files at
+    /// most once per [`GAME_TLS_LOOK`]).
+    ///
+    /// Hand it to the game listener's reloader: **open game sessions keep
+    /// their connection; only new handshakes get the new chain.** This is
+    /// the opposite of the internal RPC, which closes every connection on a
+    /// swap; a game listener never drops a session for a rotation. A pair
+    /// that fails its checks is logged and refused once, and the running
+    /// chain stays.
+    pub fn game_tls_changed(&self) -> Option<crate::game_tls::GameTls> {
+        let (files, watch) = (self.config.game_tls.as_ref()?, self.game_watch.as_ref()?);
+        let mut watch = watch.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !watch.changed() {
+            return None;
+        }
+        let checked = crate::target::Target::parse(&self.config.advertise)
+            .and_then(|advertise| crate::game_tls::load(files, &advertise));
+        match checked {
+            Ok(tls) => {
+                watch.accept();
+                self.node.status.metrics.add("game_tls_rotations", 1);
+                self.node
+                    .say("game certificate rotated: new handshakes get it, open sessions keep theirs");
+                Some(tls)
+            }
+            Err(e) => {
+                watch.refuse();
+                self.node.status.metrics.add("game_tls_refused", 1);
+                self.node.say(&format!(
+                    "game certificate rotation refused, the running one stays: {e}"
+                ));
+                None
+            }
+        }
     }
 
     /// The package's `[package]` keys, read strictly.
@@ -143,11 +211,14 @@ impl CellNode {
         let address = self.config.advertise.clone();
         Ok(CellLinkConfig {
             key: self.node.key.clone(),
-            persist: self.node.rpc_of(Role::Persist)?,
-            ops: self.node.rpc_of(Role::Ops)?,
-            social: self.node.rpc_of(Role::Social)?,
-            matchmaking: self.node.rpc_of(Role::Matchmaking)?,
-            realm: self.node.rpc_of(Role::Realm)?,
+            // The node's live endpoints: a newer registry that moves a role
+            // moves the link's calls with it, without a restart.
+            persist: self.node.endpoint_of(Role::Persist)?,
+            ops: self.node.endpoint_of(Role::Ops)?,
+            social: self.node.endpoint_of(Role::Social)?,
+            matchmaking: self.node.endpoint_of(Role::Matchmaking)?,
+            realm: self.node.endpoint_of(Role::Realm)?,
+            world: 0,
             live_key: self.node.registry.live_key.to_vec(),
             cells: world
                 .iter()
@@ -156,7 +227,8 @@ impl CellNode {
             instances: instances.iter().map(|id| (*id, address.clone())).collect(),
             poll: self.config.poll,
             inspector: self.node.config.listen_rpc,
-            tls: Some(std::sync::Arc::clone(&self.node.tls)),
+            // The node's live identity: renewed and revoked in place.
+            tls: Some(self.node.tls.clone()),
         })
     }
 
@@ -171,7 +243,7 @@ impl CellNode {
         self.node.say(&format!(
             "cells {:?} registered with the realm at {}; inspector on {}",
             self.cells(),
-            config.realm,
+            config.realm.target(),
             config.inspector
         ));
         Ok(link)

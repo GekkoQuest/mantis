@@ -11,6 +11,7 @@ use crate::{Inbound, MovementMode, Outbound};
 
 /// An adapter could not translate.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
 pub enum AdapterError {
     /// The frame did not decode.
     Decode(DecodeError),

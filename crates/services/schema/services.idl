@@ -85,6 +85,8 @@ message RegisterCell inbound {
     hi: f32;
     /// True for an instance cell available for instance creation.
     instance: bool;
+    /// The world the cell belongs to (a host serves one world).
+    world: u32;
 }
 
 /// Ask for an account's characters.
@@ -625,6 +627,10 @@ struct GuildRow {
 /// Social makes one operation's guild changes durable, in order, before it
 /// tells anyone. A batch at or below the stored sequence is applied once.
 message StoreGuildRows inbound {
+    /// The writer's lease epoch (role failover): a batch from an instance
+    /// that no longer holds its role's lease is refused. 0: an unleased,
+    /// single-instance role.
+    epoch: u64;
     /// Batch sequence number.
     seq: u64;
     /// The changes.
@@ -661,6 +667,10 @@ struct FriendRow {
 /// Social makes one operation's friend changes durable, in order, before
 /// it tells anyone. A batch at or below the stored sequence is applied once.
 message StoreFriendRows inbound {
+    /// The writer's lease epoch (role failover): a batch from an instance
+    /// that no longer holds its role's lease is refused. 0: an unleased,
+    /// single-instance role.
+    epoch: u64;
     /// Batch sequence number.
     seq: u64;
     /// The changes.
@@ -774,6 +784,10 @@ message StoreLive inbound {
     kind: u8;
     /// The value.
     value: f32;
+    /// The writer's lease epoch (role failover): a batch from an instance
+    /// that no longer holds its role's lease is refused. 0: an unleased,
+    /// single-instance role.
+    epoch: u64;
 }
 
 /// Ops reads every durable live value at start.
@@ -822,6 +836,10 @@ struct AccountRow {
 /// The account role makes one change durable, before it answers. A batch at
 /// or below the stored sequence is applied once.
 message StoreAccountRows inbound {
+    /// The writer's lease epoch (role failover): a batch from an instance
+    /// that no longer holds its role's lease is refused. 0: an unleased,
+    /// single-instance role.
+    epoch: u64;
     /// Batch sequence number.
     seq: u64;
     /// The rows, whole (each replaces the stored row of its id).
@@ -878,6 +896,10 @@ struct CharacterRow {
 /// The realm makes one change durable, before it answers. A batch at or
 /// below the stored sequence is applied once.
 message StoreCharacterRows inbound {
+    /// The writer's lease epoch (role failover): a batch from an instance
+    /// that no longer holds its role's lease is refused. 0: an unleased,
+    /// single-instance role.
+    epoch: u64;
     /// Batch sequence number.
     seq: u64;
     /// The rows, whole (each replaces the stored row of its id).
@@ -937,4 +959,29 @@ message CharacterPlaced inbound {
     z: f32;
     /// Its level, as the package reports it (0 unchanged).
     level: u32;
+}
+
+/// A role instance takes or renews its role's lease (role failover): the
+/// holder is the role's one active instance. A lease held by another owner
+/// and not yet expired is left as it is; an expired one is taken, with the
+/// next epoch; the holder renewing keeps its epoch.
+message AcquireLease inbound {
+    /// The role (`Role` as a byte).
+    role: u8;
+    /// This instance.
+    owner: string<64>;
+    /// Unix milliseconds now, on the instance's clock.
+    now_ms: u64;
+    /// How long the lease lasts from now, in milliseconds.
+    ttl_ms: u64;
+}
+
+/// Who holds a role's lease after the request.
+message LeaseState outbound {
+    /// The holder.
+    owner: string<64>;
+    /// Its epoch: bumped on every change of holder.
+    epoch: u64;
+    /// Unix milliseconds it lapses unless renewed.
+    expires_ms: u64;
 }

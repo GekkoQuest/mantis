@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use mantis_adapter_contract::native::{FRAME_SNAPSHOT, encode_outbound_frame, encode_snapshot};
 use mantis_adapter_contract::{
-    AppearanceId, Channel, ConnectionId, Inbound, LocalAvatar, MovementMode, Outbound, RemoteSample,
-    SnapshotFrame, Transport, TransportError, TransportEvent, TransportKind, Welcome,
+    AppearanceId, Channel, ConnectionId, Inbound, LocalAvatar, ModuleEntry, MovementMode, Outbound,
+    RemoteSample, SnapshotFrame, Transport, TransportError, TransportEvent, TransportKind, Welcome,
 };
 use mantis_client::net::{NativeSession, NetConfig, SessionState, move_channel};
 use mantis_client::sim::IntentSink;
@@ -23,6 +23,7 @@ use mantis_core::graph::{GraphId, GraphInstanceId, MarkerId, MarkerKind, NodeKey
 use mantis_core::kinematics::{AimAngles, Angle16, InputSeq, MotionState, MoveButtons, MoveInput};
 use mantis_core::math::Vec3;
 use mantis_core::time::Tick;
+use mantis_core::wire::WireString;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -312,4 +313,133 @@ fn frames_mixing_frame_and_own_base_deltas_decode_across_the_whole_window() {
     assert_eq!(sent_acks(session.transport_mut()).last(), Some(&75));
     let last = seen.borrow().last().copied();
     assert_eq!(last, Some((75, 4.625)), "positions travel in 1/64 m steps");
+}
+
+fn welcome_frame() -> Vec<u8> {
+    let mut welcome = Vec::new();
+    encode_outbound_frame(
+        &Outbound::Welcome(Welcome {
+            protocol: 1,
+            capabilities: 0,
+            session: 9,
+            tick: Tick(10),
+            tick_rate: 30,
+            mode: MovementMode::Predictive,
+            avatar: Some(AVATAR),
+            character: 77,
+        }),
+        &mut welcome,
+    );
+    welcome
+}
+
+fn hello_token(t: &Scripted) -> Option<Vec<u8>> {
+    t.sent.iter().find_map(|(_, b)| {
+        let payload = b.get(3..)?;
+        let id = u16::from_le_bytes([*b.get(1)?, *b.get(2)?]);
+        match mantis_adapter_contract::parse_inbound(mantis_core::wire::MessageId(id), payload).ok()? {
+            Inbound::Hello(h) => Some(h.token.iter().copied().collect()),
+            _ => None,
+        }
+    })
+}
+
+#[test]
+fn a_rebase_forgets_every_baseline_and_a_reconnect_starts_the_connection_over() -> TestResult {
+    let clock = Arc::new(ManualClock::new());
+    let (snap_tx, mut inbox) = snapshot_channel::<MotionState>(8, 8);
+    let (mut outbox, moves) = move_channel(16);
+    let mut session = NativeSession::new(
+        Scripted::default(),
+        Arc::clone(&clock) as Arc<dyn HostClock>,
+        NetConfig::new(ContentHash::ZERO),
+        snap_tx,
+        moves,
+    );
+    let entry = ModuleEntry {
+        name: WireString::new("toy.hud").ok_or("name")?,
+        hash: ContentHash::of(b"hud"),
+    };
+    session.start_with_modules(b"entry", &[entry]);
+    // A move before Welcome reaches no session: it is not sent.
+    outbox.send_move(&move_input(1));
+    session.send_moves();
+    assert!(sent_moves(session.transport_mut()).is_empty());
+    assert_eq!(session.stats().moves_unsent, 1);
+    let first = snapshot(1000, 1.0);
+    let second = snapshot(1001, 2.0);
+    let t = session.transport_mut();
+    t.inbound.push_back(welcome_frame());
+    t.inbound.push_back(wire(&first, None));
+    t.inbound.push_back(wire(&second, Some(&first)));
+    session.step();
+    outbox.send_move(&move_input(2));
+    session.send_moves();
+    assert_eq!(sent_moves(session.transport_mut()), [2]);
+    let mut seen = Vec::new();
+    let _ = inbox.drain(|f| seen.push((f.server_tick.0, f.epoch, f.connection, f.resume_from)));
+    assert_eq!(seen, [(1000, 0, 0, None), (1001, 0, 0, None)]);
+
+    // A hand-off: the new host counts its own ticks and shares no baseline with the old one.
+    session.rebase();
+    let stale_base = snapshot(1002, 3.0);
+    let fresh = snapshot(5, 4.0);
+    let t = session.transport_mut();
+    t.inbound.push_back(wire(&stale_base, Some(&second)));
+    t.inbound.push_back(wire(&fresh, None));
+    session.step();
+    assert_eq!(session.stats().undecodable, 1, "the old baseline is gone");
+    assert_eq!(
+        sent_acks(session.transport_mut()).last(),
+        Some(&5),
+        "tick 5 applied after 1001"
+    );
+    let mut seen = Vec::new();
+    let _ = inbox.drain(|f| seen.push((f.server_tick.0, f.epoch)));
+    assert_eq!(seen, [(5, 1)]);
+
+    // A reconnect: a new transport, the same mods, the resume ticket as the token.
+    session.reconnect(Scripted::default(), b"ticket");
+    assert_eq!(
+        hello_token(session.transport_mut()).as_deref(),
+        Some(&b"ticket"[..])
+    );
+    assert_eq!(session.state(), SessionState::Connecting);
+    outbox.send_move(&move_input(3));
+    session.send_moves();
+    assert!(
+        sent_moves(session.transport_mut()).is_empty(),
+        "not before Welcome"
+    );
+    let t = session.transport_mut();
+    t.inbound.push_back(welcome_frame());
+    session.step();
+    outbox.send_move(&move_input(4));
+    session.send_moves();
+    assert_eq!(sent_moves(session.transport_mut()), [4]);
+    session
+        .transport_mut()
+        .inbound
+        .push_back(wire(&snapshot(1, 5.0), None));
+    session.step();
+    let mut seen = Vec::new();
+    let _ = inbox.drain(|f| seen.push((f.server_tick.0, f.epoch, f.connection, f.resume_from)));
+    assert_eq!(seen, [(1, 2, 1, Some(InputSeq(4)))]);
+    let stats = session.stats();
+    assert_eq!(
+        (stats.rebases, stats.reconnects, stats.moves_unsent),
+        (2, 1, 2),
+        "{stats:?}"
+    );
+    Ok(())
+}
+
+fn move_input(seq: u32) -> MoveInput {
+    MoveInput {
+        seq: InputSeq(seq),
+        tick: Tick(u64::from(seq)),
+        buttons: MoveButtons::FORWARD,
+        yaw: Angle16(0),
+        aim: AimAngles::default(),
+    }
 }

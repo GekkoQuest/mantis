@@ -268,6 +268,7 @@ impl AuditStore {
             Self::Local(p) => p.with_store(|s| s.set_live(name, kind, value)).map_err(|e| e.0),
             Self::Remote(c) => {
                 let req = m::StoreLive {
+                    epoch: 0,
                     name: WireString::new(name).ok_or("live names are at most 96 bytes")?,
                     kind,
                     value,
@@ -405,6 +406,11 @@ impl OpsService {
     /// Adds a cell host the inspector may read (a client calling as `Ops`).
     pub fn add_cell(&self, cell: u64, client: Arc<RpcClient>) {
         lock(&self.cells).insert(cell, client);
+    }
+
+    /// Forgets `cell` (a cell host the registry dropped).
+    pub fn remove_cell(&self, cell: u64) {
+        lock(&self.cells).remove(&cell);
     }
 
     /// The live-data public key cells verify with.
@@ -666,7 +672,7 @@ impl OpsService {
     fn hosts(&self) -> Vec<Arc<RpcClient>> {
         let mut out: Vec<Arc<RpcClient>> = Vec::new();
         for c in lock(&self.cells).values() {
-            if !out.iter().any(|o| o.addr() == c.addr()) {
+            if !out.iter().any(|o| o.endpoint().target() == c.endpoint().target()) {
                 out.push(Arc::clone(c));
             }
         }
@@ -708,7 +714,7 @@ impl OpsService {
         for host in self.hosts() {
             host.call::<methods::Drain>(&req, RPC_TIMEOUT)
                 .await
-                .map_err(|e| format!("host {}: {e}", host.addr()))?;
+                .map_err(|e| format!("host {}: {e}", host.endpoint().target()))?;
             hosts += 1;
         }
         let undo = if on {

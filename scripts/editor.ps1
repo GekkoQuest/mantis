@@ -11,6 +11,8 @@
 param(
     [string]$Server = '127.0.0.1:7400',
     [string]$Cert = 'dev-cert.der',
+    [string]$CaBundle = '',
+    [string]$ServerName = '',
     [string]$Font = '',
     [string]$Token = 'player',
     [string]$World = 'packages/toy/cooked',
@@ -25,11 +27,17 @@ param(
 
 $a = @('run', '-p', 'toy-client')
 if ($Release) { $a += '--release' }
-$a += @('--', '--server', $Server, '--cert', $Cert, '--token', $Token, '--world', $World,
+$a += @('--', '--server', $Server, '--token', $Token, '--world', $World,
     '--editor', '--content', $Content)
 if ($Ops) {
     $a += @('--ops', $Ops, '--ops-cert', $OpsCert, '--ops-token-file', $OpsTokenFile,
         '--ops-cell', "$OpsCell")
+}
+if ($CaBundle) {
+    $a += @('--ca-bundle', $CaBundle)
+    if ($ServerName) { $a += @('--server-name', $ServerName) }
+} else {
+    $a += @('--cert', $Cert)
 }
 if ($Font) { $a += @('--font', $Font) }
 Invoke-Checked cargo $a

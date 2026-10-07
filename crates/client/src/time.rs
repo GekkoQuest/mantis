@@ -326,6 +326,8 @@ pub struct ServerTimeline {
     last_arrival: Option<HostInstant>,
     /// Re-anchors on a resume after a gap.
     resumes: u64,
+    /// Restarts for a new host ([`ServerTimeline::rebase`]).
+    rebases: u64,
 }
 
 impl ServerTimeline {
@@ -345,6 +347,7 @@ impl ServerTimeline {
             fast_rises: 0,
             last_arrival: None,
             resumes: 0,
+            rebases: 0,
         }
     }
 
@@ -449,10 +452,25 @@ impl ServerTimeline {
         self.resumes
     }
 
-    /// Every re-anchor so far (sustained shifts and resumes): the estimate jumped rather
-    /// than drifted.
+    /// Every re-anchor so far (sustained shifts, resumes, and rebases): the estimate
+    /// jumped rather than drifted.
     pub fn reanchors(&self) -> u64 {
-        self.fast_rises + self.resumes
+        self.fast_rises + self.resumes + self.rebases
+    }
+
+    /// Forgets the estimate: the next arrival sets it outright. For a new host (a cell
+    /// hand-off or a reconnect), whose ticks have nothing to do with the last host's.
+    pub fn rebase(&mut self) {
+        self.offset_nanos = None;
+        self.pending = 0;
+        self.raw_len = 0;
+        self.last_arrival = None;
+        self.rebases += 1;
+    }
+
+    /// Restarts for a new host so far.
+    pub fn rebases(&self) -> u64 {
+        self.rebases
     }
 
     /// Estimated host instant at which the server produced `server_tick`.

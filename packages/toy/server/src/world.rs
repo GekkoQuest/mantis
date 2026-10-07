@@ -271,11 +271,28 @@ fn load_gameplay(cooked: &Path, public_key: Option<&Path>) -> Result<Arc<Gamepla
         .map_err(|e| e.to_string())
 }
 
+/// The id of this process's first cell: cell `index` is `first + index`.
+/// One host of several in a cluster numbers its cells from its own first
+/// (`[package] first_cell` of a deployed node; `replay --first-cell`).
+static FIRST_CELL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Numbers this process's cells from `first` (at least 1). Call before the
+/// first cell is built.
+pub fn set_first_cell(first: u64) {
+    FIRST_CELL.store(first.max(1), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The id of this process's first cell.
+#[must_use]
+pub fn first_cell() -> u64 {
+    FIRST_CELL.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The configuration of cell `index`.
 #[must_use]
 pub fn cell_config(t: &Tunables, index: usize, seed: u64) -> CellConfig {
     let (lo, hi) = region_of(index);
-    let id = CellId(index as u64 + 1);
+    let id = CellId(index as u64 + first_cell());
     let mut cfg = CellConfig::new(id, Seed(seed ^ id.0));
     cfg.rate = t.tick_rate;
     cfg.motion = t.motion;

@@ -40,7 +40,7 @@ pub async fn wait_for(
             ),
         );
         loop {
-            let last = match probe(dep.health, "/ready", POLL.max(Duration::from_millis(500))).await {
+            let last = match probe(&dep.health, "/ready", POLL.max(Duration::from_millis(500))).await {
                 Ok((200, body)) if body.trim_end() == expect => break,
                 Ok((200, body)) => format!("answered as {:?}, not {expect:?}", body.trim_end()),
                 Ok((code, body)) => format!("{code} {}", body.trim_end()),

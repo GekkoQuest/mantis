@@ -1,7 +1,10 @@
-//! The container deployment's files stay valid: every node configuration
-//! under `deploy/compose/config` reads strictly, the registry template
-//! (filled in as `scripts/deploy-local.ps1` fills it) parses, and each
-//! configuration's instance, role and ports agree with the registry.
+//! The container deployments' files stay valid: every node configuration
+//! under `deploy/compose/config` and `deploy/multihost/config` reads
+//! strictly, each registry template (filled in as the scripts fill it)
+//! parses, and each configuration's instance, role and ports agree with
+//! its registry.
+
+#![expect(clippy::unwrap_used, clippy::panic)]
 
 use std::path::Path;
 
@@ -9,12 +12,24 @@ use mantis_deploy::config::NodeConfig;
 use mantis_deploy::matrix;
 use mantis_deploy::registry::Registry;
 
-fn compose() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/compose")
+fn deployment(name: &str) -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../deploy")
+        .join(name)
 }
 
 #[test]
 fn every_compose_node_configuration_matches_the_registry_template() {
+    check(&deployment("compose"));
+}
+
+#[test]
+fn every_multihost_node_configuration_matches_its_registry_template() {
+    check(&deployment("multihost"));
+}
+
+fn check(dir: &Path) {
+    let compose = || dir.to_path_buf();
     let body = std::fs::read_to_string(compose().join("registry.body.toml"))
         .unwrap()
         .replace("@SERIAL@", "1")
@@ -45,7 +60,7 @@ fn every_compose_node_configuration_matches_the_registry_template() {
                 registry
                     .instances
                     .iter()
-                    .all(|i| i.rpc.ip() != ops.dashboard.ip()),
+                    .all(|i| i.rpc.ip() != Some(ops.dashboard.ip())),
                 "the dashboard is not on the services network"
             );
         }

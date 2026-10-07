@@ -184,6 +184,7 @@ fn guild_changes_are_durable_before_they_are_told_and_survive_a_restart() {
 
     // A resent batch is written once.
     let again = m::StoreGuildRows {
+        epoch: 0,
         seq,
         rows: BoundedArray::from_slice(&[guild_row(&GuildChange::NoGuild { id: 1 })]).unwrap(),
     };

@@ -106,6 +106,8 @@ method!(/// Delete one of an account's characters.
     RemoveCharacter: DeleteCharacter -> Empty, callers [Gateway, Ops]);
 method!(/// A cell host reports where a character left or arrived.
     PlaceCharacter: CharacterPlaced -> Empty, callers [Cell]);
+method!(/// A role instance takes or renews its role's lease (role failover).
+    Lease: AcquireLease -> LeaseState, callers [Account, Realm, Social, Ops]);
 
 method!(/// Join a matchmaking queue.
     Queue: Enqueue -> Empty, callers [Gateway, Cell]);
@@ -343,6 +345,21 @@ impl m::Validators for Checks {
     fn validate_delete_character(&self, _msg: &m::DeleteCharacter) -> Result<(), ValidationError> {
         Ok(())
     }
+    fn validate_acquire_lease(&self, msg: &m::AcquireLease) -> Result<(), ValidationError> {
+        let role = Role::from_u8(msg.role);
+        if !matches!(
+            role,
+            Some(Role::Account | Role::Realm | Role::Social | Role::Matchmaking | Role::Ops)
+        ) {
+            return Err(ValidationError(
+                "a lease is for account, realm, social, matchmaking or ops",
+            ));
+        }
+        if msg.owner.as_str().is_empty() || msg.ttl_ms == 0 {
+            return Err(ValidationError("a lease names its owner and lasts a while"));
+        }
+        Ok(())
+    }
     fn validate_character_placed(&self, msg: &m::CharacterPlaced) -> Result<(), ValidationError> {
         if msg.cell.0 == 0 || ![msg.x, msg.y, msg.z].iter().all(|v| v.is_finite()) {
             return Err(ValidationError("a placement names a cell and a finite position"));
@@ -406,7 +423,7 @@ pub fn server_of(id: u16) -> Option<Role> {
         RedeemForHost, Transfer, NewInstance, RealmRun, RemoveCharacter, PlaceCharacter);
     serving!(Social: PublishLine, Presence, Poll, RelayOp, Restored, Projection, NewGuild, EnterGuild);
     serving!(Persist: Push, Ledger, StoreLiveValue, ReadLiveValues, AuditOpen, AuditClose, AuditTrail, WriteGuilds, LoadGuilds, WriteFriends,
-        LoadFriends, WriteAccounts, LoadAccounts, WriteCharacters, LoadCharacters);
+        LoadFriends, WriteAccounts, LoadAccounts, WriteCharacters, LoadCharacters, Lease);
     serving!(Matchmaking: Queue, MatchFor);
     serving!(Ops: Live);
     serving!(Cell: InspectCell, Kick, Drain, InspectSystemTimes, InspectComponentNames, InspectEntityPage);
@@ -462,6 +479,7 @@ pub fn matrix() -> Vec<(&'static str, u16, &'static [Role])> {
         row::<ChangeAccountPassword>(),
         row::<RemoveCharacter>(),
         row::<PlaceCharacter>(),
+        row::<Lease>(),
         row::<Queue>(),
         row::<MatchFor>(),
         row::<Live>(),

@@ -9,8 +9,10 @@
 //! mantisd certs --keys DIR --registry REGISTRY.toml [--out DIR] [--days N] [--instance NAME]
 //! mantisd registry sign --key DEPLOY.pk8 --in BODY.toml --out REGISTRY.toml
 //! mantisd registry verify --deploy-key DEPLOY.pub REGISTRY.toml
+//! mantisd registry serve --dir DIR --listen IP:PORT --cert FILE --key FILE [--drain-on-stdin-eof]
+//! mantisd certs --keys DIR --server NAME --hosts HOST[,HOST...] [--out DIR] [--days N]
 //! mantisd graph --config FILE
-//! mantisd probe IP:PORT PATH
+//! mantisd probe HOST:PORT PATH
 //! ```
 //!
 //! `probe` asks a health endpoint for `PATH` (`/live`, `/ready`) and exits
@@ -41,8 +43,10 @@ const USAGE: &str = "usage:
   <program> certs --keys DIR --registry REGISTRY.toml [--out DIR] [--days N] [--instance NAME]
   <program> registry sign --key DEPLOY.pk8 --in BODY.toml --out REGISTRY.toml
   <program> registry verify --deploy-key DEPLOY.pub REGISTRY.toml
+  <program> registry serve --dir DIR --listen IP:PORT --cert FILE --key FILE
+  <program> certs --keys DIR --server NAME --hosts HOST[,HOST...] [--out DIR] [--days N]
   <program> graph --config FILE
-  <program> probe IP:PORT PATH";
+  <program> probe HOST:PORT PATH";
 
 enum Failure {
     Usage(String),
@@ -171,12 +175,10 @@ fn dispatch(all: Vec<String>, cells: Option<&dyn CellHost>) -> Result<(), Failur
             let words = args.only(&[], 2)?;
             let (addr, path) = match words.as_slice() {
                 [a, p] => (*a, *p),
-                _ => return Err(Failure::Usage("probe IP:PORT PATH".to_owned())),
+                _ => return Err(Failure::Usage("probe HOST:PORT PATH".to_owned())),
             };
-            let addr: std::net::SocketAddr = addr
-                .parse()
-                .map_err(|_| Failure::Usage(format!("{addr:?} is not ip:port")))?;
-            match crate::health::probe_blocking(addr, path, std::time::Duration::from_secs(3))? {
+            let target = crate::target::Target::parse(addr).map_err(Failure::Usage)?;
+            match crate::health::probe_blocking(&target, path, std::time::Duration::from_secs(3))? {
                 (200, body) => {
                     print!("{body}");
                     Ok(())
@@ -217,10 +219,15 @@ fn certs(args: &Args) -> Result<(), Failure> {
             ("--out", true),
             ("--days", true),
             ("--instance", true),
+            ("--server", true),
+            ("--hosts", true),
         ],
         0,
     )?;
     let dir = args.need("--keys")?;
+    if args.value("--server")?.is_some() {
+        return server_cert(args, &dir);
+    }
     let path = args.need("--registry")?;
     let deploy = keys::read_public_key(&dir.join(keys::files::DEPLOY_PUBLIC))?;
     let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -239,6 +246,40 @@ fn certs(args: &Args) -> Result<(), Failure> {
         registry.cluster,
         out.display(),
         issued.join(", ")
+    );
+    Ok(())
+}
+
+/// `certs --server NAME --hosts a,b`: a plain TLS server certificate from
+/// the cluster CA (the registry server, or a game listener of a private
+/// deployment), written as NAME.crt and NAME.key.
+fn server_cert(args: &Args, dir: &Path) -> Result<(), Failure> {
+    let name = args.text("--server")?;
+    if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+        return Err(Failure::Usage(
+            "--server: a file name of letters, digits and -".to_owned(),
+        ));
+    }
+    let hosts: Vec<String> = args
+        .text("--hosts")?
+        .split(',')
+        .map(|h| h.trim().to_owned())
+        .filter(|h| !h.is_empty())
+        .collect();
+    let days = args.days("--days", crate::pki::LEAF_DAYS)?;
+    let out = args.value("--out")?.unwrap_or_else(|| dir.to_path_buf());
+    let leaf = crate::pki::issue_server(
+        &keys::read_ca(dir)?,
+        &name,
+        &hosts,
+        crate::pki::Validity::starting_now(std::time::SystemTime::now(), days),
+    )?;
+    keys::write_secret(&out.join(keys::files::cert(&name)), leaf.cert_pem.as_bytes())?;
+    keys::write_secret(&out.join(keys::files::key(&name)), leaf.key_pem.as_bytes())?;
+    println!(
+        "server certificate {name} for {} valid {days} days written to {}",
+        hosts.join(", "),
+        out.display()
     );
     Ok(())
 }
@@ -267,6 +308,47 @@ fn registry(args: &Args) -> Result<(), Failure> {
             );
             Ok(())
         }
+        Some("serve") => {
+            rest.only(
+                &[
+                    ("--dir", true),
+                    ("--listen", true),
+                    ("--cert", true),
+                    ("--key", true),
+                    ("--drain-on-stdin-eof", false),
+                ],
+                0,
+            )?;
+            let listen: std::net::SocketAddr = rest
+                .text("--listen")?
+                .parse()
+                .map_err(|_| Failure::Usage("--listen: ip:port".to_owned()))?;
+            let (dir, cert, key) = (rest.need("--dir")?, rest.need("--cert")?, rest.need("--key")?);
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+                .map_err(|e| e.to_string())?;
+            let drain = crate::drain::Drain::install(runtime.handle(), rest.flag("--drain-on-stdin-eof"));
+            let server = runtime.block_on(crate::publish::RegistryServer::start(
+                listen,
+                dir.clone(),
+                &cert,
+                &key,
+            ))?;
+            println!(
+                "mantisd registry serve: https://{}/<name>.toml from {}",
+                server.addr(),
+                dir.display()
+            );
+            let why = runtime.block_on(drain.wait());
+            println!("mantisd registry serve: stopped ({why})");
+            {
+                let _guard = runtime.enter();
+                drop(server);
+            }
+            Ok(())
+        }
         Some("verify") => {
             let files = rest.only(&[("--deploy-key", true)], 1)?;
             let deploy = keys::read_public_key(&rest.need("--deploy-key")?)?;
@@ -278,7 +360,9 @@ fn registry(args: &Args) -> Result<(), Failure> {
             println!("signature verified");
             Ok(())
         }
-        _ => Err(Failure::Usage("registry sign | registry verify".to_owned())),
+        _ => Err(Failure::Usage(
+            "registry sign | registry verify | registry serve".to_owned(),
+        )),
     }
 }
 

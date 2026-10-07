@@ -194,7 +194,8 @@ impl BotWire for NativeWire {
             Ok(ServerFrame::Message(Outbound::SetPosition(p))) => {
                 events(BotEvent::Corrected { position: p.position });
             }
-            Err(_) => {}
+            // Undecodable, or a message a newer contract adds: ignored.
+            Ok(_) | Err(_) => {}
         }
     }
 
@@ -616,84 +617,84 @@ impl Bot {
         }
         self.choose_movement();
         let dt = self.cfg.rate.dt_seconds();
-        match self.wire.mode() {
-            MovementMode::Predictive => {
-                self.seq = self.seq.next();
-                let input = MoveInput {
-                    seq: self.seq,
-                    tick: Tick(self.tick),
-                    buttons: self.buttons,
-                    yaw: self.yaw,
-                    aim: AimAngles::default(),
-                };
-                self.state = self.motion.step(
-                    self.ground.as_ref(),
-                    &self.state,
-                    &input,
-                    &MotionModifiers::NONE,
-                    dt,
-                );
-                let previous = self.history.back().copied();
-                self.history.push_back(input);
-                if self.history.len() > 240 {
-                    self.history.pop_front();
-                }
-                self.send_input(input, previous);
-                self.stats.inputs += 1;
+        if self.wire.mode() == MovementMode::Predictive {
+            self.seq = self.seq.next();
+            let input = MoveInput {
+                seq: self.seq,
+                tick: Tick(self.tick),
+                buttons: self.buttons,
+                yaw: self.yaw,
+                aim: AimAngles::default(),
+            };
+            self.state = self.motion.step(
+                self.ground.as_ref(),
+                &self.state,
+                &input,
+                &MotionModifiers::NONE,
+                dt,
+            );
+            let previous = self.history.back().copied();
+            self.history.push_back(input);
+            if self.history.len() > 240 {
+                self.history.pop_front();
             }
-            MovementMode::Validated => {
-                let speed = match self.cfg.profile {
-                    Profile::SpeedHack(f) => f,
-                    _ => 1.0,
-                };
-                let mods = MotionModifiers {
-                    speed_scale: speed,
-                    ..MotionModifiers::NONE
-                };
-                let input = MoveInput {
-                    buttons: self.buttons.without(MoveButtons::JUMP),
-                    yaw: self.yaw,
-                    ..MoveInput::default()
-                };
-                self.state = self
-                    .motion
-                    .step(self.ground.as_ref(), &self.state, &input, &mods, dt);
-                let mut cheating = self.state.velocity.horizontal().length() > self.cfg.motion.run_speed;
-                let jump = match self.cfg.profile {
-                    Profile::Teleport { every, distance }
-                        if every > 0 && self.tick.is_multiple_of(u64::from(every)) =>
-                    {
-                        Some(distance)
-                    }
-                    Profile::Relapse { distance } if self.relapse_due => {
-                        self.relapse_due = false;
-                        Some(distance)
-                    }
-                    _ => None,
-                };
-                if let Some(distance) = jump {
-                    self.stats.jumps += 1;
-                    self.state.position.x += distance;
-                    if let Some(h) = self
-                        .ground
-                        .height_at(self.state.position.x, self.state.position.z)
-                    {
-                        self.state.position.y = h;
-                    }
-                    cheating = true;
+            self.send_input(input, previous);
+            self.stats.inputs += 1;
+        } else {
+            // Validated, and any mode a newer contract adds: the client
+            // claims positions (the stricter path).
+
+            let speed = match self.cfg.profile {
+                Profile::SpeedHack(f) => f,
+                _ => 1.0,
+            };
+            let mods = MotionModifiers {
+                speed_scale: speed,
+                ..MotionModifiers::NONE
+            };
+            let input = MoveInput {
+                buttons: self.buttons.without(MoveButtons::JUMP),
+                yaw: self.yaw,
+                ..MoveInput::default()
+            };
+            self.state = self
+                .motion
+                .step(self.ground.as_ref(), &self.state, &input, &mods, dt);
+            let mut cheating = self.state.velocity.horizontal().length() > self.cfg.motion.run_speed;
+            let jump = match self.cfg.profile {
+                Profile::Teleport { every, distance }
+                    if every > 0 && self.tick.is_multiple_of(u64::from(every)) =>
+                {
+                    Some(distance)
                 }
-                if cheating && self.first_cheat_tick.is_none() {
-                    self.first_cheat_tick = Some(self.tick);
+                Profile::Relapse { distance } if self.relapse_due => {
+                    self.relapse_due = false;
+                    Some(distance)
                 }
-                let client_ms = u32::try_from(self.tick * 1000 / u64::from(self.cfg.rate.hz()))
-                    .unwrap_or(u32::MAX)
-                    .wrapping_add(self.cfg.clock_offset_ms);
-                self.send(&Inbound::MoveClaim(MoveClaim {
-                    position: self.state.position,
-                    client_time_ms: client_ms,
-                }));
-                self.stats.claims += 1;
+                _ => None,
+            };
+            if let Some(distance) = jump {
+                self.stats.jumps += 1;
+                self.state.position.x += distance;
+                if let Some(h) = self
+                    .ground
+                    .height_at(self.state.position.x, self.state.position.z)
+                {
+                    self.state.position.y = h;
+                }
+                cheating = true;
             }
+            if cheating && self.first_cheat_tick.is_none() {
+                self.first_cheat_tick = Some(self.tick);
+            }
+            let client_ms = u32::try_from(self.tick * 1000 / u64::from(self.cfg.rate.hz()))
+                .unwrap_or(u32::MAX)
+                .wrapping_add(self.cfg.clock_offset_ms);
+            self.send(&Inbound::MoveClaim(MoveClaim {
+                position: self.state.position,
+                client_time_ms: client_ms,
+            }));
+            self.stats.claims += 1;
         }
     }
 }

@@ -380,6 +380,8 @@ pub struct RegisterCell {
     pub hi: f32,
     /// True for an instance cell available for instance creation.
     pub instance: bool,
+    /// The world the cell belongs to (a host serves one world).
+    pub world: u32,
 }
 
 impl ::mantis_core::wire::Wire for RegisterCell {
@@ -389,6 +391,7 @@ impl ::mantis_core::wire::Wire for RegisterCell {
         ::mantis_core::wire::Wire::encode(&self.lo, e);
         ::mantis_core::wire::Wire::encode(&self.hi, e);
         ::mantis_core::wire::Wire::encode(&self.instance, e);
+        ::mantis_core::wire::Wire::encode(&self.world, e);
     }
     fn decode(d: &mut ::mantis_core::wire::Decoder<'_>) -> Result<Self, ::mantis_core::wire::DecodeError> {
         Ok(Self {
@@ -397,6 +400,7 @@ impl ::mantis_core::wire::Wire for RegisterCell {
             lo: ::mantis_core::wire::Wire::decode(d)?,
             hi: ::mantis_core::wire::Wire::decode(d)?,
             instance: ::mantis_core::wire::Wire::decode(d)?,
+            world: ::mantis_core::wire::Wire::decode(d)?,
         })
     }
 }
@@ -409,6 +413,7 @@ impl ::mantis_core::wire::FuzzSample for RegisterCell {
             lo: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
             hi: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
             instance: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            world: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
         }
     }
 }
@@ -2564,6 +2569,10 @@ impl ::mantis_core::wire::FuzzSample for GuildRow {
 /// tells anyone. A batch at or below the stored sequence is applied once.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct StoreGuildRows {
+    /// The writer's lease epoch (role failover): a batch from an instance
+    /// that no longer holds its role's lease is refused. 0: an unleased,
+    /// single-instance role.
+    pub epoch: u64,
     /// Batch sequence number.
     pub seq: u64,
     /// The changes.
@@ -2572,11 +2581,13 @@ pub struct StoreGuildRows {
 
 impl ::mantis_core::wire::Wire for StoreGuildRows {
     fn encode(&self, e: &mut ::mantis_core::wire::Encoder<'_>) {
+        ::mantis_core::wire::Wire::encode(&self.epoch, e);
         ::mantis_core::wire::Wire::encode(&self.seq, e);
         ::mantis_core::wire::Wire::encode(&self.rows, e);
     }
     fn decode(d: &mut ::mantis_core::wire::Decoder<'_>) -> Result<Self, ::mantis_core::wire::DecodeError> {
         Ok(Self {
+            epoch: ::mantis_core::wire::Wire::decode(d)?,
             seq: ::mantis_core::wire::Wire::decode(d)?,
             rows: ::mantis_core::wire::Wire::decode(d)?,
         })
@@ -2586,6 +2597,7 @@ impl ::mantis_core::wire::Wire for StoreGuildRows {
 impl ::mantis_core::wire::FuzzSample for StoreGuildRows {
     fn fuzz_sample(rng: &mut ::mantis_core::rng::Rng) -> Self {
         Self {
+            epoch: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
             seq: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
             rows: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
         }
@@ -2710,6 +2722,10 @@ impl ::mantis_core::wire::FuzzSample for FriendRow {
 /// it tells anyone. A batch at or below the stored sequence is applied once.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct StoreFriendRows {
+    /// The writer's lease epoch (role failover): a batch from an instance
+    /// that no longer holds its role's lease is refused. 0: an unleased,
+    /// single-instance role.
+    pub epoch: u64,
     /// Batch sequence number.
     pub seq: u64,
     /// The changes.
@@ -2718,11 +2734,13 @@ pub struct StoreFriendRows {
 
 impl ::mantis_core::wire::Wire for StoreFriendRows {
     fn encode(&self, e: &mut ::mantis_core::wire::Encoder<'_>) {
+        ::mantis_core::wire::Wire::encode(&self.epoch, e);
         ::mantis_core::wire::Wire::encode(&self.seq, e);
         ::mantis_core::wire::Wire::encode(&self.rows, e);
     }
     fn decode(d: &mut ::mantis_core::wire::Decoder<'_>) -> Result<Self, ::mantis_core::wire::DecodeError> {
         Ok(Self {
+            epoch: ::mantis_core::wire::Wire::decode(d)?,
             seq: ::mantis_core::wire::Wire::decode(d)?,
             rows: ::mantis_core::wire::Wire::decode(d)?,
         })
@@ -2732,6 +2750,7 @@ impl ::mantis_core::wire::Wire for StoreFriendRows {
 impl ::mantis_core::wire::FuzzSample for StoreFriendRows {
     fn fuzz_sample(rng: &mut ::mantis_core::rng::Rng) -> Self {
         Self {
+            epoch: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
             seq: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
             rows: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
         }
@@ -3153,6 +3172,10 @@ pub struct StoreLive {
     pub kind: u8,
     /// The value.
     pub value: f32,
+    /// The writer's lease epoch (role failover): a batch from an instance
+    /// that no longer holds its role's lease is refused. 0: an unleased,
+    /// single-instance role.
+    pub epoch: u64,
 }
 
 impl ::mantis_core::wire::Wire for StoreLive {
@@ -3160,12 +3183,14 @@ impl ::mantis_core::wire::Wire for StoreLive {
         ::mantis_core::wire::Wire::encode(&self.name, e);
         ::mantis_core::wire::Wire::encode(&self.kind, e);
         ::mantis_core::wire::Wire::encode(&self.value, e);
+        ::mantis_core::wire::Wire::encode(&self.epoch, e);
     }
     fn decode(d: &mut ::mantis_core::wire::Decoder<'_>) -> Result<Self, ::mantis_core::wire::DecodeError> {
         Ok(Self {
             name: ::mantis_core::wire::Wire::decode(d)?,
             kind: ::mantis_core::wire::Wire::decode(d)?,
             value: ::mantis_core::wire::Wire::decode(d)?,
+            epoch: ::mantis_core::wire::Wire::decode(d)?,
         })
     }
 }
@@ -3176,6 +3201,7 @@ impl ::mantis_core::wire::FuzzSample for StoreLive {
             name: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
             kind: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
             value: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            epoch: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
         }
     }
 }
@@ -3352,6 +3378,10 @@ impl ::mantis_core::wire::FuzzSample for AccountRow {
 /// or below the stored sequence is applied once.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct StoreAccountRows {
+    /// The writer's lease epoch (role failover): a batch from an instance
+    /// that no longer holds its role's lease is refused. 0: an unleased,
+    /// single-instance role.
+    pub epoch: u64,
     /// Batch sequence number.
     pub seq: u64,
     /// The rows, whole (each replaces the stored row of its id).
@@ -3360,11 +3390,13 @@ pub struct StoreAccountRows {
 
 impl ::mantis_core::wire::Wire for StoreAccountRows {
     fn encode(&self, e: &mut ::mantis_core::wire::Encoder<'_>) {
+        ::mantis_core::wire::Wire::encode(&self.epoch, e);
         ::mantis_core::wire::Wire::encode(&self.seq, e);
         ::mantis_core::wire::Wire::encode(&self.rows, e);
     }
     fn decode(d: &mut ::mantis_core::wire::Decoder<'_>) -> Result<Self, ::mantis_core::wire::DecodeError> {
         Ok(Self {
+            epoch: ::mantis_core::wire::Wire::decode(d)?,
             seq: ::mantis_core::wire::Wire::decode(d)?,
             rows: ::mantis_core::wire::Wire::decode(d)?,
         })
@@ -3374,6 +3406,7 @@ impl ::mantis_core::wire::Wire for StoreAccountRows {
 impl ::mantis_core::wire::FuzzSample for StoreAccountRows {
     fn fuzz_sample(rng: &mut ::mantis_core::rng::Rng) -> Self {
         Self {
+            epoch: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
             seq: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
             rows: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
         }
@@ -3545,6 +3578,10 @@ impl ::mantis_core::wire::FuzzSample for CharacterRow {
 /// below the stored sequence is applied once.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct StoreCharacterRows {
+    /// The writer's lease epoch (role failover): a batch from an instance
+    /// that no longer holds its role's lease is refused. 0: an unleased,
+    /// single-instance role.
+    pub epoch: u64,
     /// Batch sequence number.
     pub seq: u64,
     /// The rows, whole (each replaces the stored row of its id).
@@ -3553,11 +3590,13 @@ pub struct StoreCharacterRows {
 
 impl ::mantis_core::wire::Wire for StoreCharacterRows {
     fn encode(&self, e: &mut ::mantis_core::wire::Encoder<'_>) {
+        ::mantis_core::wire::Wire::encode(&self.epoch, e);
         ::mantis_core::wire::Wire::encode(&self.seq, e);
         ::mantis_core::wire::Wire::encode(&self.rows, e);
     }
     fn decode(d: &mut ::mantis_core::wire::Decoder<'_>) -> Result<Self, ::mantis_core::wire::DecodeError> {
         Ok(Self {
+            epoch: ::mantis_core::wire::Wire::decode(d)?,
             seq: ::mantis_core::wire::Wire::decode(d)?,
             rows: ::mantis_core::wire::Wire::decode(d)?,
         })
@@ -3567,6 +3606,7 @@ impl ::mantis_core::wire::Wire for StoreCharacterRows {
 impl ::mantis_core::wire::FuzzSample for StoreCharacterRows {
     fn fuzz_sample(rng: &mut ::mantis_core::rng::Rng) -> Self {
         Self {
+            epoch: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
             seq: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
             rows: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
         }
@@ -3791,9 +3831,100 @@ impl ::mantis_core::wire::Message for CharacterPlaced {
     const NAME: &'static str = "CharacterPlaced";
 }
 
+/// A role instance takes or renews its role's lease (role failover): the
+/// holder is the role's one active instance. A lease held by another owner
+/// and not yet expired is left as it is; an expired one is taken, with the
+/// next epoch; the holder renewing keeps its epoch.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct AcquireLease {
+    /// The role (`Role` as a byte).
+    pub role: u8,
+    /// This instance.
+    pub owner: ::mantis_core::wire::WireString<64>,
+    /// Unix milliseconds now, on the instance's clock.
+    pub now_ms: u64,
+    /// How long the lease lasts from now, in milliseconds.
+    pub ttl_ms: u64,
+}
+
+impl ::mantis_core::wire::Wire for AcquireLease {
+    fn encode(&self, e: &mut ::mantis_core::wire::Encoder<'_>) {
+        ::mantis_core::wire::Wire::encode(&self.role, e);
+        ::mantis_core::wire::Wire::encode(&self.owner, e);
+        ::mantis_core::wire::Wire::encode(&self.now_ms, e);
+        ::mantis_core::wire::Wire::encode(&self.ttl_ms, e);
+    }
+    fn decode(d: &mut ::mantis_core::wire::Decoder<'_>) -> Result<Self, ::mantis_core::wire::DecodeError> {
+        Ok(Self {
+            role: ::mantis_core::wire::Wire::decode(d)?,
+            owner: ::mantis_core::wire::Wire::decode(d)?,
+            now_ms: ::mantis_core::wire::Wire::decode(d)?,
+            ttl_ms: ::mantis_core::wire::Wire::decode(d)?,
+        })
+    }
+}
+
+impl ::mantis_core::wire::FuzzSample for AcquireLease {
+    fn fuzz_sample(rng: &mut ::mantis_core::rng::Rng) -> Self {
+        Self {
+            role: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            owner: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            now_ms: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            ttl_ms: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+        }
+    }
+}
+
+impl ::mantis_core::wire::Message for AcquireLease {
+    const ID: ::mantis_core::wire::MessageId = ::mantis_core::wire::MessageId(84);
+    const NAME: &'static str = "AcquireLease";
+}
+
+/// Who holds a role's lease after the request.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct LeaseState {
+    /// The holder.
+    pub owner: ::mantis_core::wire::WireString<64>,
+    /// Its epoch: bumped on every change of holder.
+    pub epoch: u64,
+    /// Unix milliseconds it lapses unless renewed.
+    pub expires_ms: u64,
+}
+
+impl ::mantis_core::wire::Wire for LeaseState {
+    fn encode(&self, e: &mut ::mantis_core::wire::Encoder<'_>) {
+        ::mantis_core::wire::Wire::encode(&self.owner, e);
+        ::mantis_core::wire::Wire::encode(&self.epoch, e);
+        ::mantis_core::wire::Wire::encode(&self.expires_ms, e);
+    }
+    fn decode(d: &mut ::mantis_core::wire::Decoder<'_>) -> Result<Self, ::mantis_core::wire::DecodeError> {
+        Ok(Self {
+            owner: ::mantis_core::wire::Wire::decode(d)?,
+            epoch: ::mantis_core::wire::Wire::decode(d)?,
+            expires_ms: ::mantis_core::wire::Wire::decode(d)?,
+        })
+    }
+}
+
+impl ::mantis_core::wire::FuzzSample for LeaseState {
+    fn fuzz_sample(rng: &mut ::mantis_core::rng::Rng) -> Self {
+        Self {
+            owner: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            epoch: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+            expires_ms: ::mantis_core::wire::FuzzSample::fuzz_sample(rng),
+        }
+    }
+}
+
+impl ::mantis_core::wire::Message for LeaseState {
+    const ID: ::mantis_core::wire::MessageId = ::mantis_core::wire::MessageId(85);
+    const NAME: &'static str = "LeaseState";
+}
+
 /// Every client to server message of this schema.
 #[derive(Clone, Copy, PartialEq, Debug)]
 #[allow(clippy::large_enum_variant)] // inline, allocation-free values; transient on network threads
+#[non_exhaustive]
 pub enum Inbound {
     /// See [`Register`].
     Register(Register),
@@ -3895,6 +4026,8 @@ pub enum Inbound {
     DeleteCharacter(DeleteCharacter),
     /// See [`CharacterPlaced`].
     CharacterPlaced(CharacterPlaced),
+    /// See [`AcquireLease`].
+    AcquireLease(AcquireLease),
 }
 
 impl Inbound {
@@ -3952,6 +4085,7 @@ impl Inbound {
             Self::ChangePassword(_) => <ChangePassword as ::mantis_core::wire::Message>::ID,
             Self::DeleteCharacter(_) => <DeleteCharacter as ::mantis_core::wire::Message>::ID,
             Self::CharacterPlaced(_) => <CharacterPlaced as ::mantis_core::wire::Message>::ID,
+            Self::AcquireLease(_) => <AcquireLease as ::mantis_core::wire::Message>::ID,
         }
     }
 
@@ -4008,6 +4142,7 @@ impl Inbound {
             Self::ChangePassword(m) => ::mantis_core::wire::encode_into(m, out),
             Self::DeleteCharacter(m) => ::mantis_core::wire::encode_into(m, out),
             Self::CharacterPlaced(m) => ::mantis_core::wire::encode_into(m, out),
+            Self::AcquireLease(m) => ::mantis_core::wire::encode_into(m, out),
         }
     }
 }
@@ -4265,6 +4400,11 @@ pub trait Validators {
     /// # Errors
     /// The reason the message is refused.
     fn validate_character_placed(&self, msg: &CharacterPlaced) -> Result<(), ::mantis_core::wire::ValidationError>;
+    /// Validates a decoded [`AcquireLease`].
+    ///
+    /// # Errors
+    /// The reason the message is refused.
+    fn validate_acquire_lease(&self, msg: &AcquireLease) -> Result<(), ::mantis_core::wire::ValidationError>;
 }
 
 impl Inbound {
@@ -4325,6 +4465,7 @@ impl Inbound {
             Self::ChangePassword(m) => ("ChangePassword", validators.validate_change_password(m)),
             Self::DeleteCharacter(m) => ("DeleteCharacter", validators.validate_delete_character(m)),
             Self::CharacterPlaced(m) => ("CharacterPlaced", validators.validate_character_placed(m)),
+            Self::AcquireLease(m) => ("AcquireLease", validators.validate_acquire_lease(m)),
         };
         result.map_err(|reason| ::mantis_core::wire::WireError::Rejected { message, reason })
     }
@@ -4391,6 +4532,7 @@ pub fn parse_inbound(
         81 => Inbound::ChangePassword(::mantis_core::wire::decode_message(bytes)?),
         82 => Inbound::DeleteCharacter(::mantis_core::wire::decode_message(bytes)?),
         83 => Inbound::CharacterPlaced(::mantis_core::wire::decode_message(bytes)?),
+        84 => Inbound::AcquireLease(::mantis_core::wire::decode_message(bytes)?),
         _ => return Err(::mantis_core::wire::WireError::UnknownMessage(id)),
     })
 }
@@ -4413,6 +4555,7 @@ pub fn decode_inbound(
 /// Every server to client message of this schema.
 #[derive(Clone, Copy, PartialEq, Debug)]
 #[allow(clippy::large_enum_variant)] // inline, allocation-free values; transient on network threads
+#[non_exhaustive]
 pub enum Outbound {
     /// See [`Empty`].
     Empty(Empty),
@@ -4480,6 +4623,8 @@ pub enum Outbound {
     AccountRows(AccountRows),
     /// See [`CharacterRows`].
     CharacterRows(CharacterRows),
+    /// See [`LeaseState`].
+    LeaseState(LeaseState),
 }
 
 impl Outbound {
@@ -4520,6 +4665,7 @@ impl Outbound {
             Self::LiveValues(_) => <LiveValues as ::mantis_core::wire::Message>::ID,
             Self::AccountRows(_) => <AccountRows as ::mantis_core::wire::Message>::ID,
             Self::CharacterRows(_) => <CharacterRows as ::mantis_core::wire::Message>::ID,
+            Self::LeaseState(_) => <LeaseState as ::mantis_core::wire::Message>::ID,
         }
     }
 
@@ -4559,6 +4705,7 @@ impl Outbound {
             Self::LiveValues(m) => ::mantis_core::wire::encode_into(m, out),
             Self::AccountRows(m) => ::mantis_core::wire::encode_into(m, out),
             Self::CharacterRows(m) => ::mantis_core::wire::encode_into(m, out),
+            Self::LeaseState(m) => ::mantis_core::wire::encode_into(m, out),
         }
     }
 }
@@ -4606,6 +4753,7 @@ pub fn decode_outbound(
         74 => Outbound::LiveValues(::mantis_core::wire::decode_message(bytes)?),
         77 => Outbound::AccountRows(::mantis_core::wire::decode_message(bytes)?),
         80 => Outbound::CharacterRows(::mantis_core::wire::decode_message(bytes)?),
+        85 => Outbound::LeaseState(::mantis_core::wire::decode_message(bytes)?),
         _ => return Err(::mantis_core::wire::WireError::UnknownMessage(id)),
     })
 }

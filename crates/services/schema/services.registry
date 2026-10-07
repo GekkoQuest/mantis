@@ -82,3 +82,5 @@
 81 ChangePassword
 82 DeleteCharacter
 83 CharacterPlaced
+84 AcquireLease
+85 LeaseState

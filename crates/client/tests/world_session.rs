@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mantis_client::core_api::MotionModifiers;
+use mantis_client::core_api::Tick;
 use mantis_client::input::device::KeyCode;
 use mantis_client::predict::metrics::BUCKET_WIDTH;
 use mantis_client::render_world::PoseSource;
@@ -276,5 +277,72 @@ fn timeline_markers_reach_the_render_side_on_the_host_timeline() -> TestResult {
         let period = tick_duration() * 10;
         assert!(gap.abs_diff(period) < tick_duration(), "{gap:?} vs {period:?}");
     }
+    Ok(())
+}
+
+/// A cell hand-off: the next frames come from a host that counts its own (lower) ticks,
+/// in a new epoch. They are applied, not dropped as stale; the timeline restarts; and
+/// prediction carries on without a correction (the destination continues the input
+/// sequence). A reconnect (a new connection, everything in flight lost) resumes prediction
+/// from the server's restored state and the inputs sent on the new connection, again
+/// without a single correction.
+#[test]
+fn a_hand_off_and_a_reconnect_restart_the_timeline_and_never_drop_frames() -> TestResult {
+    let mut rig = Rig::new(3, 3, ground())?;
+    rig.key(KeyCode::W, true)?;
+    for _ in 0..90 {
+        rig.run_tick(2);
+    }
+    let applied = rig.session.sim.handler().stats().snapshots;
+    // Hand-off: the destination host is at its own tick 5. The old host's frames still in
+    // flight never reach the simulation (the network session drops a frame of another
+    // epoch).
+    rig.server.downlink.clear();
+    rig.server.tick = Tick(5);
+    rig.epoch += 1;
+    for _ in 0..90 {
+        rig.run_tick(2);
+    }
+    let sim = rig.session.sim.handler();
+    let stats = sim.stats();
+    assert_eq!(stats.rebases, 1, "{stats:?}");
+    assert_eq!(stats.stale_snapshots, 0, "{stats:?}");
+    assert!(stats.snapshots >= applied + 85, "{stats:?}");
+    assert_eq!(sim.timeline().rebases(), 1);
+    assert_eq!(
+        sim.predictor().stats().corrected,
+        0,
+        "{:?}",
+        sim.predictor().stats()
+    );
+    assert_eq!(stats.resets, 1, "only the spawn");
+    // A reconnect: a new connection, the host at its own tick 1 again. Whatever was in
+    // flight on the dropped connection, either way, is lost.
+    rig.server.downlink.clear();
+    rig.server.uplink.clear();
+    rig.server.tick = Tick(1);
+    rig.epoch += 1;
+    rig.connection += 1;
+    rig.resume_from = None;
+    rig.track_first = true;
+    for _ in 0..90 {
+        rig.run_tick(2);
+    }
+    let sim = rig.session.sim.handler();
+    let stats = sim.stats();
+    assert_eq!((stats.rebases, stats.reconnects), (2, 1), "{stats:?}");
+    assert_eq!(stats.resets, 1, "a resume is not a reset: {stats:?}");
+    assert_eq!(sim.predictor().stats().resumed, 1);
+    assert_eq!(stats.stale_snapshots, 0, "{stats:?}");
+    assert_eq!(
+        sim.predictor().stats().corrected,
+        0,
+        "{:?}",
+        sim.predictor().stats()
+    );
+    // Remotes kept being drawn throughout.
+    let frames = rig.frames();
+    let tail = frames.iter().rev().take(20).filter(|f| f.npc.is_some()).count();
+    assert_eq!(tail, 20, "the NPC is still shown after the reconnect");
     Ok(())
 }

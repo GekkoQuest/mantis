@@ -153,17 +153,19 @@ impl core::fmt::Debug for ModHost {
     }
 }
 
+/// The script tier for a mod tier. A tier this build does not know (the contract enum is
+/// non-exhaustive) runs as presentation: the least it can grant (fail closed).
 fn script_tier(t: ModTier) -> Tier {
     match t {
-        ModTier::Presentation => Tier::Presentation,
         ModTier::Automation => Tier::Automation,
+        _ => Tier::Presentation,
     }
 }
 
 fn tier_name(t: ModTier) -> &'static str {
     match t {
-        ModTier::Presentation => "presentation",
         ModTier::Automation => "automation",
+        _ => "presentation",
     }
 }
 
@@ -463,15 +465,19 @@ impl ModHost {
             return false;
         }
         let named = p.modules.iter().any(|k| k.as_str() == slot.package.key);
-        let target = match (named, slot.package.tier, p.tier) {
+        // Only automation is a grant above presentation: a tier this build does not know
+        // (the contract enum is non-exhaustive) grants presentation only (fail closed).
+        let wants = slot.package.tier == ModTier::Automation;
+        let granted = p.tier == ModTier::Automation;
+        let target = match (named, wants, granted) {
             (false, _, _) => Err("stopped: not permitted in this instance".to_owned()),
-            (true, ModTier::Presentation, _) => Ok((ModTier::Presentation, None)),
-            (true, ModTier::Automation, ModTier::Automation) => Ok((ModTier::Automation, None)),
-            (true, ModTier::Automation, ModTier::Presentation) if slot.package.demote => Ok((
+            (true, false, _) => Ok((ModTier::Presentation, None)),
+            (true, true, true) => Ok((ModTier::Automation, None)),
+            (true, true, false) if slot.package.demote => Ok((
                 ModTier::Presentation,
                 Some("running at the presentation tier: this instance does not permit automation"),
             )),
-            (true, ModTier::Automation, ModTier::Presentation) => {
+            (true, true, false) => {
                 Err("stopped: needs the automation tier; this instance permits presentation only".to_owned())
             }
         };

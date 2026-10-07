@@ -215,8 +215,8 @@ pub fn run(config: &LocalConfig, stdin_eof: bool) -> Result<(), String> {
         instances.push(Instance {
             name,
             role,
-            rpc,
-            health: server.addr(),
+            rpc: rpc.into(),
+            health: server.addr().into(),
             cells: Vec::new(),
         });
         health.push((status, server));
@@ -225,8 +225,8 @@ pub fn run(config: &LocalConfig, stdin_eof: bool) -> Result<(), String> {
         instances.push(Instance {
             name: CELL_HOST.to_owned(),
             role: Role::Cell,
-            rpc: *rpc,
-            health: *health_addr,
+            rpc: (*rpc).into(),
+            health: (*health_addr).into(),
             cells: cells.clone(),
         });
         for cell in cells {

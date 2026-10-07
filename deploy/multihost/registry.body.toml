@@ -1,0 +1,52 @@
+# The registry of the multi-host demonstration (deploy/multihost). Every address is a DNS
+# name on the shared network, resolved when a connection is made. scripts/deploy-multihost.ps1
+# fills in the serial, the live-data public key and the cluster CA, signs it, and publishes it
+# where `mantisd registry serve` serves it to every node over HTTPS.
+format = "mantis.registry"
+version = 3
+serial = @SERIAL@
+cluster = "multihost"
+live_key = "@LIVE_KEY@"
+ca = ["@CA@"]
+
+[instance.persist-1]
+role = "persist"
+rpc = "persist.svc.mantis:7505"
+health = "persist.svc.mantis:7605"
+
+[instance.account-1]
+role = "account"
+rpc = "account.svc.mantis:7501"
+health = "account.svc.mantis:7601"
+
+[instance.realm-1]
+role = "realm"
+rpc = "realm.svc.mantis:7502"
+health = "realm.svc.mantis:7602"
+
+[instance.social-1]
+role = "social"
+rpc = "social.svc.mantis:7503"
+health = "social.svc.mantis:7603"
+
+[instance.matchmaking-1]
+role = "matchmaking"
+rpc = "matchmaking.svc.mantis:7504"
+health = "matchmaking.svc.mantis:7604"
+
+[instance.ops-1]
+role = "ops"
+rpc = "ops.svc.mantis:7506"
+health = "ops.svc.mantis:7606"
+
+[instance.cells-a]
+role = "cell-host"
+rpc = "cells.host-a.mantis:7520"
+health = "cells.host-a.mantis:7620"
+cells = [1, 2, 3]
+
+[instance.cells-b]
+role = "cell-host"
+rpc = "cells.host-b.mantis:7520"
+health = "cells.host-b.mantis:7620"
+cells = [11, 12, 13]

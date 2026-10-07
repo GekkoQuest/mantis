@@ -171,6 +171,15 @@ impl<'a> Fields<'a> {
             .map_err(|_| self.error(key, &format!("{s:?} is not an ip:port address")))
     }
 
+    /// A required `host:port` target (the host an IP literal or a DNS name).
+    ///
+    /// # Errors
+    /// Missing or not a target.
+    pub fn target(&mut self, key: &'a str) -> Result<crate::target::Target, FieldError> {
+        let s = self.str(key)?;
+        crate::target::Target::parse(s).map_err(|e| self.error(key, &e))
+    }
+
     /// A required path, relative to `base` unless absolute.
     ///
     /// # Errors

@@ -73,6 +73,16 @@ fn at(port: u16) -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], port))
 }
 
+/// A registry target on loopback.
+fn target(port: u16) -> mantis_deploy::target::Target {
+    at(port).into()
+}
+
+/// The loopback address of a target the harness wrote (always an IP).
+pub fn addr(t: &mantis_deploy::target::Target) -> SocketAddr {
+    t.socket_addr().unwrap()
+}
+
 /// The test clusters' name (in the registry and every certificate).
 pub const CLUSTER: &str = "test";
 
@@ -94,6 +104,10 @@ pub struct CellSpec {
     pub cells: Vec<u64>,
     /// `[package]` text for the package's cell host.
     pub package: String,
+    /// The game listener presents a chain from the cluster CA (files
+    /// `keys/game-<name>.crt` and `.key`, trust `keys/ca.crt`) instead of
+    /// the package's development certificate.
+    pub game_tls: bool,
 }
 
 /// One running child.
@@ -167,8 +181,8 @@ impl Cluster {
             instances.push(Instance {
                 name: service(role),
                 role,
-                rpc: at(next()),
-                health: at(next()),
+                rpc: target(next()),
+                health: target(next()),
                 cells: Vec::new(),
             });
         }
@@ -177,8 +191,8 @@ impl Cluster {
             instances.push(Instance {
                 name: c.name.to_owned(),
                 role: Role::Cell,
-                rpc: at(next()),
-                health: at(next()),
+                rpc: target(next()),
+                health: target(next()),
                 cells: c.cells.clone(),
             });
             game.insert(c.name.to_owned(), (at(next()), at(next())));
@@ -203,7 +217,8 @@ impl Cluster {
                 "[node]\nrole = \"{}\"\ninstance = \"{}\"\nregistry = \"registry.toml\"\n\
                  deploy_key = \"keys/{}\"\ncluster_key = \"keys/{}\"\ntls_cert = \"keys/{}\"\n\
                  tls_key = \"keys/{}\"\nlisten_rpc = \"{}\"\n\
-                 listen_health = \"{}\"\nready_timeout_s = 60\ndrain_grace_ms = 10000\n",
+                 listen_health = \"{}\"\nready_timeout_s = 60\ndrain_grace_ms = 10000\n\
+                 registry_refresh_s = 1\n",
                 matrix::name(i.role),
                 i.name,
                 keys::files::DEPLOY_PUBLIC,
@@ -253,6 +268,25 @@ impl Cluster {
                          snapshot_every_ticks = 150\n",
                         i.name
                     );
+                    if spec.game_tls {
+                        let ca = keys::read_ca(&key_dir).unwrap();
+                        let leaf = pki::issue_server(
+                            &ca,
+                            "game",
+                            &[quic.ip().to_string()],
+                            pki::Validity::starting_now(std::time::SystemTime::now(), 7),
+                        )
+                        .unwrap();
+                        std::fs::write(key_dir.join(format!("game-{}.crt", i.name)), &leaf.cert_pem).unwrap();
+                        std::fs::write(key_dir.join(format!("game-{}.key", i.name)), &leaf.key_pem).unwrap();
+                        let _ = write!(
+                            text,
+                            "game_cert = \"keys/game-{0}.crt\"\ngame_key = \"keys/game-{0}.key\"\n\
+                             game_ca = \"keys/{1}\"\n",
+                            i.name,
+                            keys::files::CA
+                        );
+                    }
                     if !spec.package.is_empty() {
                         let _ = write!(text, "\n[package]\n{}", spec.package);
                     }
@@ -275,6 +309,39 @@ impl Cluster {
             output: BTreeMap::new(),
             starts: BTreeMap::new(),
         }
+    }
+
+    /// Publishes `registry` (signed with the deploy key) where every node
+    /// reads it, and rewrites the listen ports of any instance it moved.
+    /// Running nodes apply it within their refresh (1 s); a moved node's
+    /// own listener moves only when it is restarted.
+    pub fn publish(&mut self, registry: Registry) {
+        let deploy = keys::read_key_pair(&self.dir.join("keys").join(keys::files::DEPLOY)).unwrap();
+        let path = self.dir.join("registry.toml");
+        let partial = self.dir.join("registry.toml.partial");
+        std::fs::write(&partial, sign(&registry.render(), &deploy)).unwrap();
+        std::fs::rename(&partial, &path).unwrap();
+        for next in &registry.instances {
+            let Some(was) = self.registry.instance(&next.name) else {
+                continue;
+            };
+            if (&was.rpc, &was.health) == (&next.rpc, &next.health) {
+                continue;
+            }
+            let config = self.config(&next.name);
+            let text = std::fs::read_to_string(&config).unwrap();
+            let text = text
+                .replace(
+                    &format!("listen_rpc = \"{}\"", was.rpc),
+                    &format!("listen_rpc = \"{}\"", next.rpc),
+                )
+                .replace(
+                    &format!("listen_health = \"{}\"", was.health),
+                    &format!("listen_health = \"{}\"", next.health),
+                );
+            std::fs::write(&config, text).unwrap();
+        }
+        self.registry = registry;
     }
 
     /// The configuration file of `name`.
@@ -301,7 +368,7 @@ impl Cluster {
     pub fn client(&self, from: &str, to: &str) -> mantis_services::host::rpc::RpcClient {
         let (from_i, to_i) = (self.instance(from), self.instance(to));
         mantis_services::host::rpc::RpcClient::with_tls(
-            to_i.rpc,
+            addr(&to_i.rpc),
             from_i.role,
             self.key.clone(),
             Some(self.tls_of(from)),
@@ -383,13 +450,17 @@ impl Cluster {
 
     /// `name`'s `/ready` answer.
     pub fn ready(&self, name: &str) -> Result<(u16, String), String> {
-        probe_blocking(self.instance(name).health, "/ready", Duration::from_millis(200))
+        probe_blocking(&self.instance(name).health, "/ready", Duration::from_millis(200))
     }
 
     /// `name`'s `/metrics` as `name -> value`.
     pub fn metrics(&self, name: &str) -> BTreeMap<String, i64> {
-        let (_, body) = probe_blocking(self.instance(name).health, "/metrics", Duration::from_millis(500))
-            .unwrap_or_default();
+        let (_, body) = probe_blocking(
+            &self.instance(name).health,
+            "/metrics",
+            Duration::from_millis(500),
+        )
+        .unwrap_or_default();
         body.lines()
             .filter_map(|l| l.split_once(' '))
             .filter_map(|(k, v)| Some((k.to_owned(), v.parse().ok()?)))

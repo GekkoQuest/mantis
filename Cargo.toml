@@ -36,7 +36,8 @@ mlua = { version = "0.12.2", features = ["luau"] }        # Luau binding (decisi
 tokio-postgres = "0.7.18"
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
 tokio-rustls = "0.26.6"
-x509-parser = "0.18.1"                                     # services only: reads the identity URI of an RPC peer certificate (already built for rcgen)
+x509-parser = "0.18.1"
+webpki-roots = "1.0.9"                                     # mantis-net optional `public-roots` feature only: Mozilla root set for public game-port certificates                                     # services only: reads the identity URI of an RPC peer certificate (already built for rcgen)
 
 [workspace.lints.rust]
 unsafe_code = "warn"

@@ -46,6 +46,8 @@ pub struct CellEntry {
     pub instance: bool,
     /// An instance cell in use.
     pub busy: bool,
+    /// The world it belongs to.
+    pub world: u32,
 }
 
 /// What a token grants.
@@ -181,6 +183,7 @@ impl RealmService {
                 s.seq
             };
             let req = m::StoreCharacterRows {
+                epoch: 0,
                 seq,
                 rows: BoundedArray::from_slice(&[character_row(&row)]).unwrap_or_default(),
             };
@@ -215,7 +218,8 @@ impl RealmService {
             let s = self.lock();
             // A returning character enters the world cell it left, where
             // it left; a new one (or one whose cell is gone or was an
-            // instance) the world cell owning x = 0.
+            // instance) the world cell owning x = 0 in the lowest-numbered
+            // world registered.
             let returning = s
                 .cells
                 .get(&c.cell)
@@ -224,7 +228,8 @@ impl RealmService {
             let fresh = || {
                 s.cells
                     .iter()
-                    .find(|(_, e)| !e.instance && e.range.0 <= 0.0 && 0.0 < e.range.1)
+                    .filter(|(_, e)| !e.instance && e.range.0 <= 0.0 && 0.0 < e.range.1)
+                    .min_by_key(|(id, e)| (e.world, **id))
                     .map(|(id, e)| (*id, e.address.clone(), None))
             };
             returning.or_else(fresh).ok_or_else(|| refused("no world cell"))?
@@ -369,6 +374,7 @@ impl RealmService {
                     range: (req.lo, req.hi),
                     instance: req.instance,
                     busy: false,
+                    world: req.world,
                 },
             );
             Ok(m::Empty {})

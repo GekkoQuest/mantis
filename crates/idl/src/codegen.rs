@@ -139,6 +139,9 @@ fn gen_enum(out: &mut String, item: &Item, def: &EnumDef) {
     let repr = def.repr.rust();
     let _ = writeln!(out, "#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]");
     let _ = writeln!(out, "#[repr({repr})]");
+    // A schema may add values: code outside the crate carries a wildcard
+    // arm, so an addition is never a breaking change.
+    let _ = writeln!(out, "#[non_exhaustive]");
     let _ = writeln!(out, "pub enum {} {{", item.name);
     for v in &def.variants {
         docs(out, "    ", &v.docs);
@@ -251,6 +254,9 @@ fn gen_dispatch(out: &mut String, schema: &Schema, registry: &Registry, dir: Dir
         out,
         "#[allow(clippy::large_enum_variant)] // inline, allocation-free values; transient on network threads"
     );
+    // A schema may add messages: code outside the crate carries a wildcard
+    // arm, so an addition is never a breaking change.
+    let _ = writeln!(out, "#[non_exhaustive]");
     let _ = writeln!(out, "pub enum {enum_name} {{");
     for (item, _, _) in &msgs {
         let _ = writeln!(out, "    /// See [`{0}`].", item.name);

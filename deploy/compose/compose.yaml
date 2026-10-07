@@ -13,6 +13,9 @@
 #             on the services network either.
 # Every published port binds 127.0.0.1.
 #
+# Runtime: MANTIS_RUNTIME=debian (default: debian-slim, a shell for operators) or
+# MANTIS_RUNTIME=distroless (no shell; health checks are `mantisd probe` either way).
+#
 # Secrets (cluster key, each node's TLS certificate and key, live-data key, operator token,
 # database password and connection string) are files mounted under /run/secrets, never
 # environment variables. Every RPC between roles is mutual TLS: the signed registry carries
@@ -48,7 +51,7 @@ services:
   persist:
     <<: *node
     image: mantis/persist:dev
-    build: { context: ../containers, dockerfile: persist.Containerfile }
+    build: { context: ../containers, dockerfile: persist.Containerfile, args: { RUNTIME: "mantis/runtime-${MANTIS_RUNTIME:-debian}:dev" } }
     depends_on: { postgres: { condition: service_healthy } }
     secrets:
       - cluster_key
@@ -65,7 +68,7 @@ services:
   account:
     <<: *node
     image: mantis/account:dev
-    build: { context: ../containers, dockerfile: account.Containerfile }
+    build: { context: ../containers, dockerfile: account.Containerfile, args: { RUNTIME: "mantis/runtime-${MANTIS_RUNTIME:-debian}:dev" } }
     secrets:
       - cluster_key
       - { source: account-1_crt, target: tls_cert }
@@ -80,7 +83,7 @@ services:
   realm:
     <<: *node
     image: mantis/realm:dev
-    build: { context: ../containers, dockerfile: realm.Containerfile }
+    build: { context: ../containers, dockerfile: realm.Containerfile, args: { RUNTIME: "mantis/runtime-${MANTIS_RUNTIME:-debian}:dev" } }
     secrets:
       - cluster_key
       - { source: realm-1_crt, target: tls_cert }
@@ -95,7 +98,7 @@ services:
   social:
     <<: *node
     image: mantis/social:dev
-    build: { context: ../containers, dockerfile: social.Containerfile }
+    build: { context: ../containers, dockerfile: social.Containerfile, args: { RUNTIME: "mantis/runtime-${MANTIS_RUNTIME:-debian}:dev" } }
     secrets:
       - cluster_key
       - { source: social-1_crt, target: tls_cert }
@@ -110,7 +113,7 @@ services:
   matchmaking:
     <<: *node
     image: mantis/matchmaking:dev
-    build: { context: ../containers, dockerfile: matchmaking.Containerfile }
+    build: { context: ../containers, dockerfile: matchmaking.Containerfile, args: { RUNTIME: "mantis/runtime-${MANTIS_RUNTIME:-debian}:dev" } }
     secrets:
       - cluster_key
       - { source: matchmaking-1_crt, target: tls_cert }
@@ -125,7 +128,7 @@ services:
   ops:
     <<: *node
     image: mantis/ops:dev
-    build: { context: ../containers, dockerfile: ops.Containerfile }
+    build: { context: ../containers, dockerfile: ops.Containerfile, args: { RUNTIME: "mantis/runtime-${MANTIS_RUNTIME:-debian}:dev" } }
     secrets:
       - cluster_key
       - live_key
@@ -146,11 +149,14 @@ services:
   cell-host:
     <<: *node
     image: mantis/cell-host:dev
-    build: { context: ../containers, dockerfile: cell-host.Containerfile }
+    build: { context: ../containers, dockerfile: cell-host.Containerfile, args: { RUNTIME: "mantis/runtime-${MANTIS_RUNTIME:-debian}:dev" } }
     secrets:
       - cluster_key
       - { source: cells-1_crt, target: tls_cert }
       - { source: cells-1_key, target: tls_key }
+      - { source: game_crt, target: game_cert }
+      - { source: game_key, target: game_key }
+      - { source: ca_crt, target: game_ca }
     volumes:
       - ./config/cell-host.toml:/etc/mantis/node.toml:ro
       - ../local/registry.toml:/etc/mantis/registry.toml:ro
@@ -204,3 +210,8 @@ secrets:
   ops-1_key: { file: ../local/certs/ops-1.key }
   cells-1_crt: { file: ../local/certs/cells-1.crt }
   cells-1_key: { file: ../local/certs/cells-1.key }
+  # The game listener's chain from the cluster CA (mantisd certs --server game), and the CA
+  # bundle clients trust (bots: -Ca deploy/local/keys/ca.crt).
+  game_crt: { file: ../local/certs/game.crt }
+  game_key: { file: ../local/certs/game.key }
+  ca_crt: { file: ../local/keys/ca.crt }

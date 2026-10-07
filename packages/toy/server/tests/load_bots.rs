@@ -43,11 +43,14 @@ fn three_bots_log_in_and_are_admitted(
         &handle,
         &CellLinkConfig {
             key: cluster.key.clone(),
-            persist: cluster.addr(Role::Persist).unwrap(),
-            ops: cluster.addr(Role::Ops).unwrap(),
-            social: cluster.addr(Role::Social).unwrap(),
-            matchmaking: cluster.addr(Role::Matchmaking).unwrap(),
-            realm: cluster.addr(Role::Realm).unwrap(),
+            persist: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Persist).unwrap()),
+            ops: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Ops).unwrap()),
+            social: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Social).unwrap()),
+            matchmaking: mantis_services::host::rpc::Endpoint::fixed(
+                cluster.addr(Role::Matchmaking).unwrap(),
+            ),
+            realm: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Realm).unwrap()),
+            world: 0,
             live_key: cluster.ops.public_key(),
             cells: toy_server::world::regions()
                 .into_iter()
@@ -57,7 +60,7 @@ fn three_bots_log_in_and_are_admitted(
             poll: Duration::from_millis(20),
             instances: Vec::new(),
             inspector: "127.0.0.1:0".parse().unwrap(),
-            tls: cell_tls.clone(),
+            tls: (cell_tls.clone()).map(mantis_services::tls::TlsHandle::from),
         },
     )
     .unwrap();
@@ -326,11 +329,14 @@ fn logged_in_bots_log_in_again_after_account_and_realm_restart() {
         &handle,
         &CellLinkConfig {
             key: cluster.key.clone(),
-            persist: cluster.addr(Role::Persist).unwrap(),
-            ops: cluster.addr(Role::Ops).unwrap(),
-            social: cluster.addr(Role::Social).unwrap(),
-            matchmaking: cluster.addr(Role::Matchmaking).unwrap(),
-            realm: cluster.addr(Role::Realm).unwrap(),
+            persist: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Persist).unwrap()),
+            ops: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Ops).unwrap()),
+            social: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Social).unwrap()),
+            matchmaking: mantis_services::host::rpc::Endpoint::fixed(
+                cluster.addr(Role::Matchmaking).unwrap(),
+            ),
+            realm: mantis_services::host::rpc::Endpoint::fixed(cluster.addr(Role::Realm).unwrap()),
+            world: 0,
             live_key: cluster.ops.public_key(),
             cells: toy_server::world::regions()
                 .into_iter()
@@ -478,4 +484,101 @@ fn logged_in_bots_log_in_again_after_account_and_realm_restart() {
         "load bots: 3 logged in, account and realm restarted mid-session, 3 logged in again as the same characters where they left; {} placements",
         link.stats.placements.load(std::sync::atomic::Ordering::Relaxed)
     );
+}
+
+/// `toy-server serve` presents a chain issued by a CA from files; bots
+/// verify it against the CA bundle for the address they dial (`--ca`), no
+/// pinning; a bundle of another CA is refused.
+#[test]
+fn bots_verify_a_ca_issued_game_certificate_against_a_bundle() {
+    let dir = std::env::temp_dir().join(format!("mantis-bots-ca-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let ca = mantis_net::quic::DevCa::new().unwrap();
+    let (chain, key) = ca.issue(&["127.0.0.1"]).unwrap().to_pem();
+    std::fs::write(dir.join("game.crt"), chain).unwrap();
+    std::fs::write(dir.join("game.key"), key).unwrap();
+    std::fs::write(dir.join("ca.pem"), ca.cert_pem()).unwrap();
+    let other = mantis_net::quic::DevCa::new().unwrap();
+    std::fs::write(dir.join("other.pem"), other.cert_pem()).unwrap();
+    // A fixed port: the server prints it only to its own output.
+    let port = {
+        let probe = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        probe.local_addr().unwrap().port()
+    };
+    let quic = format!("127.0.0.1:{port}");
+    let server = Running(
+        toy()
+            .args([
+                "serve",
+                "--quic",
+                &quic,
+                "--tcp",
+                "127.0.0.1:0",
+                "--ticks",
+                "3000",
+            ])
+            .arg("--game-cert")
+            .arg(dir.join("game.crt"))
+            .arg("--game-key")
+            .arg(dir.join("game.key"))
+            .arg("--cert-out")
+            .arg(dir.join("leaf.der"))
+            .arg("--cooked")
+            .arg(package("cooked"))
+            .arg("--key")
+            .arg(package("cooked/keys/dev.pub"))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let start = Instant::now();
+    while !dir.join("leaf.der").exists() {
+        assert!(
+            start.elapsed() < Duration::from_secs(60),
+            "the server never started"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    let run = |bundle: &str| {
+        toy()
+            .args([
+                "bots",
+                "--profile",
+                "idle",
+                "--count",
+                "2",
+                "--seconds",
+                "3",
+                "--quic",
+                &quic,
+            ])
+            .arg("--ca")
+            .arg(dir.join(bundle))
+            .arg("--cooked")
+            .arg(package("cooked"))
+            .arg("--key")
+            .arg(package("cooked/keys/dev.pub"))
+            .output()
+            .unwrap()
+    };
+    let ok = run("ca.pem");
+    let said = String::from_utf8_lossy(&ok.stdout);
+    assert!(
+        ok.status.success(),
+        "{said}{}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    assert!(said.contains("after 3 s: 2 in world, 0 refused"), "{said}");
+    let refused = run("other.pem");
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("not issued by a trusted authority"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    drop(server);
+    let _ = std::fs::remove_dir_all(&dir);
 }

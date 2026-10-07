@@ -1,13 +1,18 @@
 //! The toy client.
 //!
 //! ```text
-//! toy-client [--server ADDR] [--cert FILE] [--font FILE] [--token TEXT] [--world DIR] [--no-world]
-//!            [--mods DIR]
+//! toy-client [--server ADDR] [--public-roots] [--ca-bundle FILE] [--server-name NAME] | [--cert FILE]
+//!            [--font FILE] [--token TEXT] [--world DIR] [--no-world] [--mods DIR]
 //!            [--editor [--content DIR] [--ops ADDR --ops-cert FILE --ops-token-file FILE --ops-cell N]]
 //! ```
 //!
-//! Connects to a toy server over QUIC (pinning the development certificate the server
-//! wrote with `toy-server serve --cert-out FILE`), opens a window, and plays: W, A, S, D
+//! Connects to a toy server over QUIC and verifies it: with `--ca-bundle`, its chain
+//! against the bundle's CAs and its name against `--server-name` (default: the host of
+//! `--server`); with `--public-roots` (a build with the `public-roots` feature), against
+//! the public root set plus any `--ca-bundle`;//! `--server`); with `--cert` (the development default, `toy-dev-cert.der`), the exact
+//! self-signed leaf the server wrote with `toy-server serve --cert-out FILE`. A refused
+//! server is reported with the reason (`toy_client::trust`). Then it opens a window and
+//! plays: W, A, S, D
 //! move, Space jumps, Left Shift walks, the mouse looks. With `--font`, the package's
 //! module screens (party and the other std modules) are drawn with that font; the
 //! repository ships no font files. The cooked toy world (`--world`, default
@@ -167,13 +172,26 @@ fn attach_ui<T: mantis_adapter_contract::Transport>(
     Ok(())
 }
 
+/// Who to trust for the game listener, from the flags (`toy_client::trust`).
+fn trust(args: &Args, addr: std::net::SocketAddr) -> Result<mantis_net::quic::ServerTrust, String> {
+    toy_client::trust::TrustArgs::from_flags(
+        toy_client::trust::TrustFlags {
+            public_roots: args.0.iter().any(|a| a == "--public-roots"),
+            ca_bundle: args.value("--ca-bundle"),
+            server_name: args.value("--server-name"),
+            cert: args.value("--cert"),
+        },
+        "toy-dev-cert.der",
+    )?
+    .load(addr)
+}
+
 fn start(args: &Args) -> Result<(), String> {
     let server = args.value("--server").unwrap_or("127.0.0.1:7777");
     let addr = server
         .parse()
         .map_err(|_| format!("--server: not an address: {server}"))?;
-    let cert_path = args.value("--cert").unwrap_or("toy-dev-cert.der");
-    let cert = std::fs::read(cert_path).map_err(|e| format!("--cert {cert_path}: {e}"))?;
+    let trust = trust(args, addr)?;
     let token = args.value("--token").unwrap_or("player").as_bytes().to_vec();
     let fonts = fonts(args.value("--font"))?;
     let no_world = args.0.iter().any(|a| a == "--no-world");
@@ -207,8 +225,8 @@ fn start(args: &Args) -> Result<(), String> {
     };
     run(config, move |target, events| {
         let clock: Arc<dyn HostClock> = Arc::new(MonotonicClock::new());
-        let transport =
-            QuicClient::connect(&runtime, addr, &cert).map_err(|e| PlatformError::Start(format!("{e:?}")))?;
+        let transport = QuicClient::connect_trusted(&runtime, addr, &trust)
+            .map_err(|e| PlatformError::Start(toy_client::trust::notice(&e, &trust)))?;
         // The window's sink starts without a UI; the module screens join it once the
         // client has built its module registry.
         let sink = SurfaceSink::new(

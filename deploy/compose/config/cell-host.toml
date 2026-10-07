@@ -20,6 +20,11 @@ advertise = "127.0.0.1:7400"
 state = "/var/lib/mantis/state"
 poll_ms = 100
 snapshot_every_ticks = 150
+# The game listener's chain from the cluster CA (a private deployment: clients trust the
+# cluster CA bundle). Rotated in place by scripts/deploy-local.ps1 -Renew.
+game_cert = "/run/secrets/game_cert"
+game_key = "/run/secrets/game_key"
+game_ca = "/run/secrets/game_ca"
 
 [package]
 quic = "0.0.0.0:7400"

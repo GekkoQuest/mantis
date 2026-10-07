@@ -12,7 +12,8 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use mantis_services::host::Role;
-use mantis_services::host::rpc::RpcClient;
+use mantis_services::host::rpc::{Endpoint, RpcClient};
+use mantis_services::tls::TlsHandle;
 
 use crate::config::NodeConfig;
 use crate::drain::Drain;
@@ -21,6 +22,7 @@ use crate::keys;
 use crate::matrix;
 use crate::ready;
 use crate::registry::{Instance, Registry};
+use crate::target::Target;
 
 /// A started node: verified registry, keys, health, drain.
 pub struct Node {
@@ -32,14 +34,95 @@ pub struct Node {
     pub me: Instance,
     /// The cluster key.
     pub key: Vec<u8>,
-    /// Its mutual-TLS material, checked at start.
-    pub tls: std::sync::Arc<mantis_services::tls::TlsIdentity>,
+    /// Its mutual-TLS identity, checked at start and swapped live when its
+    /// certificate files rotate or the registry's CA list changes
+    /// ([`crate::tls`]).
+    pub tls: TlsHandle,
+    /// One live address per registry instance this node may dial, updated
+    /// in place when a newer registry moves it.
+    pub endpoints: Endpoints,
     /// Its status, served on the health endpoint.
     pub status: Status,
     /// The drain request.
     pub drain: Drain,
+    /// The running registry, replaced when the source offers a newer one
+    /// (`registry` above is the one the node started with).
+    pub live: crate::source::Live,
     runtime: Option<tokio::runtime::Runtime>,
     health: Option<HealthServer>,
+}
+
+/// The live address of every registry instance a node may dial, by
+/// instance name. An [`Endpoint`] is shared with every client made from
+/// it, so moving it moves them all.
+#[derive(Clone, Default)]
+pub struct Endpoints(std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, Endpoint>>>);
+
+impl Endpoints {
+    fn lock(&self) -> std::sync::MutexGuard<'_, std::collections::BTreeMap<String, Endpoint>> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The endpoint of `instance`.
+    #[must_use]
+    pub fn get(&self, instance: &str) -> Option<Endpoint> {
+        self.lock().get(instance).cloned()
+    }
+
+    /// Makes the endpoints those of `registry`'s instances of `roles`:
+    /// existing ones are moved in place, new ones added, gone ones
+    /// removed. Returns how many moved.
+    ///
+    /// # Errors
+    /// A target the services refuse (never one the registry accepted).
+    pub fn update(&self, registry: &Registry, roles: &[Role]) -> Result<usize, String> {
+        let mut map = self.lock();
+        let mut moved = 0;
+        let mut keep = std::collections::BTreeSet::new();
+        for i in registry.instances.iter().filter(|i| roles.contains(&i.role)) {
+            keep.insert(i.name.clone());
+            let target = i.rpc.to_string();
+            match map.get(&i.name) {
+                Some(e) => {
+                    if e.set(&target)? {
+                        moved += 1;
+                    }
+                }
+                None => {
+                    map.insert(i.name.clone(), Endpoint::new(&target)?);
+                }
+            }
+        }
+        map.retain(|name, _| keep.contains(name));
+        Ok(moved)
+    }
+}
+
+/// Moves the node's endpoints whenever a newer registry is applied.
+async fn follow_endpoints(
+    endpoints: Endpoints,
+    mut registries: tokio::sync::watch::Receiver<std::sync::Arc<Registry>>,
+    roles: Vec<Role>,
+    status: Status,
+    who: (Role, String),
+) {
+    while registries.changed().await.is_ok() {
+        let next = std::sync::Arc::clone(&registries.borrow_and_update());
+        match endpoints.update(&next, &roles) {
+            Ok(0) => {}
+            Ok(n) => {
+                status
+                    .metrics
+                    .add("endpoints_moved", i64::try_from(n).unwrap_or(i64::MAX));
+                say(
+                    who.0,
+                    &who.1,
+                    &format!("registry serial {}: {n} address(es) moved", next.serial),
+                );
+            }
+            Err(e) => say(who.0, &who.1, &format!("registry serial {}: {e}", next.serial)),
+        }
+    }
 }
 
 /// Prints one line of the node's own log.
@@ -54,19 +137,68 @@ pub fn say(role: Role, instance: &str, line: &str) {
 /// verify, the serial is older than allowed, or the body is invalid.
 pub fn verified_registry(config: &NodeConfig) -> Result<Registry, String> {
     let deploy = keys::read_public_key(&config.deploy_key)?;
-    let text = std::fs::read_to_string(&config.registry)
-        .map_err(|e| format!("{}: {e}", config.registry.display()))?;
-    let registry =
-        Registry::verify(&text, &deploy).map_err(|e| format!("{}: {e}", config.registry.display()))?;
+    let registry = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?
+        .block_on(config.registry.load_at_start(&deploy, config.ready_timeout))?;
     if registry.serial < config.registry_min_serial {
         return Err(format!(
             "{}: serial {} is older than registry_min_serial {}: refused (rollback)",
-            config.registry.display(),
-            registry.serial,
-            config.registry_min_serial
+            config.registry, registry.serial, config.registry_min_serial
         ));
     }
     Ok(registry)
+}
+
+/// Follows the node's registry source: applies each admissible newer
+/// registry, reports it in the log and `/metrics` (`registry_serial`,
+/// `registry_refused`, `registry_restart_required`).
+fn follow_registry(
+    config: &NodeConfig,
+    instance: &str,
+    registry: &Registry,
+    status: &Status,
+    handle: &tokio::runtime::Handle,
+) -> Result<crate::source::Live, String> {
+    let runtime_handle = handle;
+    let (status, role, name) = (status.clone(), config.role, instance.to_owned());
+    let (rpc_port, health_port) = (config.listen_rpc.port(), config.listen_health.port());
+    Ok(crate::source::follow(
+        runtime_handle,
+        registry.clone(),
+        crate::source::Follow {
+            source: config.registry.clone(),
+            deploy_key: keys::read_public_key(&config.deploy_key)?,
+            instance: instance.to_owned(),
+            every: config.registry_refresh,
+            report: std::sync::Arc::new(move |r| match r {
+                Ok(next) => {
+                    status
+                        .metrics
+                        .set("registry_serial", i64::try_from(next.serial).unwrap_or(i64::MAX));
+                    say(role, &name, &format!("registry serial {} applied", next.serial));
+                    if let Some(me) = next.instance(&name)
+                        && (me.rpc.port() != rpc_port || me.health.port() != health_port)
+                    {
+                        status.metrics.add("registry_restart_required", 1);
+                        say(
+                            role,
+                            &name,
+                            &format!(
+                                "the registry moves this node to rpc {} health {}: its own listeners                                          move only with a restart",
+                                me.rpc, me.health
+                            ),
+                        );
+                    }
+                }
+                Err(why) => {
+                    status.metrics.add("registry_refused", 1);
+                    say(role, &name, &why);
+                }
+            }),
+        },
+    ))
 }
 
 impl Node {
@@ -90,8 +222,8 @@ impl Node {
             ));
         }
         for (what, listen, listed) in [
-            ("listen_rpc", config.listen_rpc, me.rpc),
-            ("listen_health", config.listen_health, me.health),
+            ("listen_rpc", config.listen_rpc, &me.rpc),
+            ("listen_health", config.listen_health, &me.health),
         ] {
             if listen.port() != listed.port() {
                 return Err(format!(
@@ -102,13 +234,15 @@ impl Node {
         }
         matrix::check(config.role)?;
         let key = keys::read_cluster_key(&config.cluster_key)?;
-        let tls = crate::tls::load(
+        let tls = TlsHandle::new(crate::tls::load(
             &registry,
             config.role,
             &me.name,
             &config.tls_cert,
             &config.tls_key,
-        )?;
+        )?);
+        let endpoints = Endpoints::default();
+        endpoints.update(&registry, &matrix::dials(config.role))?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -116,6 +250,27 @@ impl Node {
             .map_err(|e| e.to_string())?;
         let drain = Drain::install(runtime.handle(), stdin_eof);
         let status = Status::new(matrix::name(config.role), &me.name);
+        status.metrics.set(
+            "registry_serial",
+            i64::try_from(registry.serial).unwrap_or(i64::MAX),
+        );
+        let live = follow_registry(&config, &me.name, &registry, &status, runtime.handle())?;
+        runtime.spawn(crate::tls::maintain(crate::tls::Maintain {
+            tls: tls.clone(),
+            live: live.clone(),
+            role: config.role,
+            instance: me.name.clone(),
+            cert: config.tls_cert.clone(),
+            key: config.tls_key.clone(),
+            status: status.clone(),
+        }));
+        runtime.spawn(follow_endpoints(
+            endpoints.clone(),
+            live.subscribe(),
+            matrix::dials(config.role),
+            status.clone(),
+            (config.role, me.name.clone()),
+        ));
         let health = runtime.block_on(HealthServer::bind(config.listen_health, status.clone()))?;
         say(
             config.role,
@@ -136,6 +291,8 @@ impl Node {
             me,
             key,
             tls,
+            endpoints,
+            live,
             status,
             drain,
             runtime: Some(runtime),
@@ -167,7 +324,7 @@ impl Node {
     ///
     /// # Errors
     /// `role` is not one this node dials, or the registry has none.
-    pub fn rpc_of(&self, role: Role) -> Result<SocketAddr, String> {
+    pub fn rpc_of(&self, role: Role) -> Result<Target, String> {
         if !matrix::dials(self.config.role).contains(&role) {
             return Err(format!(
                 "a {} node does not call {} (caller matrix)",
@@ -175,24 +332,67 @@ impl Node {
                 matrix::name(role)
             ));
         }
-        Ok(self.registry.one(role)?.rpc)
+        Ok(self.registry.one(role)?.rpc.clone())
     }
 
-    /// A client of the `server` role at `addr`, over mutual TLS with this
-    /// node's identity: it verifies the server's certificate names
-    /// `server` in this cluster, and presents this node's.
+    /// Resolves `target` now, to its first address.
     ///
     /// # Errors
-    /// The identity does not make a client configuration.
-    pub fn client(&self, addr: SocketAddr, server: Role) -> Result<RpcClient, String> {
-        RpcClient::with_tls(
-            addr,
+    /// The name does not resolve.
+    pub fn resolve(&self, target: &Target) -> Result<SocketAddr, String> {
+        let found = self.block_on(target.resolve())?;
+        found
+            .first()
+            .copied()
+            .ok_or_else(|| format!("{target}: no address"))
+    }
+
+    /// The live address of the single instance of `role` (a role this
+    /// node dials): it follows newer registries.
+    ///
+    /// # Errors
+    /// `role` is not one this node dials, or the registry has none.
+    pub fn endpoint_of(&self, role: Role) -> Result<Endpoint, String> {
+        self.rpc_of(role)?;
+        let name = self.registry.one(role)?.name.clone();
+        self.endpoints
+            .get(&name)
+            .ok_or_else(|| format!("no address for {name}"))
+    }
+
+    /// A client of the single instance of `role` over mutual TLS with this
+    /// node's live identity, at its live address: it verifies the server's
+    /// certificate names `role` in this cluster, and presents this node's.
+    ///
+    /// # Errors
+    /// `role` is not one this node dials, or the identity does not make a
+    /// client configuration.
+    pub fn client_of(&self, role: Role) -> Result<RpcClient, String> {
+        self.client_at(self.endpoint_of(role)?, role)
+    }
+
+    /// A client of `instance` (a cell host, for Ops) at its live address.
+    ///
+    /// # Errors
+    /// [`Node::client_of`].
+    pub fn client_to(&self, instance: &Instance) -> Result<RpcClient, String> {
+        let endpoint = self
+            .endpoints
+            .get(&instance.name)
+            .ok_or_else(|| format!("{} is not an instance this node calls", instance.name))?;
+        self.client_at(endpoint, instance.role)
+    }
+
+    fn client_at(&self, endpoint: Endpoint, server: Role) -> Result<RpcClient, String> {
+        let at = endpoint.target();
+        RpcClient::with_endpoint(
+            endpoint,
             self.config.role,
             self.key.clone(),
-            Some(std::sync::Arc::clone(&self.tls)),
+            Some(self.tls.clone()),
             server,
         )
-        .map_err(|e| format!("a client of {} at {addr}: {e}", matrix::name(server)))
+        .map_err(|e| format!("a client of {} at {at}: {e}", matrix::name(server)))
     }
 
     /// Blocks until every dependency is ready (or the readiness timeout,

@@ -33,7 +33,116 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 use super::Role;
-use crate::tls::{IdentityError, TlsIdentity, peer_identity};
+use crate::tls::{IdentityError, TlsHandle, TlsIdentity, peer_identity};
+
+/// Where a client connects: `host:port`, the host an IP literal or a DNS
+/// name, resolved at every connect. Live-updatable (a registry reload moves
+/// a role): when the target changes, clients drop their connection before
+/// the next call and reconnect to the new one. Cheap to clone; every clone
+/// is the same endpoint.
+#[derive(Clone)]
+pub struct Endpoint(Arc<EndpointShared>);
+
+struct EndpointShared {
+    target: Mutex<String>,
+    generation: std::sync::atomic::AtomicU64,
+}
+
+impl std::fmt::Debug for Endpoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Endpoint").field(&self.target()).finish()
+    }
+}
+
+/// `host:port`, checked: (host, port).
+fn split_target(target: &str) -> Result<(String, u16), String> {
+    let bad = || format!("{target:?} is not host:port");
+    let (host, port) = if let Some(rest) = target.strip_prefix('[') {
+        let (host, rest) = rest.split_once(']').ok_or_else(bad)?;
+        (host, rest.strip_prefix(':').ok_or_else(bad)?)
+    } else {
+        target.rsplit_once(':').ok_or_else(bad)?
+    };
+    let port: u16 = port.parse().map_err(|_| bad())?;
+    let name_ok = host.parse::<std::net::IpAddr>().is_ok()
+        || (!host.is_empty()
+            && host.len() <= 253
+            && host.split('.').all(|l| {
+                !l.is_empty() && l.len() <= 63 && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            }));
+    if !name_ok {
+        return Err(bad());
+    }
+    Ok((host.to_owned(), port))
+}
+
+impl Endpoint {
+    /// `host:port`: an IP literal (`[v6]:port` for IPv6) or a DNS name.
+    ///
+    /// # Errors
+    /// Not `host:port`.
+    pub fn new(target: &str) -> Result<Self, String> {
+        split_target(target)?;
+        Ok(Self(Arc::new(EndpointShared {
+            target: Mutex::new(target.to_owned()),
+            generation: std::sync::atomic::AtomicU64::new(0),
+        })))
+    }
+
+    /// A fixed address.
+    #[must_use]
+    pub fn fixed(addr: SocketAddr) -> Self {
+        Self(Arc::new(EndpointShared {
+            target: Mutex::new(addr.to_string()),
+            generation: std::sync::atomic::AtomicU64::new(0),
+        }))
+    }
+
+    /// Moves the endpoint to `target`; true when it changed.
+    ///
+    /// # Errors
+    /// Not `host:port`.
+    pub fn set(&self, target: &str) -> Result<bool, String> {
+        split_target(target)?;
+        let mut t = lock(&self.0.target);
+        if *t == target {
+            return Ok(false);
+        }
+        target.clone_into(&mut t);
+        self.0
+            .generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(true)
+    }
+
+    /// The target, `host:port`.
+    #[must_use]
+    pub fn target(&self) -> String {
+        lock(&self.0.target).clone()
+    }
+
+    /// Bumped on every change.
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.0.generation.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The addresses the target resolves to, in order, and the TLS server
+    /// name: the IP for a literal, the DNS name otherwise.
+    async fn resolve(&self) -> Option<(Vec<SocketAddr>, rustls::pki_types::ServerName<'static>)> {
+        let target = self.target();
+        let (host, port) = split_target(&target).ok()?;
+        let name = match host.parse::<std::net::IpAddr>() {
+            Ok(ip) => rustls::pki_types::ServerName::IpAddress(ip.into()),
+            Err(_) => rustls::pki_types::ServerName::try_from(host.clone()).ok()?,
+        };
+        let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host.as_str(), port))
+            .await
+            .ok()?
+            .collect();
+        Some((addrs, name))
+    }
+}
 
 /// How long a TLS handshake may take before the connection is dropped.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -62,6 +171,7 @@ pub trait Method: 'static {
 
 /// Why a call failed.
 #[derive(Clone, PartialEq, Eq, Debug)]
+#[non_exhaustive]
 pub enum RpcError {
     /// No answer within the timeout.
     Timeout,
@@ -75,6 +185,12 @@ pub enum RpcError {
     Malformed,
     /// The handler refused, with its reason.
     Refused(String),
+    /// The instance is its role's standby (role failover): call the active
+    /// one. Nothing was applied.
+    Standby,
+    /// A write from an instance that no longer holds its role's lease
+    /// (role failover). Nothing was applied.
+    StaleEpoch,
 }
 
 impl std::fmt::Display for RpcError {
@@ -86,6 +202,8 @@ impl std::fmt::Display for RpcError {
             Self::NoSuchMethod => f.write_str("no such method"),
             Self::Malformed => f.write_str("malformed payload"),
             Self::Refused(why) => write!(f, "refused: {why}"),
+            Self::Standby => f.write_str("a standby instance"),
+            Self::StaleEpoch => f.write_str("a stale lease epoch"),
         }
     }
 }
@@ -106,6 +224,8 @@ fn encode_error(e: &RpcError, out: &mut Vec<u8>) {
             enc.u16(u16::try_from(b.len().min(1024)).unwrap_or(0));
             enc.bytes(b.get(..b.len().min(1024)).unwrap_or(&[]));
         }
+        RpcError::Standby => enc.u8(6),
+        RpcError::StaleEpoch => enc.u8(7),
     }
 }
 
@@ -122,6 +242,8 @@ fn decode_error(bytes: &[u8]) -> RpcError {
             .map_or(RpcError::Malformed, |b| {
                 RpcError::Refused(String::from_utf8_lossy(b).into_owned())
             }),
+        Ok(6) => RpcError::Standby,
+        Ok(7) => RpcError::StaleEpoch,
         _ => RpcError::Malformed,
     }
 }
@@ -313,10 +435,40 @@ pub struct RpcServer {
     refused: Arc<std::sync::atomic::AtomicU64>,
 }
 
-/// A TLS server's acceptor and the cluster its own certificate names.
+/// A TLS server's identity, and the acceptor built from its current
+/// generation (with the cluster its certificate names).
 struct ServerTls {
-    acceptor: TlsAcceptor,
-    cluster: String,
+    handle: TlsHandle,
+    built: Mutex<(u64, TlsAcceptor, String)>,
+}
+
+impl ServerTls {
+    fn new(handle: TlsHandle) -> std::io::Result<Self> {
+        let (acceptor, cluster) = Self::build(&handle.current())?;
+        Ok(Self {
+            built: Mutex::new((handle.generation(), acceptor, cluster)),
+            handle,
+        })
+    }
+
+    fn build(id: &TlsIdentity) -> std::io::Result<(TlsAcceptor, String)> {
+        Ok((
+            TlsAcceptor::from(id.server_config().map_err(std::io::Error::other)?),
+            id.identity().map_err(std::io::Error::other)?.cluster,
+        ))
+    }
+
+    /// The acceptor of the current identity, its cluster, and its
+    /// generation.
+    fn current(&self) -> Option<(TlsAcceptor, String, u64)> {
+        let generation = self.handle.generation();
+        let mut built = lock(&self.built);
+        if built.0 != generation {
+            let (acceptor, cluster) = Self::build(&self.handle.current()).ok()?;
+            *built = (generation, acceptor, cluster);
+        }
+        Some((built.1.clone(), built.2.clone(), generation))
+    }
 }
 
 impl RpcServer {
@@ -333,7 +485,9 @@ impl RpcServer {
     /// A TLS server refuses plaintext, a client certificate that does not
     /// chain to its CAs (or is expired or not yet valid) or names another
     /// cluster, and a hello naming another role than the client's
-    /// certificate.
+    /// certificate. Each handshake uses the handle's current identity; when
+    /// it changes, the connections accepted under the old one close, so
+    /// every peer handshakes again against the new CAs.
     ///
     /// # Errors
     /// The bind error, or TLS material that does not make a configuration.
@@ -341,13 +495,10 @@ impl RpcServer {
         addr: SocketAddr,
         key: Vec<u8>,
         router: Router,
-        tls: Option<Arc<TlsIdentity>>,
+        tls: Option<TlsHandle>,
     ) -> std::io::Result<Self> {
         let secure = match tls {
-            Some(id) => Some(Arc::new(ServerTls {
-                acceptor: TlsAcceptor::from(id.server_config().map_err(std::io::Error::other)?),
-                cluster: id.identity().map_err(std::io::Error::other)?.cluster,
-            })),
+            Some(handle) => Some(Arc::new(ServerTls::new(handle)?)),
             None => None,
         };
         let listener = TcpListener::bind(addr).await?;
@@ -466,7 +617,14 @@ async fn serve_tls(stream: TcpStream, secure: &ServerTls, ctx: &Serve<'_>) -> bo
     if stream.set_nodelay(true).is_err() {
         return false;
     }
-    let accept = secure.acceptor.accept(stream).into_fallible();
+    let Some((acceptor, cluster, generation)) = secure.current() else {
+        return false;
+    };
+    // Subscribed before the handshake: a change during it closes this
+    // connection too.
+    let mut changes = secure.handle.changes();
+    changes.mark_unchanged();
+    let accept = acceptor.accept(stream).into_fallible();
     let tls = match tokio::time::timeout(HANDSHAKE_TIMEOUT, accept).await {
         Ok(Ok(tls)) => tls,
         Ok(Err((_, tcp))) => {
@@ -479,12 +637,17 @@ async fn serve_tls(stream: TcpStream, secure: &ServerTls, ctx: &Serve<'_>) -> bo
     };
     let cluster_ok = peer_identity(tls.get_ref().1.peer_certificates())
         .ok()
-        .filter(|peer| peer.cluster == secure.cluster);
+        .filter(|peer| peer.cluster == cluster);
     let Some(peer) = cluster_ok else {
         refuse(tls).await;
         return false;
     };
-    serve_connection(tls, Some(peer.role), ctx).await
+    if secure.handle.generation() != generation {
+        // Accepted under an identity already replaced.
+        refuse(tls).await;
+        return false;
+    }
+    serve_connection(tls, Some((peer.role, changes)), ctx).await
 }
 
 /// Closes a refused connection: shuts its write side (a close the peer sees
@@ -495,8 +658,13 @@ async fn refuse<S: AsyncWrite + Unpin>(mut stream: S) {
 
 /// Serves one connection: the hello (which must name `certified`, the role
 /// of the peer's certificate, when there is one), then requests until it
-/// closes. False: the hello was refused.
-async fn serve_connection<S>(mut stream: S, certified: Option<Role>, ctx: &Serve<'_>) -> bool
+/// closes, or until the server's identity changes. False: the hello was
+/// refused.
+async fn serve_connection<S>(
+    mut stream: S,
+    certified: Option<(Role, tokio::sync::watch::Receiver<u64>)>,
+    ctx: &Serve<'_>,
+) -> bool
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -508,17 +676,21 @@ where
     };
     if hello.kind != HELLO
         || hello.payload.get(1..) != Some(proof(ctx.key, role).as_slice())
-        || certified.is_some_and(|r| r != role)
+        || certified.as_ref().is_some_and(|(r, _)| *r != role)
     {
         refuse(stream).await;
         return false;
     }
-    serve_requests(stream, role, ctx).await;
+    serve_requests(stream, role, certified.map(|(_, c)| c), ctx).await;
     true
 }
 
-async fn serve_requests<S>(stream: S, role: Role, ctx: &Serve<'_>)
-where
+async fn serve_requests<S>(
+    stream: S,
+    role: Role,
+    mut changes: Option<tokio::sync::watch::Receiver<u64>>,
+    ctx: &Serve<'_>,
+) where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     use std::sync::atomic::Ordering;
@@ -537,7 +709,17 @@ where
             }
         }
     });
-    while let Some(f) = read_frame(&mut rd).await {
+    loop {
+        let f = match &mut changes {
+            None => read_frame(&mut rd).await,
+            Some(changes) => tokio::select! {
+                f = read_frame(&mut rd) => f,
+                // The server's identity changed: this connection closes and
+                // its peer handshakes again.
+                _ = changes.changed() => None,
+            },
+        };
+        let Some(f) = f else { break };
         if f.kind != REQUEST || closing.load(Ordering::SeqCst) {
             break;
         }
@@ -565,19 +747,28 @@ struct Connection {
     tx: mpsc::Sender<Vec<u8>>,
     pending: Pending,
     alive: Arc<std::sync::atomic::AtomicBool>,
+    /// The (endpoint, identity) generations it was made under.
+    stamp: (u64, u64),
+    reader: tokio::task::AbortHandle,
 }
 
-/// A TLS client's connector, the role it expects to reach, and its own
-/// cluster.
+/// A replaced connection closes: its reader stops (failing its waiters)
+/// and its writer ends with the sender, which drops the socket.
+impl Drop for Connection {
+    fn drop(&mut self) {
+        self.reader.abort();
+    }
+}
+
+/// A TLS client's identity and the role it expects to reach.
 struct ClientTls {
-    connector: TlsConnector,
+    handle: TlsHandle,
     server: Role,
-    cluster: String,
 }
 
 /// A client of one server, reconnecting as needed.
 pub struct RpcClient {
-    addr: SocketAddr,
+    endpoint: Endpoint,
     role: Role,
     key: Vec<u8>,
     tls: Option<ClientTls>,
@@ -590,8 +781,12 @@ impl RpcClient {
     /// Plaintext; see [`RpcClient::with_tls`].
     #[must_use]
     pub fn new(addr: SocketAddr, role: Role, key: Vec<u8>) -> Self {
+        Self::plain(Endpoint::fixed(addr), role, key)
+    }
+
+    fn plain(endpoint: Endpoint, role: Role, key: Vec<u8>) -> Self {
         Self {
-            addr,
+            endpoint,
             role,
             key,
             tls: None,
@@ -613,8 +808,25 @@ impl RpcClient {
         tls: Option<Arc<TlsIdentity>>,
         server: Role,
     ) -> Result<Self, IdentityError> {
-        let mut client = Self::new(addr, role, key);
-        if let Some(id) = tls {
+        Self::with_endpoint(Endpoint::fixed(addr), role, key, tls.map(TlsHandle::from), server)
+    }
+
+    /// A client calling `server` at `endpoint` (resolved at every connect,
+    /// followed when it moves) as `role`, over mutual TLS with `tls`
+    /// (`None`: plaintext; followed when it changes).
+    ///
+    /// # Errors
+    /// The identity is not `role`'s, or does not make a configuration.
+    pub fn with_endpoint(
+        endpoint: Endpoint,
+        role: Role,
+        key: Vec<u8>,
+        tls: Option<TlsHandle>,
+        server: Role,
+    ) -> Result<Self, IdentityError> {
+        let mut client = Self::plain(endpoint, role, key);
+        if let Some(handle) = tls {
+            let id = handle.current();
             let own = id.identity()?;
             if own.role != role {
                 return Err(IdentityError::WrongRole {
@@ -622,44 +834,61 @@ impl RpcClient {
                     found: own.role,
                 });
             }
-            client.tls = Some(ClientTls {
-                connector: TlsConnector::from(id.client_config()?),
-                server,
-                cluster: own.cluster,
-            });
+            id.client_config()?;
+            client.tls = Some(ClientTls { handle, server });
         }
         Ok(client)
     }
 
-    /// The server it calls.
+    /// Where it connects.
     #[must_use]
-    pub fn addr(&self) -> SocketAddr {
-        self.addr
+    pub fn endpoint(&self) -> &Endpoint {
+        &self.endpoint
+    }
+
+    /// The generations a connection is made under: (endpoint, identity).
+    fn stamp(&self) -> (u64, u64) {
+        (
+            self.endpoint.generation(),
+            self.tls.as_ref().map_or(0, |t| t.handle.generation()),
+        )
     }
 
     async fn connect(&self) -> Result<Connection, RpcError> {
+        let stamp = self.stamp();
         let mut delay = Duration::from_millis(10);
         for _ in 0..4 {
-            if let Ok(stream) = TcpStream::connect(self.addr).await {
+            let Some((addrs, name)) = self.endpoint.resolve().await else {
+                tokio::time::sleep(delay).await;
+                delay *= 2;
+                continue;
+            };
+            for addr in addrs {
+                let Ok(stream) = TcpStream::connect(addr).await else {
+                    continue;
+                };
                 let _ = stream.set_nodelay(true);
                 let mut hello = vec![self.role as u8];
                 hello.extend(proof(&self.key, self.role));
                 let hello = frame(HELLO, 0, 0, &hello);
                 let Some(secure) = &self.tls else {
-                    return Self::open(stream, &hello).await;
+                    return Self::open(stream, &hello, stamp).await;
                 };
-                let name = rustls::pki_types::ServerName::IpAddress(self.addr.ip().into());
-                let tls = tokio::time::timeout(HANDSHAKE_TIMEOUT, secure.connector.connect(name, stream))
+                // The current identity, at every connect.
+                let id = secure.handle.current();
+                let own = id.identity().map_err(|_| RpcError::Disconnected)?;
+                let connector = TlsConnector::from(id.client_config().map_err(|_| RpcError::Disconnected)?);
+                let tls = tokio::time::timeout(HANDSHAKE_TIMEOUT, connector.connect(name.clone(), stream))
                     .await
                     .map_err(|_| RpcError::Disconnected)?
                     .map_err(|_| RpcError::Disconnected)?;
                 // The server must be the role meant, of this cluster.
                 let peer =
                     peer_identity(tls.get_ref().1.peer_certificates()).map_err(|_| RpcError::Disconnected)?;
-                if peer.role != secure.server || peer.cluster != secure.cluster {
+                if peer.role != secure.server || peer.cluster != own.cluster {
                     return Err(RpcError::Disconnected);
                 }
-                return Self::open(tls, &hello).await;
+                return Self::open(tls, &hello, stamp).await;
             }
             tokio::time::sleep(delay).await;
             delay *= 2;
@@ -667,7 +896,7 @@ impl RpcClient {
         Err(RpcError::Disconnected)
     }
 
-    async fn open<S>(mut stream: S, hello: &[u8]) -> Result<Connection, RpcError>
+    async fn open<S>(mut stream: S, hello: &[u8], stamp: (u64, u64)) -> Result<Connection, RpcError>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
@@ -676,10 +905,10 @@ impl RpcClient {
             .await
             .map_err(|_| RpcError::Disconnected)?;
         stream.flush().await.map_err(|_| RpcError::Disconnected)?;
-        Ok(Self::start(stream))
+        Ok(Self::start(stream, stamp))
     }
 
-    fn start<S>(stream: S) -> Connection
+    fn start<S>(stream: S, stamp: (u64, u64)) -> Connection
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
@@ -695,7 +924,7 @@ impl RpcClient {
             }
         });
         let (p, a) = (Arc::clone(&pending), Arc::clone(&alive));
-        tokio::spawn(async move {
+        let reader = tokio::spawn(async move {
             while let Some(f) = read_frame(&mut rd).await {
                 let result = match f.kind {
                     RESPONSE => Ok(f.payload),
@@ -711,7 +940,13 @@ impl RpcClient {
                 let _ = waiter.send(Err(RpcError::Disconnected));
             }
         });
-        Connection { tx, pending, alive }
+        Connection {
+            tx,
+            pending,
+            alive,
+            stamp,
+            reader: reader.abort_handle(),
+        }
     }
 
     /// Calls `M` with `req`: connecting (when the connection is new) and
@@ -730,9 +965,13 @@ impl RpcClient {
         let (done, wait) = oneshot::channel();
         {
             let mut conn = self.conn.lock().await;
+            // Dead, or made before the endpoint moved or the identity
+            // changed: the next call goes to the current target, with the
+            // current identity.
+            let stamp = self.stamp();
             let stale = conn
                 .as_ref()
-                .is_none_or(|c| !c.alive.load(std::sync::atomic::Ordering::Acquire));
+                .is_none_or(|c| !c.alive.load(std::sync::atomic::Ordering::Acquire) || c.stamp != stamp);
             if stale {
                 // Connecting (TCP, the TLS handshake, the hello) is bounded
                 // by the call's own timeout: a peer that accepts and then

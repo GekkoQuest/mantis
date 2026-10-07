@@ -166,6 +166,17 @@ pub fn character_record(r: &m::CharacterRow) -> CharacterRecord {
     }
 }
 
+/// Who holds a role's lease (role failover).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Lease {
+    /// The holder.
+    pub owner: String,
+    /// Bumped on every change of holder.
+    pub epoch: u64,
+    /// Unix milliseconds it lapses unless renewed.
+    pub expires_ms: u64,
+}
+
 /// Account and character rows per page of a read.
 pub const RECORD_PAGE: usize = 32;
 
@@ -361,6 +372,20 @@ pub trait LedgerStore: Send {
     /// # Errors
     /// [`StoreError`].
     fn character_rows(&mut self) -> Result<Vec<CharacterRecord>, StoreError>;
+    /// Takes or renews `role`'s lease for `owner`, atomically: no lease, or
+    /// one `owner` holds, or one expired at `now_ms`, becomes `owner`'s until
+    /// `now_ms + ttl_ms` (the epoch bumped when the holder changes); a live
+    /// lease of another owner is left. Returns the lease after.
+    ///
+    /// # Errors
+    /// [`StoreError`].
+    fn acquire_lease(&mut self, role: u8, owner: &str, now_ms: u64, ttl_ms: u64)
+    -> Result<Lease, StoreError>;
+    /// `role`'s lease, if any.
+    ///
+    /// # Errors
+    /// [`StoreError`].
+    fn lease(&mut self, role: u8) -> Result<Option<Lease>, StoreError>;
     /// Sets live value `name` (a flag or tunable), replacing any earlier
     /// value of it.
     ///
@@ -537,6 +562,16 @@ fn store_err(e: &StoreError) -> RpcError {
     RpcError::Refused(e.0.clone())
 }
 
+/// A role's write carrying lease `epoch` may proceed: it is the role's
+/// current lease epoch, or the role has no lease and the write none.
+fn fenced(store: &mut dyn LedgerStore, role: crate::host::Role, epoch: u64) -> Result<(), RpcError> {
+    match store.lease(role as u8).map_err(|e| store_err(&e))? {
+        None if epoch == 0 => Ok(()),
+        Some(l) if l.epoch == epoch => Ok(()),
+        _ => Err(RpcError::StaleEpoch),
+    }
+}
+
 impl PersistService {
     /// A writer over `store`: migrates it and creates this month and the
     /// next ahead of need.
@@ -586,6 +621,7 @@ impl PersistService {
             .collect::<Option<Vec<_>>>()
             .ok_or_else(|| RpcError::Refused("malformed guild row".to_owned()))?;
         self.with_store(|store| {
+            fenced(store, crate::host::Role::Social, req.epoch)?;
             let last = store.guild_seq().map_err(|e| store_err(&e))?;
             if req.seq <= last {
                 return Ok(m::Durable { seq: last });
@@ -608,6 +644,7 @@ impl PersistService {
             .collect::<Option<Vec<_>>>()
             .ok_or_else(|| RpcError::Refused("malformed friend row".to_owned()))?;
         self.with_store(|store| {
+            fenced(store, crate::host::Role::Social, req.epoch)?;
             let last = store.friend_seq().map_err(|e| store_err(&e))?;
             if req.seq <= last {
                 return Ok(m::Durable { seq: last });
@@ -632,6 +669,7 @@ impl PersistService {
             .collect::<Option<Vec<_>>>()
             .ok_or_else(|| RpcError::Refused("malformed account row".to_owned()))?;
         self.with_store(|store| {
+            fenced(store, crate::host::Role::Account, req.epoch)?;
             let last = store.account_seq().map_err(|e| store_err(&e))?;
             if req.seq <= last {
                 return Ok(m::Durable { seq: last });
@@ -674,6 +712,7 @@ impl PersistService {
     pub fn write_characters(&self, req: &m::StoreCharacterRows) -> Result<m::Durable, RpcError> {
         let rows: Vec<CharacterRecord> = req.rows.iter().map(character_record).collect();
         self.with_store(|store| {
+            fenced(store, crate::host::Role::Realm, req.epoch)?;
             let last = store.character_seq().map_err(|e| store_err(&e))?;
             if req.seq <= last {
                 return Ok(m::Durable { seq: last });
@@ -828,6 +867,17 @@ impl PersistService {
         r.serve::<methods::WriteCharacters>(move |_, req| me.write_characters(&req));
         let me = self.clone();
         r.serve::<methods::LoadCharacters>(move |_, req| me.load_characters(req.page));
+        let me = self.clone();
+        r.serve::<methods::Lease>(move |_, req| {
+            let l = me
+                .with_store(|s| s.acquire_lease(req.role, req.owner.as_str(), req.now_ms, req.ttl_ms))
+                .map_err(|e| store_err(&e))?;
+            Ok(m::LeaseState {
+                owner: WireString::new(&l.owner).unwrap_or_default(),
+                epoch: l.epoch,
+                expires_ms: l.expires_ms,
+            })
+        });
     }
 
     /// The role's RPC methods.
@@ -839,8 +889,11 @@ impl PersistService {
         self.serve_records(&mut r);
         let me = self.clone();
         r.serve::<methods::StoreLiveValue>(move |_, req| {
-            me.with_store(|s| s.set_live(req.name.as_str(), req.kind, req.value))
-                .map_err(|e| store_err(&e))?;
+            me.with_store(|s| {
+                fenced(s, crate::host::Role::Ops, req.epoch)?;
+                s.set_live(req.name.as_str(), req.kind, req.value)
+                    .map_err(|e| store_err(&e))
+            })?;
             Ok(m::Empty {})
         });
         let me = self.clone();

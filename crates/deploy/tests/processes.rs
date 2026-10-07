@@ -380,11 +380,13 @@ fn hosts_spec() -> Vec<CellSpec> {
             name: "cells-a",
             cells: vec![1, 2],
             package: String::new(),
+            game_tls: false,
         },
         CellSpec {
             name: "cells-b",
             cells: vec![3, 4],
             package: String::new(),
+            game_tls: false,
         },
     ]
 }
@@ -398,7 +400,8 @@ fn a_tampered_registry_or_a_bad_certificate_is_refused_before_anything_binds() {
     let account = cluster.instance(&name).clone();
 
     // One changed port in another instance's entry.
-    let persist = cluster.instance(&service(Role::Persist)).rpc;
+    let persist = cluster.instance(&service(Role::Persist)).rpc.clone();
+    let persist = support::addr(&persist);
     let moved = std::net::SocketAddr::new(persist.ip(), persist.port().wrapping_add(1));
     std::fs::write(&path, good.replace(&persist.to_string(), &moved.to_string())).unwrap();
     cluster.start(&name);
@@ -407,8 +410,8 @@ fn a_tampered_registry_or_a_bad_certificate_is_refused_before_anything_binds() {
     let out = cluster.output(&name);
     assert!(out.contains("does not verify with the deploy key"), "{out}");
     assert!(
-        std::net::TcpStream::connect(account.health).is_err()
-            && std::net::TcpStream::connect(account.rpc).is_err(),
+        std::net::TcpStream::connect(support::addr(&account.health)).is_err()
+            && std::net::TcpStream::connect(support::addr(&account.rpc)).is_err(),
         "nothing binds for a refused registry"
     );
 
@@ -449,7 +452,7 @@ fn a_tampered_registry_or_a_bad_certificate_is_refused_before_anything_binds() {
     let crt = keys_dir.join(mantis_deploy::keys::files::cert(&name));
     let key = keys_dir.join(mantis_deploy::keys::files::key(&name));
     let (good_crt, good_key) = (std::fs::read(&crt).unwrap(), std::fs::read(&key).unwrap());
-    let ip = [account.rpc.ip()];
+    let ip = [support::addr(&account.rpc).ip()];
     let other_ca = mantis_deploy::pki::new_ca(
         support::CLUSTER,
         mantis_deploy::pki::Validity::starting_now(std::time::SystemTime::now(), 7),
@@ -510,7 +513,7 @@ fn readiness_blocks_until_dependencies_are_up() {
     // It lives, says what it waits for, and serves nothing.
     wait_for("social's health endpoint", Duration::from_secs(30), || {
         mantis_deploy::health::probe_blocking(
-            cluster.instance(&social).health,
+            &cluster.instance(&social).health,
             "/live",
             Duration::from_millis(200),
         )
@@ -522,7 +525,7 @@ fn readiness_blocks_until_dependencies_are_up() {
         assert_eq!(code, 503, "{body}");
         assert!(body.contains("waiting for persist (persist-1)"), "{body}");
         assert!(
-            std::net::TcpStream::connect(cluster.instance(&social).rpc).is_err(),
+            std::net::TcpStream::connect(support::addr(&cluster.instance(&social).rpc)).is_err(),
             "no RPC before the dependencies are ready"
         );
         std::thread::sleep(Duration::from_millis(100));
@@ -854,7 +857,7 @@ fn rpc_between_processes_is_mutual_tls_with_the_caller_matrix_on_the_certificate
     let persist = service(Role::Persist);
     cluster.start(&persist);
     cluster.wait_ready(&persist, Duration::from_secs(30));
-    let at = cluster.instance(&persist).rpc;
+    let at = support::addr(&cluster.instance(&persist).rpc);
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -887,7 +890,7 @@ fn rpc_between_processes_is_mutual_tls_with_the_caller_matrix_on_the_certificate
     };
     let ok = pki::Validity::starting_now(std::time::SystemTime::now(), 7);
     let other = pki::new_ca(support::CLUSTER, ok).unwrap();
-    let ip = [cluster.instance(&service(Role::Ops)).rpc.ip()];
+    let ip = [support::addr(&cluster.instance(&service(Role::Ops)).rpc).ip()];
     for (signer, validity, what) in [(&ca, expired, "expired"), (&other, ok, "foreign CA")] {
         let leaf = pki::issue(
             signer,
@@ -969,7 +972,7 @@ fn client_as(cluster: &Cluster, role: Role, instance: &str, to: &str) -> RpcClie
     .unwrap();
     let server = cluster.instance(to);
     RpcClient::with_tls(
-        server.rpc,
+        support::addr(&server.rpc),
         role,
         cluster.key.clone(),
         Some(std::sync::Arc::new(id)),
@@ -1100,10 +1103,10 @@ fn account_and_realm_restarts_keep_accounts_and_characters_and_refuse_old_tokens
     let first = select().unwrap();
     assert_eq!(first.cell.0, 2, "a new character enters the cell owning x = 0");
     // It enters, crosses into cell 1, and leaves the world at (-42, 0, 7).
-    host.link().track(2, 0, &[(character.0, [5.0, 0.0, 1.0])]);
-    host.link().track(2, 0, &[]);
-    host.link().track(1, 0, &[(character.0, [-42.0, 0.0, 7.0])]);
-    host.link().track(1, 0, &[]);
+    host.link().track(2, &[(character.0, [5.0, 0.0, 1.0])]);
+    host.link().track(2, &[]);
+    host.link().track(1, &[(character.0, [-42.0, 0.0, 7.0])]);
+    host.link().track(1, &[]);
     wait_for("the placements acknowledged", Duration::from_secs(30), || {
         host.link().pending() == 0
     });
